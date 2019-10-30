@@ -13,15 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_XLA_PYTHON_XRT_H_
-#define TENSORFLOW_COMPILER_XLA_PYTHON_XRT_H_
+#ifndef TENSORFLOW_COMPILER_XLA_PYTHON_BFLOAT16_H_
+#define TENSORFLOW_COMPILER_XLA_PYTHON_BFLOAT16_H_
 
 #include "include/pybind11/pybind11.h"
+#include "tensorflow/compiler/xla/statusor.h"
 
-namespace tensorflow {
+namespace xla {
 
-void AddXrtSubmodule(pybind11::module* module);
+xla::StatusOr<pybind11::object> Bfloat16Dtype();
 
-}  // namespace tensorflow
+}  // namespace xla
 
-#endif  // TENSORFLOW_COMPILER_XLA_PYTHON_XRT_H_
+#endif  // TENSORFLOW_COMPILER_XLA_PYTHON_BFLOAT16_H_
