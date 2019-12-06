@@ -53,7 +53,7 @@ class TensorServingClient:
             "request_pb": PredictRequest,
             "timeout": timeout,
         }
-        return self._make_request(**request_params)
+        return self._make_request(**request_params)  # type: ignore
 
     def classification_request(
         self,
@@ -69,7 +69,7 @@ class TensorServingClient:
             "request_pb": ClassificationRequest,
             "timeout": timeout,
         }
-        return self._make_request(**request_params)
+        return self._make_request(**request_params)  # type: ignore
 
     def regression_request(
         self,
@@ -85,4 +85,4 @@ class TensorServingClient:
             "request_pb": RegressionRequest,
             "timeout": timeout,
         }
-        return self._make_request(**request_params)
+        return self._make_request(**request_params)  # type: ignore
