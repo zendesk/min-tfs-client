@@ -1,0 +1,17 @@
+[[source]]
+name = "pypi"
+url = "https://pypi.org/simple"
+verify_ssl = true
+
+[dev-packages]
+mypy = "*"
+black = "==19.10b0"
+flake8 = "*"
+
+[packages]
+grpcio = ">=1.21"
+protobuf = ">=3.8"
+numpy = ">=1.16.4"
+
+[requires]
+python_version = "3.7"
