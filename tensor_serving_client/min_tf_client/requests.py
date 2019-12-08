@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import grpc
 import numpy as np
@@ -46,43 +46,43 @@ class TensorServingClient:
         timeout: int = 60,
         model_version: Optional[int] = None,
     ) -> PredictResponse:
-        request_params = {
+        request_params: Dict[str, Any] = {
             "model_name": model_name,
             "model_version": model_version,
             "input_dict": input_dict,
             "request_pb": PredictRequest,
             "timeout": timeout,
         }
-        return self._make_request(**request_params)  # type: ignore
+        return self._make_request(**request_params)
 
     def classification_request(
         self,
         model_name: str,
         input_dict: Dict[str, np.ndarray],
-        timeout=60,
+        timeout: int = 60,
         model_version: Optional[int] = None,
     ) -> ClassificationResponse:
-        request_params = {
+        request_params: Dict[str, Any] = {
             "model_name": model_name,
             "model_version": model_version,
             "input_dict": input_dict,
             "request_pb": ClassificationRequest,
             "timeout": timeout,
         }
-        return self._make_request(**request_params)  # type: ignore
+        return self._make_request(**request_params)
 
     def regression_request(
         self,
         model_name: str,
         input_dict: Dict[str, np.ndarray],
-        timeout=60,
+        timeout: int = 60,
         model_version: Optional[int] = None,
     ) -> RegressionResponse:
-        request_params = {
+        request_params: Dict[str, Any] = {
             "model_name": model_name,
             "model_version": model_version,
             "input_dict": input_dict,
             "request_pb": RegressionRequest,
             "timeout": timeout,
         }
-        return self._make_request(**request_params)  # type: ignore
+        return self._make_request(**request_params)
