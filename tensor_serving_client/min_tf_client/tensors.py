@@ -14,7 +14,7 @@ def coerce_to_bytes(text: AnyStr) -> bytes:
         return text
 
 
-def load_tensor_proto(tensor_proto: TensorProto, values: Iterable, dtype: DataType) -> TensorProto:
+def write_values_to_tensor_proto(tensor_proto: TensorProto, values: Iterable, dtype: DataType) -> TensorProto:
     proto_field = getattr(tensor_proto, f"{dtype.proto_field_name}")
     if dtype.is_numeric:
         proto_field.extend([v.item() for v in values])
@@ -29,7 +29,7 @@ def ndarray_to_tensor_proto(ndarray: np.ndarray) -> TensorProto:
         dtype=dtype.enum,
         tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=d) for d in ndarray.shape]),
     )
-    proto = load_tensor_proto(tensor_proto=proto, values=ndarray.ravel(), dtype=dtype)
+    proto = write_values_to_tensor_proto(tensor_proto=proto, values=ndarray.ravel(), dtype=dtype)
     return proto
 
 
