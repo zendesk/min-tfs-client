@@ -2,8 +2,9 @@ import os
 from contextlib import contextmanager
 from distutils.cmd import Command
 from pathlib import Path
-from subprocess import check_output
 from shutil import copy2
+from subprocess import check_output
+from typing import Any, List
 
 from setuptools import find_namespace_packages, setup
 from setuptools.command.build_py import build_py
@@ -29,7 +30,7 @@ class CompileProtobufs(Command):
     Compile .proto files in Tensorflow and Tensorflow Serving into python
     libraries.
     """
-    user_options = []
+    user_options: List[Any] = []
 
     def initialize_options(self):
         ...
@@ -52,7 +53,7 @@ class CopyGRPCStubs(Command):
     description = """
     Copy GRPC Stubs from Tensorflow Serving APIs to the minified Tensorflow Serving APIs library
     """
-    user_options = []
+    user_options: List[Any] = []
 
     def initialize_options(self):
         ...
@@ -92,4 +93,6 @@ setup(
     },
     package_dir={"": "tensor_serving_client"},
     packages=find_namespace_packages(where="tensor_serving_client"),
+    install_requires=["grpcio>=1.21", "protobuf>=3.8", "numpy>=1.16.4"],
+    tests_require=["pytest"]
 )
