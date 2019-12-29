@@ -13,7 +13,7 @@ from .constants import (
 class DataType:
     VALID_TYPES = (
         NUMERICAL_TYPES
-        .union({np.str_})
+        .union({np.str_, np.bool_})
     )
 
     def __init__(self, dtype: Union[type, str, int]):
