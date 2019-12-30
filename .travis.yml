@@ -17,4 +17,9 @@ matrix:
         - pipenv run python setup.py bdist_wheel
         - pipenv run pip install --no-index --find-links=dist/ min_tf_client
       script:
-      - pipenv run pytest -v
+        - pipenv run pytest -v
+    - name: "Linting"
+      install:
+        - pipenv sync --dev
+      script:
+        - pipenv run flake8 tensor_serving_client/min_tf_client tests/
