@@ -6,7 +6,7 @@ branches:
 env:
   - PIPENV_IGNORE_VIRTUALENVS=1
 before_install:
-  - ./travis_install.sh
+  - ./protoc_install.sh
   - unset PYTHONDONTWRITEBYTECODE
 matrix:
   include:
