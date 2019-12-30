@@ -6,7 +6,8 @@ branches:
 env:
   - PIPENV_IGNORE_VIRTUALENVS=1
 before_install:
-  - ./protoc_install.sh
+  - ./scripts/travis/tensor_serving_install.sh
+  - ./scripts/travis/protoc_install.sh
   - unset PYTHONDONTWRITEBYTECODE
 matrix:
   include:
@@ -16,4 +17,4 @@ matrix:
         - pipenv run python setup.py bdist_wheel
         - pipenv run pip install --no-index --find-links=dist/ min_tf_client
       script:
-      - pipenv run pytest
+      - pipenv run pytest -v
