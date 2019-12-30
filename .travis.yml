@@ -1,0 +1,19 @@
+language: python
+dist: xenial
+python: "3.7.4"
+branches:
+  only: [master]
+env:
+  - PIPENV_IGNORE_VIRTUALENVS=1
+before_install:
+  - ./travis_install.sh
+  - unset PYTHONDONTWRITEBYTECODE
+matrix:
+  include:
+    - name: "Unit Tests"
+      install:
+        - pipenv sync --dev
+        - pipenv run python setup.py bdist_wheel
+        - pipenv run pip install --no-index --find-links=dist/ min_tf_client
+      script:
+      - pipenv run pytest
