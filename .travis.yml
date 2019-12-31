@@ -9,17 +9,18 @@ before_install:
   - ./scripts/travis/tensor_serving_install.sh
   - ./scripts/travis/protoc_install.sh
   - unset PYTHONDONTWRITEBYTECODE
+install:
+  - pipenv sync --dev
+  - pipenv run python setup.py bdist_wheel
+  - pipenv run pip install --no-index --find-links=dist/ min_tf_client
 matrix:
   include:
     - name: "Unit Tests"
-      install:
-        - pipenv sync --dev
-        - pipenv run python setup.py bdist_wheel
-        - pipenv run pip install --no-index --find-links=dist/ min_tf_client
       script:
-        - pipenv run pytest -v
+        - pipenv run pytest -v tests/unit/
+    - name: "Integration Tests"
+      script:
+        - pipenv run pytest -v tests/integration
     - name: "Linting"
-      install:
-        - pipenv sync --dev
       script:
         - pipenv run flake8 tensor_serving_client/min_tf_client tests/

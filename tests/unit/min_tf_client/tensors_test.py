@@ -11,7 +11,7 @@ from tensorflow.core.framework.tensor_pb2 import TensorProto
 from tensorflow.core.framework.tensor_shape_pb2 import TensorShapeProto
 
 
-def _assert_proto_equal(proto, expected: str) -> bool:
+def _assert_proto_equal(proto, expected: str) -> None:
     expected_string = textwrap.dedent(expected)
     with_leading_newline_stripped = (
         expected_string[1:] if expected_string[0] == "\n" else expected_string
