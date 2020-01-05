@@ -19,8 +19,10 @@ matrix:
       script:
         - pipenv run pytest -v tests/unit/
     - name: "Integration Tests"
+      before_script:
+        - tensorflow_model_server --port=4080 &
       script:
-        - pipenv run pytest -v tests/integration
+        - pipenv run pytest -v tests/integration/
     - name: "Linting"
       script:
         - pipenv run flake8 tensor_serving_client/min_tf_client tests/
