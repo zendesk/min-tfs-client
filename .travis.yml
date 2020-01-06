@@ -20,7 +20,7 @@ matrix:
         - pipenv run pytest -v tests/unit/
     - name: "Integration Tests"
       before_script:
-        - tensorflow_model_server --port=4080 --model_base_path=$PWD/tests/integration/fixtures &
+        - tensorflow_model_server --port=4080 --model_base_path=$PWD/tests/integration/fixtures && sleep 1 &
       script:
         - pipenv run pytest -v tests/integration/
     - name: "Linting"
