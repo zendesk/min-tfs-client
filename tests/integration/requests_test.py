@@ -1,6 +1,8 @@
 from min_tf_client.requests import TensorServingClient
+from min_tf_client.tensors import tensor_proto_to_ndarray
 from pytest import fixture
 import numpy as np
+from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 
 @fixture(scope="function")
@@ -23,5 +25,15 @@ def test_request(unsecured_ts_client):
             "int_input": np.array([2], dtype=np.int64)
         }
     )
-    print(response)
-    assert response is not None
+    assert_array_almost_equal(
+        tensor_proto_to_ndarray(response.outputs["float_output"]),
+        np.array([0.1], dtype=np.float32)
+    )
+    assert_array_equal(
+        tensor_proto_to_ndarray(response.outputs["int_output"]),
+        np.array([2], dtype=np.int64)
+    )
+    assert_array_equal(
+        tensor_proto_to_ndarray(response.outputs["string_output"]),
+        np.array(["hello world"])
+    )
