@@ -6,14 +6,23 @@ branches:
 env:
   - PIPENV_IGNORE_VIRTUALENVS=1
 before_install:
-  - ./protoc_install.sh
+  - ./scripts/travis/tensor_serving_install.sh
+  - ./scripts/travis/protoc_install.sh
   - unset PYTHONDONTWRITEBYTECODE
+install:
+  - pipenv sync --dev
+  - pipenv run python setup.py bdist_wheel
+  - pipenv run pip install --no-index --find-links=dist/ min_tf_client
 matrix:
   include:
     - name: "Unit Tests"
-      install:
-        - pipenv sync --dev
-        - pipenv run python setup.py bdist_wheel
-        - pipenv run pip install --no-index --find-links=dist/ min_tf_client
       script:
-      - pipenv run pytest
+        - pipenv run pytest -v tests/unit/
+    - name: "Integration Tests"
+      before_script:
+        - tensorflow_model_server --port=4080 --model_base_path=$PWD/tests/integration/fixtures && sleep 1 &
+      script:
+        - pipenv run pytest -v tests/integration/
+    - name: "Linting"
+      script:
+        - pipenv run flake8 tensor_serving_client/min_tf_client tests/

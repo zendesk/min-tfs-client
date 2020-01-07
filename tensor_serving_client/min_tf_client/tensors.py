@@ -14,7 +14,9 @@ def coerce_to_bytes(text: AnyStr) -> bytes:
         return text
 
 
-def write_values_to_tensor_proto(tensor_proto: TensorProto, values: Iterable, dtype: DataType) -> TensorProto:
+def write_values_to_tensor_proto(
+    tensor_proto: TensorProto, values: Iterable, dtype: DataType
+) -> TensorProto:
     proto_field = getattr(tensor_proto, f"{dtype.proto_field_name}")
     if dtype.is_numeric:
         proto_field.extend([v.item() for v in values])

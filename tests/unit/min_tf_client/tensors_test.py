@@ -1,17 +1,21 @@
-from google.protobuf import text_format
-import numpy as np
-from tensorflow.core.framework.tensor_pb2 import TensorProto
-from tensorflow.core.framework.tensor_shape_pb2 import TensorShapeProto
-from tensorflow.core.framework import types_pb2
 import textwrap
 
-from min_tf_client.tensors import coerce_to_bytes, extract_shape, ndarray_to_tensor_proto, tensor_proto_to_ndarray, write_values_to_tensor_proto
+import numpy as np
+from google.protobuf import text_format
+
+from min_tf_client.tensors import (coerce_to_bytes, extract_shape, ndarray_to_tensor_proto,
+                                   tensor_proto_to_ndarray, write_values_to_tensor_proto)
 from min_tf_client.types import DataType
+from tensorflow.core.framework import types_pb2
+from tensorflow.core.framework.tensor_pb2 import TensorProto
+from tensorflow.core.framework.tensor_shape_pb2 import TensorShapeProto
 
 
-def _assert_proto_equal(proto, expected: str) -> bool:
+def _assert_proto_equal(proto, expected: str) -> None:
     expected_string = textwrap.dedent(expected)
-    with_leading_newline_stripped = expected_string[1:] if expected_string[0] == "\n" else expected_string
+    with_leading_newline_stripped = (
+        expected_string[1:] if expected_string[0] == "\n" else expected_string
+    )
 
     proto_string = text_format.MessageToString(proto)
 
@@ -39,8 +43,7 @@ def test_write_values_to_tensor_proto_on_strings():
     dtype = DataType(types_pb2.DT_STRING)
     array = np.array(["Ceci", "n'est", "pas", "une", "string"])
     tensor_proto = TensorProto(
-        dtype=dtype.enum,
-        tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=len(array))])
+        dtype=dtype.enum, tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=len(array))])
     )
 
     write_values_to_tensor_proto(tensor_proto, array.ravel(), dtype)
@@ -52,8 +55,7 @@ def test_write_values_to_tensor_proto_on_numerics():
     dtype = DataType(types_pb2.DT_FLOAT)
     array = np.array([0.314, 0.159, 0.268])
     tensor_proto = TensorProto(
-        dtype=dtype.enum,
-        tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=len(array))])
+        dtype=dtype.enum, tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=len(array))])
     )
 
     write_values_to_tensor_proto(tensor_proto, array.ravel(), dtype)
@@ -85,7 +87,7 @@ def test_extract_shape():
     shape = (3, 1, 4)
     tensor_proto = TensorProto(
         dtype=types_pb2.DT_FLOAT,
-        tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=n) for n in shape])
+        tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=n) for n in shape]),
     )
 
     result = extract_shape(tensor_proto)
@@ -97,8 +99,7 @@ def test_tensor_proto_to_ndarray():
     dtype = DataType(types_pb2.DT_FLOAT)
     array = np.array([0.314, 0.159, 0.268])
     tensor_proto = TensorProto(
-        dtype=dtype.enum,
-        tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=len(array))])
+        dtype=dtype.enum, tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=len(array))])
     )
     write_values_to_tensor_proto(tensor_proto, array.ravel(), dtype)
 
@@ -114,4 +115,3 @@ def test_ndarray_to_tensor_proto_inverse():
     result = tensor_proto_to_ndarray(tensor_proto)
 
     np.testing.assert_almost_equal(result, array)
-
