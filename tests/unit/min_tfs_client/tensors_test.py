@@ -4,7 +4,7 @@ import numpy as np
 from google.protobuf import text_format
 
 from min_tfs_client.tensors import (coerce_to_bytes, extract_shape, ndarray_to_tensor_proto,
-                                   tensor_proto_to_ndarray, write_values_to_tensor_proto)
+                                    tensor_proto_to_ndarray, write_values_to_tensor_proto)
 from min_tfs_client.types import DataType
 from tensorflow.core.framework import types_pb2
 from tensorflow.core.framework.tensor_pb2 import TensorProto

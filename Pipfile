@@ -8,7 +8,7 @@ mypy = "*"
 black = "==19.10b0"
 flake8 = "*"
 pytest = ">=5.3.2"
-min-tf-client = {editable = true,path = "."}
+min-tfs-client = {editable = true,path = "."}
 
 [packages]
 grpcio = ">=1.21"
