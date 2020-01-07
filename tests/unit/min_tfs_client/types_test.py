@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from min_tf_client.types import DataType
+from min_tfs_client.types import DataType
 
 
 TEST_TARGETS = [

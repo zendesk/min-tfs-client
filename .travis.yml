@@ -12,7 +12,7 @@ before_install:
 install:
   - pipenv sync --dev
   - pipenv run python setup.py bdist_wheel
-  - pipenv run pip install --no-index --find-links=dist/ min_tf_client
+  - pipenv run pip install --no-index --find-links=dist/ min_tfs_client
 matrix:
   include:
     - name: "Unit Tests"
@@ -25,4 +25,4 @@ matrix:
         - pipenv run pytest -v tests/integration/
     - name: "Linting"
       script:
-        - pipenv run flake8 tensor_serving_client/min_tf_client tests/
+        - pipenv run flake8 tensor_serving_client/min_tfs_client tests/
