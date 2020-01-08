@@ -1,4 +1,5 @@
 # Dev Folders
+.vscode
 .venv
 .mypy_cache
 .pytest_cache

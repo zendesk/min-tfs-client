@@ -83,7 +83,7 @@ class BuildPyCommand(build_py):
 
 
 setup(
-    name="min_tf_client",
+    name="min_tfs_client",
     version="1.14",
     description="A minified Tensor Serving Client for Python",
     cmdclass={
