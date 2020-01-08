@@ -95,11 +95,5 @@ setup(
     packages=find_namespace_packages(where="tensor_serving_client"),
     install_requires=["grpcio>=1.21", "protobuf>=3.8", "numpy>=1.16.4"],
     tests_require=["pytest"],
-    extras_require={
-        "dev": [
-            "black==19.10b0",
-            "flake8",
-            "mypy"
-        ]
-    }
+    extras_require={"dev": ["black==19.10b0", "flake8", "mypy"]},
 )
