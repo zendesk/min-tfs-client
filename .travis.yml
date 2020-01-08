@@ -1,28 +1,36 @@
 language: python
 dist: xenial
-python: "3.7.4"
 branches:
   only: [master]
-env:
-  - PIPENV_IGNORE_VIRTUALENVS=1
 before_install:
   - ./scripts/travis/tensor_serving_install.sh
   - ./scripts/travis/protoc_install.sh
   - unset PYTHONDONTWRITEBYTECODE
 install:
-  - pipenv sync --dev
-  - pipenv run python setup.py bdist_wheel
-  - pipenv run pip install --no-index --find-links=dist/ min_tfs_client
+  - pip install -e .[dev]
+  - python setup.py bdist_wheel
+  - pip install --no-index --find-links=dist/ min_tfs_client
+before_script:
+  - tensorflow_model_server --port=4080 --model_base_path=$PWD/tests/integration/fixtures && sleep 1 &
 matrix:
   include:
-    - name: "Unit Tests"
+    - name: "Tests (Python 3.6)"
+      python: "3.6"
       script:
-        - pipenv run pytest -v tests/unit/
-    - name: "Integration Tests"
-      before_script:
-        - tensorflow_model_server --port=4080 --model_base_path=$PWD/tests/integration/fixtures && sleep 1 &
+        - pytest -v tests
+    - name: "Tests (Python 3.7)"
+      python: "3.7"
       script:
-        - pipenv run pytest -v tests/integration/
+        - pytest -v tests
+    - name: "Tests (Python 3.8)"
+      python: "3.8"
+      script:
+        - pytest -v tests
     - name: "Linting"
+      python: 3.7
       script:
-        - pipenv run flake8 tensor_serving_client/min_tfs_client tests/
+        - flake8 tensor_serving_client/min_tfs_client tests/
+    - name: "Type Checking"
+      python: 3.7
+      script:
+        - mypy tensor_serving_client/min_tfs_client --ignore-missing-imports
