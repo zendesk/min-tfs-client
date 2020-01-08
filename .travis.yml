@@ -30,3 +30,7 @@ matrix:
       python: 3.7
       script:
         - flake8 tensor_serving_client/min_tfs_client tests/
+    - name: "Type Checking"
+      python: 3.7
+      script:
+        - mypy tensor_serving_client/min_tfs_client --ignore-missing-imports
