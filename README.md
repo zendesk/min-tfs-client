@@ -16,9 +16,9 @@ pip install .
 ```
 
 ## Development Installation
-For dev installation, run `pip install -e .` instead of `pip install .`. Also, you will require `tensorflow-model-server` and `tensorflow` to be installed to run and modify the integration tests. Specifically: 
+For dev installation, run `pip install -e .` instead of `pip install .`. Also, you will require `tensorflow-model-server` and `tensorflow` to be installed to run and modify the integration tests. Specifically:
 
-1. `tensorflow` is required to run the model generation script (`tests/integration/fixtures`) that creates a test model for integration testing.
+1. `tensorflow` is required to run the model generation script (`tests/integration/fixtures`) that creates a test model for integration testing. It is **not** required to just run the tests.
 2. `tensorflow-model-server` is required to serve the model to perform the integration test. The commands that are used to run these tests in Travis are contained in `.travis.yml`.
 
 ## Usage
