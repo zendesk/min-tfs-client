@@ -84,7 +84,7 @@ class BuildPyCommand(build_py):
 
 setup(
     name="min_tfs_client",
-    version="1.14",
+    version="1.0.0",
     description="A minified Tensor Serving Client for Python",
     cmdclass={
         "compile_pb": CompileProtobufs,
