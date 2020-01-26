@@ -72,3 +72,5 @@ Improvements are always welcome. Please follow these steps to contribute:
 
 ## Licence Information
 Use of this software is subject to important terms and conditions as set forth in the [LICENSE](LICENCE) file.
+
+The code contained within [protobuf_srcs/tensorflow](protobuf_srcs/tensorflow) is forked from [Tensorflow](https://github.com/tensorflow/tensorflow), and the code contained within [protobuf_srcs/tensorflow_serving] is forked from [Tensorflow Serving](https://github.com/tensorflow/serving). Please refer to the individual source files within `protobuf_srcs` for individual file licence information.
