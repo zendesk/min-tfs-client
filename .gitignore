@@ -1,0 +1,15 @@
+# Dev Folders
+.vscode
+.venv
+.mypy_cache
+.pytest_cache
+**/__pycache__
+*.egg-info
+
+# Python Distro Folders
+build/
+dist/
+
+# Minified Tensorflow / Tensor Serving Folders
+tensor_serving_client/tensorflow
+tensor_serving_client/tensorflow_serving
