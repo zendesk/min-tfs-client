@@ -10,8 +10,8 @@ This package exposes a minimal Tensor Serving client that does not include Tenso
 Installation from source will require the protobuf compiler `protoc` to be installed and available to the command line (e.g. via the `PATH` environment variable). The protobuf compiler can be downloaded from the [protocolbuffers/protobuf](https://github.com/protocolbuffers/protobuf/releases) Github repo. Once `protoc` is installed and available, you can run:
 
 ```Bash
-git clone https://github.com/zendesk/tensor-serving-python-client.git
-cd tensor-serving-python-client
+git clone https://github.com/zendesk/min-tfs-client.git
+cd min-tfs-client
 pip install .
 ```
 
@@ -73,4 +73,4 @@ Improvements are always welcome. Please follow these steps to contribute:
 ## Licence Information
 Use of this software is subject to important terms and conditions as set forth in the [LICENSE](LICENCE) file.
 
-The code contained within [protobuf_srcs/tensorflow](protobuf_srcs/tensorflow) is forked from [Tensorflow](https://github.com/tensorflow/tensorflow), and the code contained within [protobuf_srcs/tensorflow_serving] is forked from [Tensorflow Serving](https://github.com/tensorflow/serving). Please refer to the individual source files within `protobuf_srcs` for individual file licence information.
+The code contained within [protobuf_srcs/tensorflow](protobuf_srcs/tensorflow) is forked from [Tensorflow](https://github.com/tensorflow/tensorflow), and the code contained within [protobuf_srcs/tensorflow_serving](protobuf_srcs/tensorflow_serving) is forked from [Tensorflow Serving](https://github.com/tensorflow/serving). Please refer to the individual source files within `protobuf_srcs` for individual file licence information.
