@@ -82,10 +82,16 @@ class BuildPyCommand(build_py):
         build_py.run(self)
 
 
+with open("README.md", "r") as fh:
+    long_description = fh.read()
+
+
 setup(
     name="min_tfs_client",
-    version="1.0.0",
+    version="1.0.1",
     description="A minified Tensor Serving Client for Python",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
     cmdclass={
         "compile_pb": CompileProtobufs,
         "copy_grpc": CopyGRPCStubs,
