@@ -35,6 +35,10 @@ class TensorServingClient:
         stub = PredictionServiceStub(self._channel)
         request = request_pb()
         request.model_spec.name = model_name
+
+        if model_version is not None:
+            request.model_spec.version.value = model_version
+
         for k, v in input_dict.items():
             request.inputs[k].CopyFrom(ndarray_to_tensor_proto(v))
         return stub.Predict(request, timeout)
