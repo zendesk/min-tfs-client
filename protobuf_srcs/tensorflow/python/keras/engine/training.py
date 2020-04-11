@@ -55,7 +55,6 @@ from tensorflow.python.keras.optimizer_v2 import optimizer_v2
 from tensorflow.python.keras.saving.saved_model import model_serialization
 from tensorflow.python.keras.utils import data_utils
 from tensorflow.python.keras.utils import losses_utils
-from tensorflow.python.keras.utils import version_utils
 from tensorflow.python.keras.utils.mode_keys import ModeKeys
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
@@ -79,7 +78,7 @@ _keras_api_gauge = monitoring.BoolGauge('/tensorflow/api/keras',
 
 
 @keras_export('keras.models.Model', 'keras.Model')
-class Model(network.Network, version_utils.VersionSelector):
+class Model(network.Network):
   """`Model` groups layers into an object with training and inference features.
 
   There are two ways to instantiate a `Model`:
@@ -629,6 +628,8 @@ class Model(network.Network, version_utils.VersionSelector):
             `(inputs, targets, sample_weights)`.
           - A generator or `keras.utils.Sequence` returning `(inputs, targets)`
             or `(inputs, targets, sample weights)`.
+          A more detailed description of unpacking behavior for iterator types
+          (Dataset, generator, Sequence) is given below.
         y: Target data. Like the input data `x`,
           it could be either Numpy array(s) or TensorFlow tensor(s).
           It should be consistent with `x` (you cannot have Numpy inputs and
@@ -676,7 +677,6 @@ class Model(network.Network, version_utils.VersionSelector):
               - tuple `(x_val, y_val)` of Numpy arrays or tensors
               - tuple `(x_val, y_val, val_sample_weights)` of Numpy arrays
               - dataset
-              
             For the first two cases, `batch_size` must be provided.
             For the last case, `validation_steps` could be provided.
         shuffle: Boolean (whether to shuffle the training data
@@ -750,6 +750,30 @@ class Model(network.Network, version_utils.VersionSelector):
             the generator as they can't be passed easily to children processes.
         **kwargs: Used for backwards compatibility.
 
+    Unpacking behavior for iterator-like inputs:
+        A common pattern is to pass a tf.data.Dataset, generator, or
+      tf.keras.utils.Sequence to the `x` argument of fit, which will in fact
+      yield not only features (x) but optionally targets (y) and sample weights.
+      Keras requires that the output of such iterator-likes be unambiguous. The
+      iterator should return a tuple of length 1, 2, or 3, where the optional
+      second and third elements will be used for y and sample_weight
+      respectively. Any other type provided will be wrapped in a length one
+      tuple, effectively treating everything as 'x'. When yielding dicts, they
+      should still adhere to the top-level tuple structure.
+      e.g. `({"x0": x0, "x1": x1}, y)`. Keras will not attempt to separate
+      features, targets, and weights from the keys of a single dict.
+        A notable unsupported data type is the namedtuple. The reason is that
+      it behaves like both an ordered datatype (tuple) and a mapping
+      datatype (dict). So given a namedtuple of the form:
+          `namedtuple("example_tuple", ["y", "x"])`
+      it is ambiguous whether to reverse the order of the elements when
+      interpreting the value. Even worse is a tuple of the form:
+          `namedtuple("other_tuple", ["x", "y", "z"])`
+      where it is unclear if the tuple was intended to be unpacked into x, y,
+      and sample_weight or passed through as a single element to `x`. As a
+      result the data processing code will simply raise a ValueError if it
+      encounters a namedtuple. (Along with instructions to remedy the issue.)
+
     Returns:
         A `History` object. Its `History.history` attribute is
         a record of training loss values and metrics values
@@ -762,8 +786,6 @@ class Model(network.Network, version_utils.VersionSelector):
             and what the model expects.
     """
     _keras_api_gauge.get_cell('fit').set(True)
-    # Legacy graph support is contained in `training_v1.Model`.
-    version_utils.disallow_legacy_graph('Model', 'fit')
     # Legacy support
     if 'nb_epoch' in kwargs:
       logging.warning(
@@ -821,6 +843,9 @@ class Model(network.Network, version_utils.VersionSelector):
             if the model has named inputs.
           - A `tf.data` dataset.
           - A generator or `keras.utils.Sequence` instance.
+          A more detailed description of unpacking behavior for iterator types
+          (Dataset, generator, Sequence) is given in the `Unpacking behavior
+          for iterator-like inputs` section of `Model.fit`.
         y: Target data. Like the input data `x`,
           it could be either Numpy array(s) or TensorFlow tensor(s).
           It should be consistent with `x` (you cannot have Numpy inputs and
@@ -874,6 +899,9 @@ class Model(network.Network, version_utils.VersionSelector):
             multiprocessing, you should not pass non-picklable arguments to
             the generator as they can't be passed easily to children processes.
 
+    See the discussion of `Unpacking behavior for iterator-like inputs` for
+    `Model.fit`.
+
     Returns:
         Scalar test loss (if the model has a single output and no metrics)
         or list of scalars (if the model has multiple outputs
@@ -884,7 +912,6 @@ class Model(network.Network, version_utils.VersionSelector):
         ValueError: in case of invalid arguments.
     """
     _keras_api_gauge.get_cell('evaluate').set(True)
-    version_utils.disallow_legacy_graph('Model', 'evaluate')
     self._assert_compile_was_called()
     self._check_call_args('evaluate')
 
@@ -923,6 +950,9 @@ class Model(network.Network, version_utils.VersionSelector):
             (in case the model has multiple inputs).
           - A `tf.data` dataset.
           - A generator or `keras.utils.Sequence` instance.
+          A more detailed description of unpacking behavior for iterator types
+          (Dataset, generator, Sequence) is given in the `Unpacking behavior
+          for iterator-like inputs` section of `Model.fit`.
         batch_size: Integer or `None`.
             Number of samples per gradient update.
             If unspecified, `batch_size` will default to 32.
@@ -953,6 +983,10 @@ class Model(network.Network, version_utils.VersionSelector):
             multiprocessing, you should not pass non-picklable arguments to
             the generator as they can't be passed easily to children processes.
 
+    See the discussion of `Unpacking behavior for iterator-like inputs` for
+    `Model.fit`. Note that Model.predict uses the same interpretation rules as
+    `Model.fit` and `Model.evaluate`, so inputs must be unambiguous for all
+    three methods.
 
     Returns:
         Numpy array(s) of predictions.
@@ -964,7 +998,6 @@ class Model(network.Network, version_utils.VersionSelector):
             that is not a multiple of the batch size.
     """
     _keras_api_gauge.get_cell('predict').set(True)
-    version_utils.disallow_legacy_graph('Model', 'predict')
     self._check_call_args('predict')
 
     func = self._select_training_loop(x)

@@ -277,11 +277,10 @@ OpKernelContext::OpKernelContext(Params* params)
           params, static_cast<int>(params->op_kernel->output_types().size())) {}
 
 OpKernelContext::OpKernelContext(Params* params, int num_outputs)
-    : params_(params), outputs_(num_outputs) {
-  if (params_->record_tensor_accesses || params_->track_allocations) {
-    tracking_state_ = absl::make_unique<TrackingState>();
-  }
-
+    : params_(params),
+      outputs_(num_outputs),
+      temp_memory_allocated_(0),
+      persistent_memory_allocated_(0) {
   params_->ensure_eigen_gpu_device();
   if (params_->eigen_gpu_device != nullptr) {
     Allocator* eigen_gpu_allocator = get_allocator(AllocatorAttributes());
@@ -292,6 +291,9 @@ OpKernelContext::OpKernelContext(Params* params, int num_outputs)
       SetStatus(s);
     }
   }
+  if (params_->record_tensor_accesses) {
+    referenced_tensors_.Init();
+  }
 }
 
 OpKernelContext::~OpKernelContext() {
@@ -300,12 +302,12 @@ OpKernelContext::~OpKernelContext() {
       delete value.tensor;
     }
   }
-  if (params_->track_allocations &&
-      !tracking_state_->wrapped_allocators.empty()) {
+  if (params_->record_tensor_accesses) referenced_tensors_.Destroy();
+  if (params_->track_allocations && !wrapped_allocators_.empty()) {
     LOG(WARNING) << "OpKernelContext is tracking allocations but they are not "
                  << "being consumed by the StepStatsCollector.";
-    for (auto& wrapped_allocator : tracking_state_->wrapped_allocators) {
-      wrapped_allocator.second->GetRecordsAndUnRef();
+    for (auto& wrapped_alloator : wrapped_allocators_) {
+      wrapped_alloator.second->GetRecordsAndUnRef();
     }
   }
 }
@@ -319,17 +321,15 @@ Allocator* OpKernelContext::get_allocator(AllocatorAttributes attr) {
     allocator = params_->device->GetAllocator(attr);
   }
   if (TF_PREDICT_FALSE(track_allocations())) {
-    DCHECK(tracking_state_);
-    mutex_lock lock(tracking_state_->mu);
-    for (const auto& wrapped : tracking_state_->wrapped_allocators) {
+    mutex_lock lock(mu_);
+    for (const auto& wrapped : wrapped_allocators_) {
       if (wrapped.first == allocator) {
         return wrapped.second;
       }
     }
     TrackingAllocator* wrapped_allocator =
         new TrackingAllocator(allocator, params_->track_allocations);
-    tracking_state_->wrapped_allocators.push_back(
-        std::make_pair(allocator, wrapped_allocator));
+    wrapped_allocators_.push_back(std::make_pair(allocator, wrapped_allocator));
     return wrapped_allocator;
   } else {
     return allocator;
@@ -341,10 +341,9 @@ void OpKernelContext::SetStatus(const Status& status) {
 }
 
 void OpKernelContext::really_record_tensor_reference(const Tensor& tensor) {
-  DCHECK(tracking_state_);
-  mutex_lock l(tracking_state_->mu);
+  mutex_lock l(mu_);
   // Keep a reference to the underlying memory around.
-  tracking_state_->referenced_tensors.Add(tensor);
+  referenced_tensors_->Add(tensor);
 }
 
 Status OpKernelContext::input(StringPiece name, const Tensor** tensor) {
@@ -805,9 +804,8 @@ Status OpKernelContext::allocate_temp(
       record_temp_memory_allocation(alloc_size, *out_temp);
     }
   } else if (record_memory_consumption_) {
-    DCHECK(tracking_state_);
-    mutex_lock l(tracking_state_->stats_mu);
-    tracking_state_->temp_memory_allocated += out_temp->TotalBytes();
+    mutex_lock l(stats_mu_);
+    temp_memory_allocated_ += out_temp->TotalBytes();
   }
   return s;
 }
@@ -919,18 +917,20 @@ void OpKernelContext::set_output(int index, const Tensor& tensor) {
     record_tensor_reference(tensor);
     outputs_[index] = TensorValue(new Tensor(tensor));
     if (track_allocations() && tensor.TotalBytes() > 0) {
-      DCHECK(tracking_state_);
-      mutex_lock l(tracking_state_->stats_mu);
+      mutex_lock l(stats_mu_);
+      if (!temp_tensor_buffer_and_size_) {
+        return;
+      }
       const auto it = std::find_if(
-          tracking_state_->temp_tensor_buffer_and_size.begin(),
-          tracking_state_->temp_tensor_buffer_and_size.end(),
+          temp_tensor_buffer_and_size_->begin(),
+          temp_tensor_buffer_and_size_->end(),
           [&tensor](const std::pair<const void*, int64>& e) {
             return e.first ==
                    static_cast<const void*>(tensor.tensor_data().data());
           });
-      if (it != tracking_state_->temp_tensor_buffer_and_size.end()) {
-        tracking_state_->temp_memory_allocated -= it->second;
-        tracking_state_->temp_tensor_buffer_and_size.erase(it);
+      if (it != temp_tensor_buffer_and_size_->end()) {
+        temp_memory_allocated_ -= it->second;
+        temp_tensor_buffer_and_size_->erase(it);
       }
     }
   }
@@ -1000,67 +1000,57 @@ Status OpKernelContext::MatchSignature(const DataTypeSlice expected_inputs,
 
 void OpKernelContext::record_temp_memory_allocation(int64 size,
                                                     const Tensor& t) {
-  if (tracking_state_) {
-    mutex_lock l(tracking_state_->stats_mu);
-    tracking_state_->temp_memory_allocated += size;
-    tracking_state_->temp_tensor_buffer_and_size.emplace_back(
-        static_cast<const void*>(t.tensor_data().data()), size);
+  mutex_lock l(stats_mu_);
+  temp_memory_allocated_ += size;
+  if (!temp_tensor_buffer_and_size_) {
+    temp_tensor_buffer_and_size_.reset(
+        new gtl::InlinedVector<std::pair<const void*, int64>, 2>());
   }
+  temp_tensor_buffer_and_size_->emplace_back(
+      static_cast<const void*>(t.tensor_data().data()), size);
 }
 
 int64 OpKernelContext::temp_memory_allocated() const {
-  if (tracking_state_) {
-    mutex_lock l(tracking_state_->stats_mu);
-    return tracking_state_->temp_memory_allocated;
-  } else {
-    return 0;
-  }
+  mutex_lock l(stats_mu_);
+  return temp_memory_allocated_;
 }
 
 void OpKernelContext::record_persistent_memory_allocation(int64 size,
                                                           int64 alloc_id) {
-  if (tracking_state_) {
-    mutex_lock l(tracking_state_->stats_mu);
-    tracking_state_->persistent_memory_allocated += size;
-    if (alloc_id >= 0) {
-      tracking_state_->persistent_alloc_ids.push_back(alloc_id);
+  mutex_lock l(stats_mu_);
+  persistent_memory_allocated_ += size;
+  if (alloc_id >= 0) {
+    if (!persistent_alloc_ids_) {
+      persistent_alloc_ids_.reset(new gtl::InlinedVector<int64, 2>());
     }
+    persistent_alloc_ids_->push_back(alloc_id);
   }
 }
 
 int64 OpKernelContext::persistent_memory_allocated() const {
-  if (tracking_state_) {
-    mutex_lock l(tracking_state_->stats_mu);
-    return tracking_state_->persistent_memory_allocated;
-  } else {
-    return 0;
-  }
+  mutex_lock l(stats_mu_);
+  return persistent_memory_allocated_;
 }
 
 std::vector<int64> OpKernelContext::persistent_alloc_ids() const {
-  if (tracking_state_) {
-    mutex_lock l(tracking_state_->stats_mu);
-    return std::vector<int64>(tracking_state_->persistent_alloc_ids.begin(),
-                              tracking_state_->persistent_alloc_ids.end());
+  mutex_lock l(stats_mu_);
+  if (persistent_alloc_ids_) {
+    return std::vector<int64>(persistent_alloc_ids_->begin(),
+                              persistent_alloc_ids_->end());
   } else {
     return std::vector<int64>();
   }
 }
 
 void OpKernelContext::clear_recorded_memory() {
-  if (tracking_state_) {
-    mutex_lock l(tracking_state_->stats_mu);
-    tracking_state_->temp_memory_allocated = 0;
-    tracking_state_->persistent_memory_allocated = 0;
-    tracking_state_->temp_tensor_buffer_and_size.clear();
-    tracking_state_->persistent_alloc_ids.clear();
+  mutex_lock l(stats_mu_);
+  temp_memory_allocated_ = 0;
+  persistent_memory_allocated_ = 0;
+  if (temp_tensor_buffer_and_size_) {
+    temp_tensor_buffer_and_size_->clear();
   }
-}
-
-void OpKernelContext::set_record_memory_consumption(bool v) {
-  record_memory_consumption_ = v;
-  if (v && !tracking_state_) {
-    tracking_state_ = absl::make_unique<TrackingState>();
+  if (persistent_alloc_ids_) {
+    persistent_alloc_ids_->clear();
   }
 }
 

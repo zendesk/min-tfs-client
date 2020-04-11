@@ -183,7 +183,6 @@ cc_library(
         "transforms/passes.h",
         "utils/attribute_utils.h",
         "//tensorflow/compiler/mlir/lite/quantization:quantization_traits.h",
-        "@local_config_mlir//:include/mlir/Transforms/InliningUtils.h",
     ],
     deps = [
         ":tensorflow_lite_ops_inc_gen",
@@ -276,7 +275,6 @@ cc_library(
     ],
     deps = [
         ":common",
-        ":lstm_utils",
         ":stateful_ops_utils",
         ":tensorflow_lite",
         ":validators",
@@ -339,7 +337,7 @@ cc_library(
         ":validators",
         "//tensorflow/compiler/mlir/lite/quantization:quantization_config",
         "//tensorflow/compiler/mlir/lite/quantization:quantization_lib",
-        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:protos_all_proto_cc",
         "@com_google_absl//absl/memory",
         "@llvm//:support",
         "@local_config_mlir//:Analysis",
@@ -489,7 +487,7 @@ cc_library(
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
-        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:protos_all_proto_cc",
         "//tensorflow/lite:framework",
         "//tensorflow/lite:schema_fbs_version",
         "//tensorflow/lite:string_util",
@@ -566,7 +564,7 @@ tf_cc_binary(
         ":tf_to_tfl_flatbuffer",
         "//tensorflow/compiler/mlir:init_mlir",
         "//tensorflow/compiler/mlir/tensorflow:translate_cl_options",
-        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:protos_all_proto_cc",
         "//tensorflow/lite:framework",
         "//tensorflow/lite/schema:schema_fbs",
         "//tensorflow/stream_executor/lib",
@@ -645,7 +643,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow:tf_dialect_passes",
         "//tensorflow/compiler/mlir/tensorflow:translate_lib",
         "//tensorflow/core:framework",
-        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:protos_all_proto_cc",
         "//tensorflow/lite/tools/optimize:quantize_weights",
         "//tensorflow/stream_executor/lib",
         "@llvm//:support",
@@ -657,15 +655,5 @@ cc_library(
         "@local_config_mlir//:QuantOpsDialectRegistration",
         "@local_config_mlir//:Support",
         "@local_config_mlir//:Transforms",
-    ],
-)
-
-exports_files(
-    ["transforms/passes.h"],
-    visibility = [
-        "//configs/devtools/hawkeye/tflite:__subpackages__",
-        "//learning/brain/models/app_benchmarks:__subpackages__",
-        "//tensorflow/compiler/mlir/lite:friends",
-        "//tensorflow/lite/experimental/mlir:__subpackages__",
     ],
 )

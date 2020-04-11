@@ -34,12 +34,10 @@ class MatchingFilesDatasetTest(test_base.DatasetTestBase,
                                parameterized.TestCase):
 
   def setUp(self):
-    super(MatchingFilesDatasetTest, self).setUp()
     self.tmp_dir = tempfile.mkdtemp()
 
   def tearDown(self):
     shutil.rmtree(self.tmp_dir, ignore_errors=True)
-    super(MatchingFilesDatasetTest, self).tearDown()
 
   def _touchTempFiles(self, filenames):
     for filename in filenames:

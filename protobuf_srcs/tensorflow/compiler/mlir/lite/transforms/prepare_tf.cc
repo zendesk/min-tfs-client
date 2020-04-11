@@ -102,13 +102,12 @@ struct PrepareTFPass : public FunctionPass<PrepareTFPass> {
 //                   |
 //              tf.dequantize
 //                   |
-template <typename TFFakeQuantOp, bool PerAxis>
+template <typename TFFakeQuantOp>
 struct InsertTFLQuantOpsAfterTFFakeQuantOp
     : public OpRewritePattern<TFFakeQuantOp> {
-  using BaseType = InsertTFLQuantOpsAfterTFFakeQuantOp<TFFakeQuantOp, PerAxis>;
+  using BaseType = InsertTFLQuantOpsAfterTFFakeQuantOp<TFFakeQuantOp>;
 
-  explicit InsertTFLQuantOpsAfterTFFakeQuantOp<TFFakeQuantOp, PerAxis>(
-      MLIRContext *ctx)
+  explicit InsertTFLQuantOpsAfterTFFakeQuantOp<TFFakeQuantOp>(MLIRContext *ctx)
       : OpRewritePattern<TFFakeQuantOp>(ctx) {}
 
   PatternMatchResult matchAndRewrite(TFFakeQuantOp tf_op,
@@ -130,21 +129,16 @@ struct InsertTFLQuantOpsAfterTFFakeQuantOp
     if (!matchPattern(min, m_Constant(&min_value))) return this->matchFailure();
     if (!matchPattern(max, m_Constant(&max_value))) return this->matchFailure();
 
-    int quant_dim = -1;
-    if (PerAxis) {
-      // This is a special case that the quant_dim is the last dimentions.
-      quant_dim = res->getType().template cast<ShapedType>().getRank() - 1;
-    }
     // Use the min/max from the operands and the num_bits and narrow_range
     // attribute to create the quantization parameter for the new quantize op.
-    rewriter.setInsertionPointAfter(tf_op);
+    rewriter.setInsertionPoint(rewriter.getBlock(), ++Block::iterator(tf_op));
     IntegerAttr num_bits =
         rewriter.getI64IntegerAttr(tf_op.num_bits().getSExtValue());
     BoolAttr narrow_range = rewriter.getBoolAttr(tf_op.narrow_range());
     Type res_type = tf_op.getType();
-    TypeAttr qtype = GetQuantizedTypeAttr(rewriter, res_type, min_value,
-                                          max_value, quant_dim, num_bits,
-                                          narrow_range, /*is_signed=*/false);
+    TypeAttr qtype =
+        GetQuantizedTypeAttr(rewriter, res_type, min_value, max_value, num_bits,
+                             narrow_range, /*is_signed=*/false);
     if (!qtype) this->matchFailure();
 
     // Finally, use the quantization parameter to create the quantize and
@@ -163,11 +157,10 @@ struct InsertTFLQuantOpsAfterTFFakeQuantOp
 };
 
 using PreparePerTensorFakeQuant =
-    InsertTFLQuantOpsAfterTFFakeQuantOp<TF::FakeQuantWithMinMaxVarsOp, false>;
+    InsertTFLQuantOpsAfterTFFakeQuantOp<TF::FakeQuantWithMinMaxVarsOp>;
 
-using PreparePerChannelFakeQuant =
-    InsertTFLQuantOpsAfterTFFakeQuantOp<TF::FakeQuantWithMinMaxVarsPerChannelOp,
-                                        true>;
+using PreparePerChannelFakeQuant = InsertTFLQuantOpsAfterTFFakeQuantOp<
+    TF::FakeQuantWithMinMaxVarsPerChannelOp>;
 
 // Templated class for declaring a converter from some TensorFlow convolution
 // op into its counterpart in TensorFlow Lite.
@@ -400,7 +393,7 @@ class ConvertTFDepthwiseConv2dNative
   }
 };
 
-// StridedSlice can have complicated attributes like begin_axis_mask,
+// StridedSlice can have complicated atributes like begin_axis_mask,
 // end_axis_mask, ellipsis_axis_mask, new_axis_mask, shrink_axis_mask. These
 // masks will complicate the strided_slice computation logic, we can simplify
 // the logic by inserting a reshape op to pad the inputs so strided_slice can

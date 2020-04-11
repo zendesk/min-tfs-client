@@ -44,12 +44,13 @@ make_library() {
     for arch in $BUILD_ARCHS
     do
         make -f tensorflow/lite/tools/make/Makefile TARGET=ios TARGET_ARCH=${arch} \
-            EXTRA_CXXFLAGS=$profiling_args -j 8 ${1}
-        LIBS="${LIBS} tensorflow/lite/tools/make/gen/ios_${arch}/lib/${2}"
+            EXTRA_CXXFLAGS=$profiling_args -j 8
+        LIBS="${LIBS} tensorflow/lite/tools/make/gen/ios_${arch}/lib/${1}"
     done
     mkdir -p tensorflow/lite/tools/make/gen/lib
     lipo $LIBS -create \
-    -output tensorflow/lite/tools/make/gen/lib/${2}
+    -output tensorflow/lite/tools/make/gen/lib/${1}
 }
 
-make_library lib libtensorflow-lite.a
+make_library libtensorflow-lite.a
+make_library benchmark-lib.a

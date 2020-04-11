@@ -34,6 +34,7 @@ from tensorflow.core.framework import attr_value_pb2
 from tensorflow.core.framework import function_pb2
 from tensorflow.python import pywrap_tensorflow
 from tensorflow.python import _pywrap_utils
+from tensorflow.python.compat import compat as fwd_compat
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import backprop_util
 from tensorflow.python.eager import context
@@ -1029,8 +1030,18 @@ class _TapeGradientFunctions(object):
         with ops.get_default_graph()._override_gradient_function(  # pylint: disable=protected-access
             {"PartitionedCall": gradient_function,
              "StatefulPartitionedCall": gradient_function}):
-          forward_outputs = forward_function.call(context.context(),
-                                                  forward_inputs)
+          # Previously, we relyed on "_gradient_op_type" attribute to restore a
+          # function gradient in function_deserialization.py, So add a dummy
+          # value "PartitionedCallUnused" for the forward compatibility.
+          if fwd_compat.forward_compatible(2019, 11, 16):
+            forward_outputs = forward_function.call(context.context(),
+                                                    forward_inputs)
+          else:
+            with ops.get_default_graph().gradient_override_map(
+                {"PartitionedCall": "PartitionedCallUnused",
+                 "StatefulPartitionedCall": "PartitionedCallUnused"}):
+              forward_outputs = forward_function.call(context.context(),
+                                                      forward_inputs)
         py_backward, _ = self._wrap_backward_function(
             self._func_graph, backward_function, forward_outputs)
       # We will never request backward tape gradients for this operation
@@ -1224,12 +1235,6 @@ class _TapeGradientFunctions(object):
       processed_args = []
       input_index = 0
       for output_index, arg in enumerate(args):
-        # Convert IndexedSlices to dense tensors. The IndexedSlices optimization
-        # is only really effective when doing tf.gather(variable) as the
-        # adjoint functions for most operations are unlikely to preserve the
-        # sparsity in IndexedSlices.
-        if isinstance(arg, ops.IndexedSlices):
-          arg = ops.convert_to_tensor(arg)
         if output_index in skip_positions:
           continue
         if arg is None:
@@ -1698,7 +1703,16 @@ class ConcreteFunction(object):
       with ops.get_default_graph()._override_gradient_function(  # pylint: disable=protected-access
           {"PartitionedCall": self._get_gradient_function(),
            "StatefulPartitionedCall": self._get_gradient_function()}):
-        flat_outputs = forward_function.call(ctx, args_with_tangents)
+        # Previously, we relyed on "_gradient_op_type" attribute to restore a
+        # function gradient in function_deserialization.py. So add a dummy
+        # value "PartitionedCallUnused" for the forward compatibility.
+        if fwd_compat.forward_compatible(2019, 11, 16):
+          flat_outputs = forward_function.call(ctx, args_with_tangents)
+        else:
+          with ops.get_default_graph().gradient_override_map(
+              {"PartitionedCall": "PartitionedCallUnused",
+               "StatefulPartitionedCall": "PartitionedCallUnused"}):
+            flat_outputs = forward_function.call(ctx, args_with_tangents)
     forward_backward.record(flat_outputs)
     return self._build_call_outputs(flat_outputs)
 
@@ -2386,13 +2400,8 @@ class Function(object):
     graph_function._garbage_collector.release()  # pylint: disable=protected-access
     return graph_function
 
-  def _get_concrete_function_garbage_collected(self, *args, **kwargs):
+  def get_concrete_function(self, *args, **kwargs):
     """Returns a `ConcreteFunction` specialized to inputs and execution context.
-
-    Unlike `get_concrete_function(...)`, the graph will be deleted when the
-    returned function is deleted.  It's useful to avoid creating a reference
-    cycle when you know for sure that the graph will be no longer used without
-    the returned function.
 
     Args:
       *args: inputs to specialize on.
@@ -2449,18 +2458,6 @@ class Function(object):
       # Anything can be a positional argument, in the same order as .inputs
       graph_function._num_positional_args = num_positional  # pylint: disable=protected-access
       return graph_function
-
-  def get_concrete_function(self, *args, **kwargs):
-    """Returns a `ConcreteFunction` specialized to inputs and execution context.
-
-    Args:
-      *args: inputs to specialize on.
-      **kwargs: inputs to specialize on.
-    """
-    graph_function = self._get_concrete_function_garbage_collected(
-        *args, **kwargs)
-    graph_function._garbage_collector.release()  # pylint: disable=protected-access
-    return graph_function
 
   def __get__(self, instance, owner):
     """Makes it possible to defun instance methods."""
@@ -3222,7 +3219,8 @@ def class_method_to_instance_method(original_function, instance):
       tf_decorator.make_decorator(bound_method, bound_method_wrapper),
       name=original_function._name,
       autograph=original_function._autograph,
-      input_signature=original_function.input_signature)
+      input_signature=original_function.input_signature,
+      experimental_relax_shapes=original_function._experimental_relax_shapes)
   # pylint: enable=protected-access
 
   # And we wrap the function with tf_decorator so inspection works correctly

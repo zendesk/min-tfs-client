@@ -17,7 +17,7 @@ load(
 
 # For platform specific build config
 load(
-    "//tensorflow/core/platform:build_config.bzl",
+    "//tensorflow/core/platform:default/build_config.bzl",
     "tf_proto_library_cc",
 )
 
@@ -73,7 +73,6 @@ cc_library(
 tf_proto_library_cc(
     name = "test_proto",
     srcs = ["test.proto"],
-    cc_api_version = 2,
 )
 
 tf_generate_proto_text_sources(
@@ -81,7 +80,7 @@ tf_generate_proto_text_sources(
     srcs = ["test.proto"],
     srcs_relative_dir = "tensorflow/tools/proto_text/",
     deps = [
-        ":test_proto_cc",
+        ":test_proto",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
     ],
@@ -96,7 +95,7 @@ tf_cc_test(
     ],
     deps = [
         ":gen_proto_text_functions_lib",
-        ":test_proto_cc",
+        ":test_proto",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:test",

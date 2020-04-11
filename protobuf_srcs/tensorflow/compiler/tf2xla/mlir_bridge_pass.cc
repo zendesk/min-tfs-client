@@ -25,7 +25,6 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/device_util.h"
 #include "tensorflow/core/graph/graph_constructor.h"
-#include "tensorflow/core/public/session_options.h"
 
 namespace tensorflow {
 
@@ -107,8 +106,7 @@ Status MlirBridgePass::Run(const GraphOptimizationPassOptions& options) {
   if (VLOG_IS_ON(1)) DumpModule(*module, "mlir_bridge_before_");
 
   // Run the bridge now
-  TF_RETURN_IF_ERROR(
-      mlir::TFTPU::TPUBridge(*module, /*enable_logging=*/VLOG_IS_ON(1)));
+  TF_RETURN_IF_ERROR(mlir::TFTPU::TPUBridge(*module));
 
   if (VLOG_IS_ON(1)) DumpModule(*module, "mlir_bridge_after_");
 

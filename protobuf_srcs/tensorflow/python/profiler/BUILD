@@ -57,7 +57,6 @@ cuda_py_test(
         "//tensorflow/python:platform",
         "//tensorflow/python:variables",
     ],
-    python_version = "PY3",
     tags = [
         "no_pip",
         "notap",
@@ -78,7 +77,6 @@ cuda_py_test(
         "//tensorflow/python/profiler/internal:model_analyzer_testlib",
         "//tensorflow/python:variables",
     ],
-    python_version = "PY3",
     tags = ["no_pip"],
     xla_enable_strict_auto_jit = False,  # Node names are different with autojit
 )
@@ -110,7 +108,6 @@ tf_py_test(
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:math_ops",
     ],
-    python_version = "PY3",
 )
 
 py_library(
@@ -135,7 +132,6 @@ cuda_py_test(
         "//tensorflow/python/profiler/internal:model_analyzer_testlib",
         "//tensorflow/python:variables",
     ],
-    python_version = "PY3",
     tags = [
         "no_gpu",  # b/136036359
         "no_pip",
@@ -155,7 +151,7 @@ py_test(
     size = "small",
     srcs = ["pprof_profiler_test.py"],
     main = "pprof_profiler_test.py",
-    python_version = "PY3",
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     tags = ["no_pip"],  # TODO(annarev): get it working with pip.
     deps = [
@@ -174,8 +170,7 @@ py_library(
     srcs = ["traceme.py"],
     srcs_version = "PY2AND3",
     deps = [
-        "//tensorflow/python/profiler/internal:_pywrap_traceme",
-        "@six_archive//:six",
+        "//tensorflow/python:platform",
     ],
 )
 
@@ -184,7 +179,6 @@ py_library(
     srcs = ["scoped_annotation.py"],
     srcs_version = "PY2AND3",
     deps = [
-        "//tensorflow/python/profiler/internal:_pywrap_scoped_annotation",
-        "@six_archive//:six",
+        "//tensorflow/python:platform",
     ],
 )

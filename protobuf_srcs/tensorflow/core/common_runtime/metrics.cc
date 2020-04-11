@@ -135,44 +135,30 @@ void RecordTFDataOptimization(const string& name, int64 num_changes) {
 }
 
 void RecordParseDenseFeature(int64 num_features) {
-  static auto* parse_dense_feature_counter_cell =
-      parse_dense_feature_counter->GetCell();
-  parse_dense_feature_counter_cell->IncrementBy(num_features);
+  parse_dense_feature_counter->GetCell()->IncrementBy(num_features);
 }
 
 void RecordParseSparseFeature(int64 num_features) {
-  static auto* parse_sparse_feature_counter_cell =
-      parse_sparse_feature_counter->GetCell();
-  parse_sparse_feature_counter_cell->IncrementBy(num_features);
+  parse_sparse_feature_counter->GetCell()->IncrementBy(num_features);
 }
 
 void RecordParseRaggedFeature(int64 num_features) {
-  static auto* parse_ragged_feature_counter_cell =
-      parse_ragged_feature_counter->GetCell();
-  parse_ragged_feature_counter_cell->IncrementBy(num_features);
+  parse_ragged_feature_counter->GetCell()->IncrementBy(num_features);
 }
 
 void RecordGraphInputTensors(const size_t size) {
-  static auto* graph_run_input_tensor_bytes_cell =
-      graph_run_input_tensor_bytes->GetCell();
-  graph_run_input_tensor_bytes_cell->Add(size);
+  graph_run_input_tensor_bytes->GetCell()->Add(size);
 }
 
 void RecordGraphOutputTensors(const size_t size) {
-  static auto* graph_run_output_tensor_bytes_cell =
-      graph_run_output_tensor_bytes->GetCell();
-  graph_run_output_tensor_bytes_cell->Add(size);
+  graph_run_output_tensor_bytes->GetCell()->Add(size);
 }
 
 void UpdateGraphExecTime(const uint64 running_time_usecs) {
   if (running_time_usecs > 0) {
-    static auto* graph_runs_cell = graph_runs->GetCell();
-    static auto* graph_run_time_usecs_cell = graph_run_time_usecs->GetCell();
-    static auto* graph_run_time_usecs_histogram_cell =
-        graph_run_time_usecs_histogram->GetCell();
-    graph_runs_cell->IncrementBy(1);
-    graph_run_time_usecs_cell->IncrementBy(running_time_usecs);
-    graph_run_time_usecs_histogram_cell->Add(running_time_usecs);
+    graph_runs->GetCell()->IncrementBy(1);
+    graph_run_time_usecs->GetCell()->IncrementBy(running_time_usecs);
+    graph_run_time_usecs_histogram->GetCell()->Add(running_time_usecs);
   }
 }
 
@@ -194,28 +180,20 @@ void UpdateGrapplerPassTime(const string& pass_name,
 
 void UpdateGraphBuildTime(const uint64 running_time_usecs) {
   if (running_time_usecs > 0) {
-    static auto* build_graph_calls_cell = build_graph_calls->GetCell();
-    static auto* build_graph_time_usecs_cell =
-        build_graph_time_usecs->GetCell();
-    build_graph_calls_cell->IncrementBy(1);
-    build_graph_time_usecs_cell->IncrementBy(running_time_usecs);
+    build_graph_calls->GetCell()->IncrementBy(1);
+    build_graph_time_usecs->GetCell()->IncrementBy(running_time_usecs);
   }
 }
 
 void UpdateXlaCompilationTime(const uint64 compilation_time_usecs) {
   if (compilation_time_usecs > 0) {
-    static auto* xla_compilations_cell = xla_compilations->GetCell();
-    static auto* xla_compilation_time_usecs_cell =
-        xla_compilation_time_usecs->GetCell();
-    xla_compilations_cell->IncrementBy(1);
-    xla_compilation_time_usecs_cell->IncrementBy(compilation_time_usecs);
+    xla_compilations->GetCell()->IncrementBy(1);
+    xla_compilation_time_usecs->GetCell()->IncrementBy(compilation_time_usecs);
   }
 }
 
 void IncrementMLIRImportFailureCount() {
-  static auto* mlir_import_failure_count_cell =
-      mlir_import_failure_count->GetCell();
-  mlir_import_failure_count_cell->IncrementBy(1);
+  mlir_import_failure_count->GetCell()->IncrementBy(1);
 }
 
 }  // namespace metrics

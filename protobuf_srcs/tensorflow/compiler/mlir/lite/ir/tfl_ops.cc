@@ -35,7 +35,6 @@ limitations under the License.
 #include "mlir/IR/TypeUtilities.h"  // TF:local_config_mlir
 #include "mlir/Support/LLVM.h"  // TF:local_config_mlir
 #include "mlir/Support/LogicalResult.h"  // TF:local_config_mlir
-#include "mlir/Transforms/InliningUtils.h"  // TF:local_config_mlir
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 
 namespace mlir {
@@ -45,27 +44,12 @@ namespace TFL {
 // TensorFlowLiteDialect
 //===----------------------------------------------------------------------===//
 
-struct TensorFlowLiteInlinerInterface : public DialectInlinerInterface {
-  using DialectInlinerInterface::DialectInlinerInterface;
-
-  //===--------------------------------------------------------------------===//
-  // Analysis Hooks
-  //===--------------------------------------------------------------------===//
-
-  bool isLegalToInline(Operation *, Region *,
-                       BlockAndValueMapping &) const final {
-    // No TFLite op restricts inlining today, revise as needed in the future.
-    return true;
-  }
-};
-
 TensorFlowLiteDialect::TensorFlowLiteDialect(mlir::MLIRContext *context)
     : Dialect(/*name=*/"tfl", context) {
   addOperations<
 #define GET_OP_LIST
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.cc.inc"
       >();
-  addInterfaces<TensorFlowLiteInlinerInterface>();
 }
 
 //===----------------------------------------------------------------------===//
@@ -720,8 +704,7 @@ static LogicalResult Verify(PackOp op) {
   for (Value *operand : op.getOperands()) {
     auto other_type = operand->getType().cast<ShapedType>();
     if (input_type != other_type)
-      return op.emitOpError("operands should be of the same type. got ")
-             << input_type << ", " << other_type;
+      return op.emitOpError("operands should be of the same type");
   }
 
   return success();
@@ -858,8 +841,8 @@ void ReshapeOp::getCanonicalizationPatterns(OwningRewritePatternList &results,
 //
 //           =>   Value [5, 8, 9]
 // TODO(b/133341698): Move to tablegen when variadic is supported.
-struct RemoveRedundantUnpackPack : public RewritePattern {
-  explicit RemoveRedundantUnpackPack(MLIRContext *context)
+struct RemoveRedunantUnpackPack : public RewritePattern {
+  explicit RemoveRedunantUnpackPack(MLIRContext *context)
       : RewritePattern(PackOp::getOperationName(), 2, context) {}
 
   PatternMatchResult matchAndRewrite(Operation *op,
@@ -897,7 +880,7 @@ struct RemoveRedundantUnpackPack : public RewritePattern {
 
 void PackOp::getCanonicalizationPatterns(OwningRewritePatternList &results,
                                          MLIRContext *context) {
-  results.insert<RemoveRedundantUnpackPack>(context);
+  results.insert<RemoveRedunantUnpackPack>(context);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1042,7 +1025,7 @@ struct DropFakeQuant : public RewritePattern {
   }
 
   void rewrite(Operation *op, PatternRewriter &rewriter) const override {
-    // Replace the matched FakeQuantOp by its primary operand.
+    // Replace the matched FakeQuantOp by its primiary operand.
     rewriter.replaceOp(op, op->getOperand(0));
   }
 };

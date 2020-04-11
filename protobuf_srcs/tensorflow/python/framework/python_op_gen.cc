@@ -1073,8 +1073,9 @@ void PrintPythonOps(const OpList& ops, const ApiDefMap& api_defs,
 }
 
 string GetPythonWrappers(const char* op_list_buf, size_t op_list_len) {
+  string op_list_str(op_list_buf, op_list_len);
   OpList ops;
-  ops.ParseFromArray(op_list_buf, op_list_len);
+  ops.ParseFromString(op_list_str);
 
   ApiDefMap api_def_map(ops);
   return GetPythonOps(ops, api_def_map, {});

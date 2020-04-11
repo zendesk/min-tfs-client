@@ -18,7 +18,9 @@ limitations under the License.
 #ifndef TF_DEVICE_DIALECT
 #define TF_DEVICE_DIALECT
 
+#ifndef OP_BASE
 include "mlir/IR/OpBase.td"
+#endif // OP_BASE
 
 //===----------------------------------------------------------------------===//
 // TensorFlow Device Dialect definitions
@@ -110,7 +112,7 @@ def TfDevice_LaunchFuncOp : TfDevice_Op<"launch_func", []> {
 
   let arguments = (ins
     StrAttr:$device,
-    FlatSymbolRefAttr:$func,
+    SymbolRefAttr:$func,
     Variadic<AnyType>:$operands);
 
   let results = (outs

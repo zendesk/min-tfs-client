@@ -248,6 +248,11 @@ bool HloComputation::HasSideEffect() const {
   return false;
 }
 
+bool HloComputation::ContainsInstruction(
+    const HloInstruction* instruction) const {
+  return instruction_iterators_.contains(instruction);
+}
+
 Status HloComputation::RemoveInstructionAndUnusedOperands(
     HloInstruction* instruction, std::function<void(HloInstruction*)> cleanup) {
   TF_RET_CHECK(root_instruction() != instruction);
@@ -635,17 +640,16 @@ HloComputationProto HloComputation::ToProto() const {
 /* static */ StatusOr<std::unique_ptr<HloComputation>>
 HloComputation::CreateFromProto(
     const HloComputationProto& proto,
-    const absl::flat_hash_map<int64, HloComputation*>& computation_map,
-    bool prohibit_empty_literal) {
+    const absl::flat_hash_map<int64, HloComputation*>& computation_map) {
   absl::flat_hash_map<int64, HloInstruction*> instruction_map;
   absl::flat_hash_map<HloInstruction*, int64> to_proto_id;
   std::vector<std::unique_ptr<HloInstruction>> instructions;
   int64 parameter_count = 0;
   for (const HloInstructionProto& instruction_proto : proto.instructions()) {
-    TF_ASSIGN_OR_RETURN(std::unique_ptr<HloInstruction> instruction,
-                        HloInstruction::CreateFromProto(
-                            instruction_proto, instruction_map, computation_map,
-                            prohibit_empty_literal));
+    TF_ASSIGN_OR_RETURN(
+        std::unique_ptr<HloInstruction> instruction,
+        HloInstruction::CreateFromProto(instruction_proto, instruction_map,
+                                        computation_map));
     if (instruction->opcode() == HloOpcode::kParameter) {
       parameter_count++;
     }

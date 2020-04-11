@@ -31,11 +31,9 @@ limitations under the License.
 namespace mlir {
 namespace TFL {
 
-constexpr char kTFImplements[] = "tf._implements";
 constexpr char kLstmCellSimple[] = "LSTMCellSimple";
 constexpr char kLayerNormalizedLstmCellSimple[] =
     "LayerNormalizedLstmCellSimple";
-constexpr char kCoupleInputForgetGates[] = "CoupleInputForgetGates";
 
 // A utility class that enables the conversion of the LSTMCellSimple composite
 // op into a fused TFL LSTM op. The fused op is contained within a FuncOp
@@ -47,9 +45,12 @@ constexpr char kCoupleInputForgetGates[] = "CoupleInputForgetGates";
 // This class sets the layer norm coefficients to NoneType.
 class ConvertLSTMCellSimpleToFusedLSTM {
  public:
-  explicit ConvertLSTMCellSimpleToFusedLSTM(mlir::FuncOp fused_func_op)
+  // TODO(b/140053256): The couple_input_forget_gates should be specified on
+  // FuncOp as an attribute.
+  explicit ConvertLSTMCellSimpleToFusedLSTM(mlir::FuncOp fused_func_op,
+                                            bool couple_input_forget_gates)
       : fused_func_op_(fused_func_op),
-        couple_input_forget_gates_(false),
+        couple_input_forget_gates_(couple_input_forget_gates),
         builder_(fused_func_op.getBody()) {}
 
   // not copyable.
@@ -59,18 +60,17 @@ class ConvertLSTMCellSimpleToFusedLSTM {
       const ConvertLSTMCellSimpleToFusedLSTM&) = delete;
   virtual ~ConvertLSTMCellSimpleToFusedLSTM() {}
 
+  // verify input func op arguments and initialize internal state.
+  virtual LogicalResult Initialize();
+
   virtual llvm::StringRef GetCompositeOpName() { return kLstmCellSimple; }
 
   // Rewrite the func body with constructed fused lstm.
-  LogicalResult RewriteFunc();
+  void RewriteFunc();
 
   int GetNumInputs() { return n_input_; }
 
  protected:
-  // verify input func op arguments/attributes and initialize internal state.
-  virtual LogicalResult InitializeFromFuncAttributes();
-  virtual LogicalResult Initialize();
-
   void UpdateFuncSignature();
   void GenerateFusedOpOperands();
 
@@ -126,7 +126,7 @@ class ConvertLSTMCellSimpleToFusedLSTM {
   Value* input2cell_;
   Value* input2output_;
 
-  // recurrent -> cifg
+  // reccurrent -> cifg
   Value* rec2input_;
   Value* rec2forget_;
   Value* rec2cell_;
@@ -174,9 +174,12 @@ class ConvertLSTMCellSimpleToFusedLSTM {
 class ConvertLayerNormalizedLSTMCellSimpleToFusedLSTM
     : public ConvertLSTMCellSimpleToFusedLSTM {
  public:
+  // TODO(b/140053256): The couple_input_forget_gates should be specified on
+  // FuncOp as an attribute.
   explicit ConvertLayerNormalizedLSTMCellSimpleToFusedLSTM(
-      mlir::FuncOp fused_func_op)
-      : ConvertLSTMCellSimpleToFusedLSTM(fused_func_op) {}
+      mlir::FuncOp fused_func_op, bool couple_input_forget_gates)
+      : ConvertLSTMCellSimpleToFusedLSTM(fused_func_op,
+                                         couple_input_forget_gates) {}
 
   // not copyable.
   ConvertLayerNormalizedLSTMCellSimpleToFusedLSTM(
@@ -189,9 +192,9 @@ class ConvertLayerNormalizedLSTMCellSimpleToFusedLSTM
     return kLayerNormalizedLstmCellSimple;
   }
 
- protected:
   LogicalResult Initialize() override;
 
+ protected:
   void SetCellLayerNormCoefficients() override;
   void SetInputLayerNormCoefficients() override;
   void SetForgetLayerNormCoefficients() override;

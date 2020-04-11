@@ -97,11 +97,6 @@ void FunctionalToExecutorDialectConversion::runOnFunction() {
   }
 }
 
-std::unique_ptr<OpPassBase<FuncOp>>
-CreateFunctionalToExecutorDialectConversionPass() {
-  return std::make_unique<FunctionalToExecutorDialectConversion>();
-}
-
 }  // namespace mlir
 
 static mlir::PassRegistration<mlir::FunctionalToExecutorDialectConversion> pass(

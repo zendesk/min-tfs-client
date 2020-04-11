@@ -102,7 +102,7 @@ class ParallelInterleaveDatasetParams : public DatasetParams {
   bool sloppy_;
 };
 
-class ParallelInterleaveDatasetOpTest : public DatasetOpsTestBase {};
+class ParallelInterleaveDatasetOpTest : public DatasetOpsTestBaseV2 {};
 
 FunctionDefHelper::AttrValueWrapper MakeTensorSliceDatasetFunc(
     const DataTypeVector& output_types,

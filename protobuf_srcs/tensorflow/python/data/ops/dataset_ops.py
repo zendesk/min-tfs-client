@@ -66,6 +66,7 @@ from tensorflow.python.ops import gen_io_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import script_ops
 from tensorflow.python.ops import string_ops
+from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training.tracking import base as tracking_base
 from tensorflow.python.training.tracking import tracking
 from tensorflow.python.util import deprecation
@@ -1175,7 +1176,6 @@ class DatasetV2(tracking_base.Trackable, composite_tensor.CompositeTensor):
     [1, 0, 2]
     >>> list(dataset.as_numpy_iterator())  # doctest: +SKIP
     [1, 0, 2]
-    ```
 
     Args:
       buffer_size: A `tf.int64` scalar `tf.Tensor`, representing the number of
@@ -2436,25 +2436,26 @@ class DatasetV1Adapter(DatasetV1):
 
 def _ensure_same_dataset_graph(dataset):
   """Walks the dataset graph to ensure all datasets come from the same graph."""
-  # pylint: disable=protected-access
   current_graph = ops.get_default_graph()
   bfs_q = Queue.Queue()
-  bfs_q.put(dataset)
+  bfs_q.put(dataset)  # pylint: disable=protected-access
   visited = []
   while not bfs_q.empty():
     ds = bfs_q.get()
     visited.append(ds)
-    ds_graph = ds._graph
+    ds_graph = ds._graph  # pylint: disable=protected-access
     if current_graph != ds_graph:
-      raise ValueError(
-          "The graph (" + str(current_graph) + ") of the iterator is different "
-          "from the graph (" + str(ds_graph) + ") the dataset: " +
-          str(ds._variant_tensor) + " was  created in. If you are using the "
-          "Estimator API, make sure that no part of the dataset returned by "
-          "the `input_fn` function is defined outside the `input_fn` function. "
-          "Please ensure that all datasets in the pipeline are created in the "
-          "same graph as the iterator.")
-    for input_ds in ds._inputs():
+      logging.warning("The graph (" + str(current_graph) + ") of the iterator "
+                      "is different from the graph (" + str(ds_graph) + ") "
+                      "the dataset: " + str(ds._variant_tensor) + " was "  # pylint: disable=protected-access
+                      "created in. If you are using the Estimator API, "
+                      "make sure that no part of the dataset returned by the "
+                      "`input_fn` function is defined outside the `input_fn` "
+                      "function. Please ensure that all datasets in the "
+                      "pipeline are created in the same graph as the iterator. "
+                      "NOTE: This warning will become an error in future "
+                      "versions of TensorFlow.")
+    for input_ds in ds._inputs():  # pylint: disable=protected-access
       if input_ds not in visited:
         bfs_q.put(input_ds)
 
@@ -3143,7 +3144,7 @@ class StructuredFunctionWrapper(object):
       resource_tracker = tracking.ResourceTracker()
       with tracking.resource_tracker_scope(resource_tracker):
         # TODO(b/141462134): Switch to using garbage collection.
-        self._function = wrapper_fn.get_concrete_function()
+        self._function = wrapper_fn._get_concrete_function_internal()
 
         if add_to_graph:
           self._function.add_to_graph(ops.get_default_graph())

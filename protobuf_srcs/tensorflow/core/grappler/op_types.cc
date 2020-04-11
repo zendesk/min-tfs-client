@@ -953,6 +953,8 @@ bool NeverForwardsInputs(const NodeDef& node) {
                                 "Bucketize",
                                 "AvgPool",
                                 "BatchNormWithGlobalNormalization",
+                                "FusedBatchNorm",
+                                "FusedBatchNormV2",
                                 "Conv2D",
                                 "RandomUniform",
                                 "RandomUniformInt",

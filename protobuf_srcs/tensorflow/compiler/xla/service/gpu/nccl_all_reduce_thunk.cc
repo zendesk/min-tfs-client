@@ -29,7 +29,6 @@ limitations under the License.
 #include "absl/types/optional.h"
 #include "absl/types/span.h"
 #include "third_party/nccl/nccl.h"
-#include "tensorflow/compiler/xla/layout_util.h"
 #include "tensorflow/compiler/xla/refcounting_hash_map.h"
 #include "tensorflow/compiler/xla/service/collective_ops_utils.h"
 #include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
@@ -455,8 +454,7 @@ struct NcclAllReduceThunk::AuxData {
   return MatchReductionComputation(crs->to_apply()).has_value() &&
          DatatypeToNccl(AllReducePrimitiveType(crs)).has_value() &&
          crs->IsCrossReplicaAllReduce() &&
-         crs->operand_count() == 1 &&  // One array to reduce.
-         LayoutUtil::IsDenseArray(crs->operand(0)->shape());
+         crs->operand_count() == 1;  // One array to reduce.
 }
 
 /*static*/ absl::flat_hash_set<int>
@@ -499,8 +497,11 @@ Status NcclAllReduceThunk::ExecuteOnStream(const ExecuteParams& params) {
   // Find or create the rendezvous for this collective operation.
   RendezvousKey rendezvous_key = RendezvousKey::FromInstruction(
       params.run_id, participating_replicas, hlo_instruction());
+  std::shared_ptr<RendezvousNcclAllReduce> rendezvous =
+      GlobalRendezvousMap()[rendezvous_key];
 
   VLOG(2) << "Rendezvous key: " << rendezvous_key.ToString()
+          << ", rendezvous: " << rendezvous.get()
           << ", participating replicas: "
           << absl::StrJoin(participating_replicas, ", ");
 
@@ -518,10 +519,19 @@ Status NcclAllReduceThunk::ExecuteOnStream(const ExecuteParams& params) {
   participant.reduction_kind = *reduction_kind;
   participant.primitive_type = AllReducePrimitiveType(hlo_instruction());
 
-  TF_ASSIGN_OR_RETURN(
-      std::shared_ptr<NcclClique> clique,
-      RendezvousNcclAllReduce::SubmitParticipant(
-          [&] { return GlobalRendezvousMap()[rendezvous_key]; }, participant));
+  // Do the operation.
+  StatusOr<std::pair<std::shared_ptr<NcclClique>,
+                     std::shared_ptr<tensorflow::BlockingCounter>>>
+      result = rendezvous->SubmitParticipant(participant);
+  if (!result.ok()) {
+    VLOG(1) << "NcclAllReduceThunk::ExecuteOnStream failed: "
+            << result.status().ToString();
+    return result.status();
+  }
+
+  std::shared_ptr<NcclClique> clique;
+  std::shared_ptr<tensorflow::BlockingCounter> blocking_counter;
+  std::tie(clique, blocking_counter) = std::move(result).ValueOrDie();
 
   // Keep the clique we used alive for as long as this Thunk lives.  Creating
   // new NCCL cliques is expensive, and this is how we avoid thrashing them.
@@ -529,6 +539,24 @@ Status NcclAllReduceThunk::ExecuteOnStream(const ExecuteParams& params) {
     tensorflow::mutex_lock lock(aux_data_->mu);
     aux_data_->cliques.insert(std::move(clique));
   }
+
+  // Drop our reference to the Rendezvous and wait for all other threads to do
+  // the same.  If we didn't do this, one of the threads could run past this
+  // point, reenter ExecuteOnStream for another all-reduce, and attempt to reuse
+  // the Rendezvous!
+  //
+  // An alternative way of accomplishing this goal would be to implement
+  // RefcountingHashMap::erase() and call it during SubmitParticipant.  But
+  // erase() is deceptively complex to implement correctly.
+  rendezvous.reset();
+  blocking_counter->DecrementCount();
+  WaitAndLogIfStuck(blocking_counter.get(), [&] {
+    return absl::StrFormat(
+        "participant for device ordinal %d, stream %p waiting for "
+        "all threads to drop their reference to the rendezvous: %s",
+        device_ordinal, params.stream, rendezvous_key.ToString());
+  });
+
   return Status::OK();
 }
 

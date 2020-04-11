@@ -16,9 +16,7 @@ limitations under the License.
 #define TENSORFLOW_LITE_KERNELS_INTERNAL_TENSOR_UTILS_H_
 
 #include <algorithm>
-#include <cmath>
 
-#include "third_party/eigen3/Eigen/Core"
 #include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/kernels/cpu_backend_context.h"
 
@@ -28,6 +26,9 @@ limitations under the License.
 
 namespace tflite {
 namespace tensor_utils {
+
+// Limit a float input f between +abs_limit and -abs_limit.
+float Clip(float f, float abs_limit);
 
 // Checks if all entries of vector are zero for float.
 bool IsZeroVector(const float* vector, int v_size);
@@ -372,39 +373,17 @@ inline void BatchVectorBatchVectorDotProduct(const T* vector1, const T* vector2,
   }
 }
 
-// Same as above but input is 16bit and output is 32bit.
-void BatchVectorBatchVectorDotProduct(const int16_t* vector1,
-                                      const int16_t* vector2, int v_size,
-                                      int n_batch, int32_t* result,
-                                      int result_stride);
-
 // Cwise product of a vector and a batch-vector.
-template <typename T>
-inline void VectorBatchVectorCwiseProduct(const T* vector, int v_size,
-                                          const T* batch_vector, int n_batch,
-                                          T* result) {
-  for (int b = 0; b < n_batch; b++) {
-    VectorVectorCwiseProduct(vector, batch_vector, v_size, result);
-    // Update the pointers.
-    result += v_size;
-    batch_vector += v_size;
-  }
-}
+void VectorBatchVectorCwiseProduct(const float* vector, int v_size,
+                                   const float* batch_vector, int n_batch,
+                                   float* result);
 
 // Cwise product and accumulate of a vector and a batch-vector. Since it's a MAC
 // operation, the assumption here is that result array is initialized to valid
 // values.
-template <typename T>
-inline void VectorBatchVectorCwiseProductAccumulate(const T* vector, int v_size,
-                                                    const T* batch_vector,
-                                                    int n_batch, T* result) {
-  for (int b = 0; b < n_batch; b++) {
-    VectorVectorCwiseProductAccumulate(vector, batch_vector, v_size, result);
-    // Update the pointers.
-    result += v_size;
-    batch_vector += v_size;
-  }
-}
+void VectorBatchVectorCwiseProductAccumulate(const float* vector, int v_size,
+                                             const float* batch_vector,
+                                             int n_batch, float* result);
 
 // Add another vector for each batch in the batch vector.
 void VectorBatchVectorAdd(const float* vector, int v_size, int n_batch,
@@ -419,78 +398,12 @@ void VectorBatchVectorAssign(const T* vector, int v_size, int n_batch,
   }
 }
 
-// Apply Rectified Linear to elements of a vector.
-inline void ApplyReluToVector(const float* __restrict__ vector, int v_size,
-                              float* __restrict__ result) {
-  for (int v = 0; v < v_size; v++) {
-    result[v] = std::max(0.0f, vector[v]);
-  }
-}
-
-// Apply Rectified Linear 1 (cap to [-1;1]) to elements of a vector
-inline void ApplyRelu1ToVector(const float* __restrict__ vector, int v_size,
-                               float* __restrict__ result) {
-  for (int v = 0; v < v_size; v++) {
-    result[v] = std::max(-1.0f, std::min(vector[v], 1.0f));
-  }
-}
-
-// Apply Rectified Linear 6 (cap to [0;6]) to elements of a vector
-inline void ApplyRelu6ToVector(const float* __restrict__ vector, int v_size,
-                               float* __restrict__ result) {
-  for (int v = 0; v < v_size; v++) {
-    result[v] = std::max(0.0f, std::min(vector[v], 6.0f));
-  }
-}
-
-// Apply tanh to elements of a vector
-inline void ApplyTanhToVector(const float* __restrict__ vector, int v_size,
-                              float* __restrict__ result) {
-  using VectorMap = Eigen::Map<Eigen::Vector<float, Eigen::Dynamic>>;
-  VectorMap input_map(const_cast<float* __restrict__>(vector), v_size);
-  VectorMap output_map(result, v_size);
-  output_map.array() = input_map.array().tanh();
-}
-
-// Apply signbit to elements of a vector
-inline void ApplySignbitToVector(const float* __restrict__ vector, int v_size,
-                                 float* __restrict__ result) {
-  for (int v = 0; v < v_size; v++) {
-    result[v] = std::signbit(vector[v]);
-  }
-}
-
 // Apply sigmoid to elements of a vector.
-inline void ApplySigmoidToVector(const float* __restrict__ vector, int v_size,
-                                 float* __restrict__ result) {
-  using VectorMap = Eigen::Map<Eigen::Vector<float, Eigen::Dynamic>>;
-  VectorMap input_map(const_cast<float* __restrict__>(vector), v_size);
-  VectorMap output_map(result, v_size);
-  output_map.array() = input_map.array().logistic();
-}
+void ApplySigmoidToVector(const float* vector, int v_size, float* result);
 
-// Apply appropriate activation function to elements of a vector.
-inline void ApplyActivationToVector(const float* __restrict__ vector,
-                                    int v_size,
-                                    TfLiteFusedActivation activation,
-                                    float* __restrict__ result) {
-  switch (activation) {
-    case kTfLiteActNone:
-      return;
-    case kTfLiteActRelu:
-      return ApplyReluToVector(vector, v_size, result);
-    case kTfLiteActRelu1:
-      return ApplyRelu1ToVector(vector, v_size, result);
-    case kTfLiteActRelu6:
-      return ApplyRelu6ToVector(vector, v_size, result);
-    case kTfLiteActTanh:
-      return ApplyTanhToVector(vector, v_size, result);
-    case kTfLiteActSignBit:
-      return ApplySignbitToVector(vector, v_size, result);
-    case kTfLiteActSigmoid:
-      return ApplySigmoidToVector(vector, v_size, result);
-  }
-}
+// Apply activation function to elements of a vector.
+void ApplyActivationToVector(const float* vector, int v_size,
+                             TfLiteFusedActivation activation, float* result);
 
 // Compute "1.0f - elements of vector" (used in CIFG).
 void Sub1Vector(const float* vector, int v_size, float* result);
@@ -525,13 +438,11 @@ void VectorShiftLeft(T* vector, int v_size, const T& shift_value) {
 void ReductionSumVector(const float* input_vector, float* output_vector,
                         int output_size, int reduction_size);
 
-// Same as above but input/output is 32 bit integer.
-void ReductionSumVector(const int32_t* input_vector, int32_t* output_vector,
-                        int output_size, int reduction_size);
-
 // Layer norm for each batch.
+// normalization_epsilon is added to avoid divergence.
 void MeanStddevNormalization(const float* input_vector, float* output_vector,
-                             int v_size, int n_batch);
+                             int v_size, int n_batch,
+                             float normalization_epsilon);
 }  // namespace tensor_utils
 }  // namespace tflite
 

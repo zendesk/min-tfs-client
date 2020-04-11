@@ -58,7 +58,7 @@ cc_library(
         ":graph_info",
         ":memory_planner",
         ":simple_memory_arena",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
     ],
 )
 
@@ -83,7 +83,7 @@ cc_library(
     name = "context",
     hdrs = ["context.h"],
     copts = TFLITE_DEFAULT_COPTS,
-    deps = ["//tensorflow/lite/c:common"],
+    deps = ["//tensorflow/lite/c:c_api_internal"],
 )
 
 cc_library(
@@ -92,7 +92,7 @@ cc_library(
     hdrs = ["external_cpu_backend_context.h"],
     copts = TFLITE_DEFAULT_COPTS,
     deps = [
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
     ],
 )
 
@@ -100,14 +100,14 @@ cc_library(
     name = "graph_info",
     hdrs = ["graph_info.h"],
     copts = TFLITE_DEFAULT_COPTS,
-    deps = ["//tensorflow/lite/c:common"],
+    deps = ["//tensorflow/lite/c:c_api_internal"],
 )
 
 cc_library(
     name = "memory_planner",
     hdrs = ["memory_planner.h"],
     copts = TFLITE_DEFAULT_COPTS,
-    deps = ["//tensorflow/lite/c:common"],
+    deps = ["//tensorflow/lite/c:c_api_internal"],
 )
 
 cc_library(
@@ -115,7 +115,7 @@ cc_library(
     srcs = ["simple_memory_arena.cc"],
     hdrs = ["simple_memory_arena.h"],
     copts = TFLITE_DEFAULT_COPTS,
-    deps = ["//tensorflow/lite/c:common"],
+    deps = ["//tensorflow/lite/c:c_api_internal"],
 )
 
 cc_library(
@@ -123,7 +123,7 @@ cc_library(
     hdrs = [
         "builtin_op_data.h",
     ],
-    deps = ["//tensorflow/lite/c:common"],
+    deps = ["//tensorflow/lite/c:c_api_internal"],
 )
 
 cc_library(
@@ -133,7 +133,7 @@ cc_library(
         "builtin_ops.h",
         "context_util.h",
     ],
-    deps = ["//tensorflow/lite/c:common"],
+    deps = ["//tensorflow/lite/c:c_api_internal"],
 )
 
 exports_files(["builtin_ops.h"])
@@ -168,7 +168,7 @@ cc_library(
     deps = [
         ":simple_memory_arena",
         ":string",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
         "//tensorflow/lite/core/api",
     ],
 )
@@ -209,13 +209,12 @@ cc_library(
         ":minimal_logging",
         ":simple_memory_arena",
         ":string",
-        ":type_to_tflitetype",
         ":util",
         ":version",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
         "//tensorflow/lite/core/api",
         "//tensorflow/lite/delegates/nnapi:nnapi_delegate",
-        "//tensorflow/lite/experimental/resource",
+        "//tensorflow/lite/experimental/resource_variable",
         "//tensorflow/lite/nnapi:nnapi_implementation",
         "//tensorflow/lite/schema:schema_fbs",
     ],
@@ -229,7 +228,7 @@ cc_library(
     copts = TFLITE_DEFAULT_COPTS,
     deps = [
         ":string",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
     ],
 )
 
@@ -244,7 +243,7 @@ cc_test(
     deps = [
         ":framework",
         ":string_util",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
         "//tensorflow/lite/testing:util",
         "@com_google_googletest//:gtest",
     ],
@@ -380,7 +379,7 @@ cc_library(
     hdrs = ["util.h"],
     copts = TFLITE_DEFAULT_COPTS + tflite_copts(),
     deps = [
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
         "//tensorflow/lite/schema:schema_fbs",
     ],
 )
@@ -395,7 +394,7 @@ cc_test(
     ],
     deps = [
         ":util",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -424,12 +423,6 @@ cc_library(
     visibility = [
         "//tensorflow/lite:__subpackages__",
     ],
-)
-
-cc_library(
-    name = "type_to_tflitetype",
-    hdrs = ["type_to_tflitetype.h"],
-    deps = ["//tensorflow/lite/c:common"],
 )
 
 cc_test(

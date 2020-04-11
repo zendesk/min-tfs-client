@@ -26,6 +26,8 @@ const uint32_t background_color = 0xFFF4B400;  // Yellow
 const uint32_t foreground_color = 0xFFDB4437;  // Red
 // The size of the dot we'll draw
 const int dot_radius = 10;
+// Track whether the function has run at least once
+bool initialized = false;
 // Size of the drawable area
 int width;
 int height;
@@ -37,11 +39,8 @@ int x_increment;
 // Animates a dot across the screen to represent the current x and y values
 void HandleOutput(tflite::ErrorReporter* error_reporter, float x_value,
                   float y_value) {
-  // Track whether the function has run at least once
-  static bool is_initialized = false;
-
   // Do this only once
-  if (!is_initialized) {
+  if (!initialized) {
     // Set the background and foreground colors
     lcd.Clear(background_color);
     lcd.SetTextColor(foreground_color);
@@ -52,8 +51,11 @@ void HandleOutput(tflite::ErrorReporter* error_reporter, float x_value,
     midpoint = height / 2;
     // Calculate fractional pixels per unit of x_value
     x_increment = static_cast<float>(width) / kXrange;
-    is_initialized = true;
+    initialized = true;
   }
+
+  // Log the current X and Y values
+  error_reporter->Report("x_value: %f, y_value: %f\n", x_value, y_value);
 
   // Clear the previous drawing
   lcd.Clear(background_color);
@@ -75,7 +77,4 @@ void HandleOutput(tflite::ErrorReporter* error_reporter, float x_value,
 
   // Draw the dot
   lcd.FillCircle(x_pos, y_pos, dot_radius);
-
-  // Log the current X and Y values
-  error_reporter->Report("x_value: %f, y_value: %f\n", x_value, y_value);
 }

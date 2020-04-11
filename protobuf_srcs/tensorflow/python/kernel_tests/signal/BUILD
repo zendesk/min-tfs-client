@@ -31,7 +31,6 @@ cuda_py_tests(
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python/ops/signal",
     ],
-    python_version = "PY3",
     tags = ["no_rocm"],
 )
 
@@ -46,7 +45,6 @@ cuda_py_tests(
         "//tensorflow/python:math_ops",
         "//tensorflow/python/ops/signal",
     ],
-    python_version = "PY3",
     shard_count = 8,
     tags = [
         "no_rocm",
@@ -63,7 +61,6 @@ cuda_py_tests(
         "//tensorflow/python:client_testlib",
         "//tensorflow/python/ops/signal",
     ],
-    python_version = "PY3",
 )
 
 cuda_py_tests(
@@ -78,7 +75,6 @@ cuda_py_tests(
         "//tensorflow/python:framework_test_lib",
         "//tensorflow/python/ops/signal",
     ],
-    python_version = "PY3",
     tags = ["no_rocm"],
 )
 
@@ -98,7 +94,6 @@ cuda_py_tests(
         "//tensorflow/python/ops/signal",
         "//tensorflow/python:platform_test",
     ],
-    python_version = "PY3",
 )
 
 cuda_py_tests(
@@ -116,7 +111,6 @@ cuda_py_tests(
         "//tensorflow/python/ops/signal",
         "//tensorflow/python:platform_test",
     ],
-    python_version = "PY3",
 )
 
 cuda_py_tests(
@@ -137,7 +131,6 @@ cuda_py_tests(
         "//tensorflow/python:platform_test",
         "//tensorflow/python/ops/signal",
     ],
-    python_version = "PY3",
     tags = [
         "no_rocm",
         "nomac",
@@ -157,7 +150,6 @@ cuda_py_tests(
         "//tensorflow/python/ops/signal",
         "//tensorflow/python:platform_test",
     ],
-    python_version = "PY3",
     shard_count = 4,
     tags = [
         "no_windows_gpu",

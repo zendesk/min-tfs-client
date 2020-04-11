@@ -37,30 +37,6 @@ namespace tflite {
 namespace gpu {
 namespace {
 
-InferencePriority ToPriority(int32_t priority) {
-  switch (priority) {
-    case TFLITE_GPU_INFERENCE_PRIORITY_AUTO:
-      return InferencePriority::AUTO;
-    case TFLITE_GPU_INFERENCE_PRIORITY_MAX_PRECISION:
-      return InferencePriority::MAX_PRECISION;
-    case TFLITE_GPU_INFERENCE_PRIORITY_MIN_LATENCY:
-      return InferencePriority::MIN_LATENCY;
-    case TFLITE_GPU_INFERENCE_PRIORITY_MIN_MEMORY_USAGE:
-      return InferencePriority::MIN_MEMORY_USAGE;
-  }
-  return InferencePriority::UNKNOWN;
-}
-
-InferenceUsage ToUsage(int32_t usage) {
-  switch (usage) {
-    case TFLITE_GPU_INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER:
-      return InferenceUsage::FAST_SINGLE_ANSWER;
-    case TFLITE_GPU_INFERENCE_PREFERENCE_SUSTAINED_SPEED:
-      return InferenceUsage::SUSTAINED_SPEED;
-  }
-  return InferenceUsage::UNKNOWN;
-}
-
 // Forward declarations.
 TfLiteStatus DelegatePrepare(TfLiteContext* context, TfLiteDelegate* delegate);
 
@@ -172,21 +148,8 @@ class Delegate {
     RETURN_IF_ERROR(cl::NewInferenceEnvironment(env_options, &cl_environment_,
                                                 &properties));
     cl::InferenceOptions options;
-    // If is_precision_loss_allowed == -1, then just use priorities instead
-    // of paying attention to is_precision_loss_allowed value.
-    if (options_.is_precision_loss_allowed == -1) {
-      options.priority1 = ToPriority(options_.inference_priority1);
-      options.priority2 = ToPriority(options_.inference_priority2);
-      options.priority3 = ToPriority(options_.inference_priority3);
-    } else {
-      // Users set is_precision_loss_allowed explicitly, thus use it explicitly.
-      if (options_.is_precision_loss_allowed == 0) {
-        options.priority1 = InferencePriority::MAX_PRECISION;
-      } else {
-        options.priority1 = InferencePriority::MIN_LATENCY;
-      }
-    }
-    options.usage = ToUsage(options_.inference_preference);
+    options.allow_precision_loss = options_.is_precision_loss_allowed != 0;
+    options.priority = cl::InferencePriority::MIN_LATENCY;
     RETURN_IF_ERROR(cl_environment_->NewInferenceBuilder(
         options, std::move(*graph), builder));
     TFLITE_LOG_PROD_ONCE(tflite::TFLITE_LOG_INFO,
@@ -201,10 +164,13 @@ class Delegate {
     RETURN_IF_ERROR(
         NewInferenceEnvironment(env_options, &gl_environment_, &properties));
     gl::InferenceOptions options;
-    options.usage = ToUsage(options_.inference_preference);
-    options.priority1 = ToPriority(options_.inference_priority1);
-    options.priority2 = ToPriority(options_.inference_priority2);
-    options.priority3 = ToPriority(options_.inference_priority3);
+    options.allow_precision_loss = options_.is_precision_loss_allowed != 0;
+    options.fuse_operations =
+        options_.inference_preference !=
+        TFLITE_GPU_INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER;
+    options.inline_parameters =
+        options_.inference_preference !=
+        TFLITE_GPU_INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER;
     RETURN_IF_ERROR(gl_environment_->NewInferenceBuilder(std::move(*graph),
                                                          options, builder));
     TFLITE_LOG_PROD_ONCE(tflite::TFLITE_LOG_INFO,
@@ -297,13 +263,9 @@ TfLiteStatus DelegatePrepare(TfLiteContext* context, TfLiteDelegate* delegate) {
 
 TfLiteGpuDelegateOptionsV2 TfLiteGpuDelegateOptionsV2Default() {
   TfLiteGpuDelegateOptionsV2 options;
-  // set it to -1 to detect whether it was later adjusted.
-  options.is_precision_loss_allowed = -1;
+  options.is_precision_loss_allowed = 0;
   options.inference_preference =
       TFLITE_GPU_INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER;
-  options.inference_priority1 = TFLITE_GPU_INFERENCE_PRIORITY_MAX_PRECISION;
-  options.inference_priority2 = TFLITE_GPU_INFERENCE_PRIORITY_AUTO;
-  options.inference_priority3 = TFLITE_GPU_INFERENCE_PRIORITY_AUTO;
   return options;
 }
 

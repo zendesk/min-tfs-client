@@ -22,7 +22,6 @@ import random
 
 from absl.testing import parameterized
 import numpy as np
-import six
 
 from tensorflow.python.distribute.cluster_resolver import SimpleClusterResolver
 from tensorflow.python.eager import context
@@ -153,10 +152,7 @@ class SingleWorkerTest(test.TestCase, parameterized.TestCase):
       with self.assertRaises(ValueError) as cm:
         matmul_func(x, y)
 
-    if six.PY2:
-      self.assertIn('Dimensions must be equal', cm.exception.message)
-    else:
-      self.assertIn('Dimensions must be equal', cm.exception.args[0])
+    self.assertIn('Dimensions must be equal', cm.exception.message)
 
 
 class MultiWorkersTest(test.TestCase, parameterized.TestCase):
@@ -359,13 +355,6 @@ class MultiJobsTest(test.TestCase, parameterized.TestCase):
   def testConnectToClusterWithLocalMaster(self):
     local_resolver = SimpleClusterResolver(ClusterSpec({}), master='local')
     remote.connect_to_cluster(local_resolver)
-
-  @test_util.eager_lazy_remote_copy_on_and_off
-  def testConnectToClusterInGraphModeWillFail(self):
-    ops.disable_eager_execution()
-    with self.assertRaises(ValueError):
-      remote.connect_to_cluster(self._cluster_resolver)
-    ops.enable_eager_execution()
 
 
 def _strip_prefix(s, prefix):

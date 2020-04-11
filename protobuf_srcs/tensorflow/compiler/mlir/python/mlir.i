@@ -83,22 +83,28 @@ string ExperimentalConvertSavedModelToMlir(
     const string &exported_names_str,
     bool show_debug_info,
     TF_Status* status) {
-  // Load the saved model into a SavedModelV2Bundle.
+  // Load the saved model into a SavedModelBundle.
 
-  tensorflow::SavedModelV2Bundle bundle;
-  auto load_status = tensorflow::SavedModelV2Bundle::Load(
-      saved_model_path, &bundle);
+  // TODO(silvasean): Add support for tags, if needed.
+  // The default "serve" tag seems to be enough.
+  std::unordered_set<string> tags;
+  tags.insert("serve");
+  SessionOptions session_options;
+  RunOptions run_options;
+  tensorflow::SavedModelBundle bundle;
+  auto load_status = LoadSavedModel(session_options, run_options,
+                                    saved_model_path, tags, &bundle);
   if (!load_status.ok()) {
     Set_TF_Status_from_Status(status, load_status);
     return "// error";
   }
 
-  // Convert the SavedModelV2Bundle to an MLIR module.
+  // Convert the SavedModelBundle to an MLIR module.
 
   std::vector<string> exported_names =
       absl::StrSplit(exported_names_str, ',', absl::SkipEmpty());
   mlir::MLIRContext context;
-  auto module_or = ConvertSavedModelToMlir(&bundle, &context,
+  auto module_or = ConvertSavedModelToMlir(bundle, &context,
       absl::Span<std::string>(exported_names));
   if (!module_or.status().ok()) {
     Set_TF_Status_from_Status(status, module_or.status());

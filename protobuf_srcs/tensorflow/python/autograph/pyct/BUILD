@@ -25,10 +25,9 @@ py_library(
         "anno.py",
         "ast_util.py",
         "cfg.py",
-        "error_utils.py",
+        "compiler.py",
         "errors.py",
         "inspect_utils.py",
-        "loader.py",
         "origin_info.py",
         "parser.py",
         "pretty_printer.py",
@@ -83,8 +82,8 @@ py_test(
 )
 
 py_test(
-    name = "loader_test",
-    srcs = ["loader_test.py"],
+    name = "compiler_test",
+    srcs = ["compiler_test.py"],
     python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
@@ -95,8 +94,8 @@ py_test(
 )
 
 py_test(
-    name = "error_utils_test",
-    srcs = ["error_utils_test.py"],
+    name = "errors_test",
+    srcs = ["errors_test.py"],
     python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [

@@ -732,8 +732,7 @@ class MutableLiteralBase : public LiteralBase {
   static Literal MoveIntoTuple(absl::Span<Literal> elements);
 
   // Serialize from a proto.
-  static StatusOr<Literal> CreateFromProto(const LiteralProto& proto,
-                                           bool prohibit_empty_literal = true);
+  static StatusOr<Literal> CreateFromProto(const LiteralProto& proto);
 
  protected:
   // Returns the piece at the given ShapeIndex.

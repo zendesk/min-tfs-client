@@ -93,6 +93,9 @@ class ScopedOperatorProfile : public ScopedProfile {
   tflite::ScopedOperatorProfile TFLITE_VARNAME_UNIQ(_profile_, __COUNTER__)( \
       (profiler), (tag), (node_index))
 
+#define TFLITE_SCOPED_OPERATOR_PROFILE(profiler, node_index) \
+  TFLITE_SCOPED_TAGGED_OPERATOR_PROFILE((profiler), "OpInvoke", (node_index))
+
 #define TFLITE_SCOPED_DELEGATE_OPERATOR_PROFILE(profiler, node_index)   \
   TFLITE_SCOPED_TAGGED_OPERATOR_PROFILE((profiler), "DelegateOpInvoke", \
                                         (node_index))

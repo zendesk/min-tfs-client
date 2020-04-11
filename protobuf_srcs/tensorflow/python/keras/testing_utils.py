@@ -265,7 +265,6 @@ _thread_local_data = threading.local()
 _thread_local_data.model_type = None
 _thread_local_data.run_eagerly = None
 _thread_local_data.experimental_run_tf_function = None
-_thread_local_data.saved_model_format = None
 
 
 @tf_contextlib.contextmanager
@@ -353,37 +352,6 @@ def should_run_tf_function():
 
   return (_thread_local_data.experimental_run_tf_function and
           context.executing_eagerly())
-
-
-@tf_contextlib.contextmanager
-def saved_model_format_scope(value):
-  """Provides a scope within which the savde model format to test is `value`.
-
-  The saved model format gets restored to its original value upon exiting the
-  scope.
-
-  Arguments:
-     value: saved model format value
-
-  Yields:
-    The provided value.
-  """
-  previous_value = _thread_local_data.saved_model_format
-  try:
-    _thread_local_data.saved_model_format = value
-    yield value
-  finally:
-    # Restore saved model format to initial value.
-    _thread_local_data.saved_model_format = previous_value
-
-
-def get_save_format():
-  if _thread_local_data.saved_model_format is None:
-    raise ValueError(
-        'Cannot call `get_save_format()` outside of a '
-        '`saved_model_format_scope()` or `run_with_all_saved_model_formats` '
-        'decorator.')
-  return _thread_local_data.saved_model_format
 
 
 def get_model_type():
@@ -598,8 +566,8 @@ class _MultiIOSubclassModel(keras.Model):
   """Multi IO Keras subclass model."""
 
   def __init__(self, branch_a, branch_b, shared_input_branch=None,
-               shared_output_branch=None, name=None):
-    super(_MultiIOSubclassModel, self).__init__(name=name)
+               shared_output_branch=None):
+    super(_MultiIOSubclassModel, self).__init__()
     self._shared_input_branch = shared_input_branch
     self._branch_a = branch_a
     self._branch_b = branch_b

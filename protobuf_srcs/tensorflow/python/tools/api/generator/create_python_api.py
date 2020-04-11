@@ -248,11 +248,11 @@ class _ModuleInitCodeBuilder(object):
       underscore_names_str = ', '.join(
           '\'%s\'' % name for name in self._underscore_names_in_root)
 
-      root_module_footer = """
+      root_module_footer = '''
 _names_with_underscore = [%s]
 __all__ = [_s for _s in dir() if not _s.startswith('_')]
 __all__.extend([_s for _s in _names_with_underscore])
-""" % underscore_names_str
+''' % underscore_names_str
 
     # Add module wrapper if we need to print deprecation messages
     # or if we use lazy loading.
@@ -625,8 +625,9 @@ def create_api_files(output_files, packages, root_init_template, output_dir,
       module_text_map,
       deprecation_footer_map,
       root_module_footer,
-  ) = get_api_init_text(packages, output_package, api_name, api_version,
-                        compat_api_versions, lazy_loading, use_relative_imports)
+  ) = get_api_init_text(
+      packages, output_package, api_name,
+      api_version, compat_api_versions, lazy_loading, use_relative_imports)
 
   # Add imports to output files.
   missing_output_files = []

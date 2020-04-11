@@ -31,11 +31,9 @@ using mlir::OwningRewritePatternList;
 using mlir::PassRegistration;
 
 namespace mlir {
-namespace {
-#include "tensorflow/compiler/mlir/xla/transforms/generated_legalize_to_standard.inc"
-}  // end anonymous namespace
 namespace xla_hlo {
 namespace {
+#include "tensorflow/compiler/mlir/xla/transforms/generated_legalize_to_standard.inc"
 
 struct CompareIConvert : public RewritePattern {
   explicit CompareIConvert(MLIRContext *context)
@@ -58,20 +56,20 @@ struct CompareIConvert : public RewritePattern {
       return matchFailure();
 
     auto comparison_direction = compare_op.comparison_direction();
-    auto compare_predicate =
-        llvm::StringSwitch<Optional<CmpIPredicate>>(comparison_direction)
-            .Case("EQ", CmpIPredicate::eq)
-            .Case("NE", CmpIPredicate::ne)
-            .Case("LT", CmpIPredicate::slt)
-            .Case("LE", CmpIPredicate::sle)
-            .Case("GT", CmpIPredicate::sgt)
-            .Case("GE", CmpIPredicate::sge)
-            .Default(llvm::None);
+    CmpIPredicate compare_predicate =
+        llvm::StringSwitch<CmpIPredicate>(comparison_direction)
+            .Case("EQ", CmpIPredicate::EQ)
+            .Case("NE", CmpIPredicate::NE)
+            .Case("LT", CmpIPredicate::SLT)
+            .Case("LE", CmpIPredicate::SLE)
+            .Case("GT", CmpIPredicate::SGT)
+            .Case("GE", CmpIPredicate::SGE)
+            .Default(CmpIPredicate::NumPredicates);
 
-    if (!compare_predicate.hasValue()) return matchFailure();
+    if (compare_predicate == CmpIPredicate::NumPredicates)
+      return matchFailure();
 
-    rewriter.replaceOpWithNewOp<CmpIOp>(op, compare_predicate.getValue(), lhs,
-                                        rhs);
+    rewriter.replaceOpWithNewOp<CmpIOp>(op, compare_predicate, lhs, rhs);
     return matchSuccess();
   }
 };
@@ -133,7 +131,7 @@ mlir::xla_hlo::createLegalizeToStdPass() {
 
 void mlir::xla_hlo::PopulateXlaToStdPatterns(OwningRewritePatternList *patterns,
                                              mlir::MLIRContext *ctx) {
-  mlir::populateWithGenerated(ctx, patterns);
+  mlir::xla_hlo::populateWithGenerated(ctx, patterns);
   patterns
       ->insert<mlir::xla_hlo::CompareFConvert, mlir::xla_hlo::CompareIConvert>(
           ctx);

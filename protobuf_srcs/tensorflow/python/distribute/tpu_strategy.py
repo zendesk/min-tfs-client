@@ -37,6 +37,7 @@ from tensorflow.python.distribute import values
 from tensorflow.python.distribute.cluster_resolver import TPUClusterResolver
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
+from tensorflow.python.eager import function
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import device_spec
 from tensorflow.python.framework import dtypes
@@ -82,6 +83,29 @@ def maybe_init_scope():
       yield
 
 
+def validate_experimental_run_function(fn):
+  """Validate the function passed into strategy.experimental_run_v2."""
+
+  # We allow three types of functions/objects passed into TPUStrategy
+  # experimental_run_v2 in eager mode:
+  #   1. a user annotated tf.function
+  #   2. a ConcreteFunction, this is mostly what you get from loading a saved
+  #      model.
+  #   3. a callable object and the `__call__` method itself is a tf.function.
+  #
+  # Otherwise we return an error, because we don't support eagerly running
+  # experimental_run_v2 in TPUStrategy.
+
+  if context.executing_eagerly() and not isinstance(
+      fn, def_function.Function) and not isinstance(
+          fn, function.ConcreteFunction) and not (callable(fn) and isinstance(
+              fn.__call__, def_function.Function)):
+    raise NotImplementedError(
+        "TPUStrategy.experimental_run_v2(fn, ...) does not support eager "
+        "execution. Either convert `fn` into a tf.function or consider "
+        "calling strategy.experimental_run_v2 inside a tf.function.")
+
+
 @tf_export("distribute.experimental.TPUStrategy", v1=[])
 class TPUStrategy(distribute_lib.Strategy):
   """TPU distribution strategy implementation."""
@@ -89,14 +113,36 @@ class TPUStrategy(distribute_lib.Strategy):
   def __init__(self,
                tpu_cluster_resolver=None,
                device_assignment=None):
-    """Initializes the TPUStrategy object.
+    """Synchronous training in TPU donuts or Pods.
+    
+    To construct a TPUStrategy object, you need to run the
+    initialization code as below:
+    
+    ```python
+    resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu=FLAGS.tpu)
+    tf.config.experimental_connect_to_cluster(resolver)
+    tf.tpu.experimental.initialize_tpu_system(resolver)
+    strategy = tf.distribute.experimental.TPUStrategy(resolver)
+    ```
+    
+    While using distribution strategies, the variables created within strategy's
+    scope will be replicated across all the replicas and can be kept in sync
+    using all-reduce algorithms.
+    
+    To run TF2 programs on TPUs, you can either use `.compile` and
+    `.fit` APIs in `tf.keras` with TPUStrategy, or write your own customized
+    training loop by calling `strategy.experimental_run_v2` directly. Note that
+    TPUStrategy doesn't support pure eager execution, so please make sure the
+    function passed into `strategy.experimental_run_v2` is a `tf.function` or
+    `strategy.experimental_run_v2` us called inside a `tf.function` if running
+    in eager mode.
 
     Args:
       tpu_cluster_resolver: A tf.distribute.cluster_resolver.TPUClusterResolver,
-          which provides information about the TPU cluster.
+        which provides information about the TPU cluster.
       device_assignment: Optional `tf.tpu.experimental.DeviceAssignment` to
-          specify the placement of replicas on the TPU cluster. Currently only
-          supports the usecase of using a single core within a TPU cluster.
+        specify the placement of replicas on the TPU cluster. Currently only
+        supports the usecase of using a single core within a TPU cluster.
     """
     super(TPUStrategy, self).__init__(TPUExtended(
         self, tpu_cluster_resolver, device_assignment=device_assignment))
@@ -111,6 +157,8 @@ class TPUStrategy(distribute_lib.Strategy):
   # This implementation runs a single step. It does not use infeed or outfeed.
   def experimental_run_v2(self, fn, args=(), kwargs=None):
     """See base class."""
+    validate_experimental_run_function(fn)
+
     # Note: the target function is converted to graph even when in Eager mode,
     # so autograph is on by default here.
     fn = autograph.tf_convert(fn, ag_ctx.control_status_ctx())
@@ -156,6 +204,8 @@ class TPUStrategyV1(distribute_lib.StrategyV1):
   # can use the default implementation.
   # This implementation runs a single step. It does not use infeed or outfeed.
   def experimental_run_v2(self, fn, args=(), kwargs=None):
+    validate_experimental_run_function(fn)
+
     """See base class."""
     fn = autograph.tf_convert(fn, ag_ctx.control_status_ctx())
     return self.extended.tpu_run(fn, args, kwargs)
@@ -390,7 +440,7 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
 
   def _create_variable(self, next_creator, *args, **kwargs):
     """Create a TPUMirroredVariable. See `DistributionStrategy.scope`."""
-    if kwargs.pop("skip_mirrored_creator", False):
+    if kwargs.pop("tpu_embedding_variable_creator", False):
       return next_creator(*args, **kwargs)
 
     colocate_with = kwargs.pop("colocate_with", None)
@@ -492,7 +542,7 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
     updates = []
     for i, (d, v) in enumerate(zip(var.devices, var.values)):
       name = "update_%d" % i
-      with ops.device(d), distribute_lib.UpdateContext(i), ops.name_scope(name):
+      with ops.device(d), distribute_lib.UpdateContext(d), ops.name_scope(name):
         # If args and kwargs are not mirrored, the value is returned as is.
         updates.append(fn(v,
                           *values.select_device_mirrored(d, args),
@@ -591,7 +641,8 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
 
   def _update_non_slot(self, colocate_with, fn, args, kwargs, group):
     del colocate_with
-    with ops.device(self._host_device), distribute_lib.UpdateContext(None):
+    with ops.device(self._host_device), distribute_lib.UpdateContext(
+        self._host_device):
       result = fn(*args, **kwargs)
       if group:
         return result
@@ -675,10 +726,9 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
         flattened_list = nest.flatten(replicate_inputs[0])
         for input_tensor in flattened_list:
           if tensor_util.is_tensor(input_tensor):
-            rank = input_tensor.get_shape().rank
+            maximum_shape = input_tensor.get_shape()
           else:
-            rank = np.rank(input_tensor)
-          maximum_shape = tensor_shape.TensorShape([None] * rank)
+            maximum_shape = tensor_shape.TensorShape(np.shape(input_tensor))
           maximum_shapes.append(maximum_shape)
         maximum_shapes = nest.pack_sequence_as(replicate_inputs[0],
                                                maximum_shapes)
@@ -699,7 +749,7 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
         ]
 
       # Workaround for `tpu.replicate` behaviour when single `Tensor` returned.
-      if result[0] is None:
+      if result[0] is None or isinstance(result[0], ops.Operation):
         replicate_outputs = [None] * len(replicate_outputs)
       else:
         replicate_outputs = [

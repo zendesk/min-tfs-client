@@ -66,9 +66,9 @@ void DeleteUnusedFuncsPass::runOnModule() {
 
     SmallPtrSet<FuncOp, 8> callees;
     auto uses = SymbolTable::getSymbolUses(func);
+    assert(uses.hasValue() && "malformed module");
     for (auto use : *uses) {
-      auto func = symbol_table.lookup<FuncOp>(
-          use.getSymbolRef().cast<FlatSymbolRefAttr>().getValue());
+      auto func = symbol_table.lookup<FuncOp>(use.getSymbolRef().getValue());
       if (func) {
         callees.insert(func);
       }

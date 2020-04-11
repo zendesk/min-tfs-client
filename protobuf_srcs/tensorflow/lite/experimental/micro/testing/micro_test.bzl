@@ -2,7 +2,6 @@
 
 def tflite_micro_cc_test(
         name,
-        size = "medium",
         expected_in_logs = "~~~ALL TESTS PASSED~~~",
         srcs = [],
         includes = [],
@@ -50,7 +49,7 @@ def tflite_micro_cc_test(
     )
     native.sh_test(
         name = name,
-        size = size,
+        size = "medium",
         srcs = [
             "//tensorflow/lite/experimental/micro/testing:test_linux_binary.sh",
         ],

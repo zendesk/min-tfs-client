@@ -148,11 +148,6 @@ inline const Variant& SubtleMustCopyIfIntegral(const Variant& value) {
   return value;
 }
 
-inline const ResourceHandle& SubtleMustCopyIfIntegral(
-    const ResourceHandle& value) {
-  return value;
-}
-
 // Lookup table that wraps an unordered_map, where the key and value data type
 // is specified.
 //

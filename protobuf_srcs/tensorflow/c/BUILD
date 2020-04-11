@@ -158,7 +158,6 @@ tf_cuda_library(
             "//tensorflow/core/kernels:logging_ops",
         ],
     }),
-    alwayslink = 1,
 )
 
 tf_cuda_library(
@@ -194,12 +193,6 @@ cc_library(
             "//tensorflow/core:lib",
         ],
     }),
-)
-
-cc_library(
-    name = "tf_status_headers",
-    hdrs = ["tf_status.h"],
-    visibility = ["//visibility:public"],
 )
 
 cc_library(

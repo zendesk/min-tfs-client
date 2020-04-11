@@ -80,17 +80,13 @@ py_library(
 py_test(
     name = "tflite_convert_test",
     srcs = ["tflite_convert_test.py"],
-    data = [
-        ":tflite_convert.par",
-        "@tflite_mobilenet_ssd_quant_protobuf//:tflite_graph.pb",
-    ],
+    data = [":tflite_convert"],
     python_version = "PY3",
     srcs_version = "PY2AND3",
     tags = [
         "no_oss",
         "no_pip",
         "no_windows",
-        "noasan",  # b/144707533
     ],
     deps = [
         ":tflite_convert",

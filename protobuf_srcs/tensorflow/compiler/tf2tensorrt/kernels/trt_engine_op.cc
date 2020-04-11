@@ -505,11 +505,6 @@ void TRTEngineOp::ComputeAsync(OpKernelContext* ctx,
   if (retry) {
     LOG(WARNING) << "Failed to execute engine, "
                  << "retrying with native segment for " << name();
-    // Release any outputs that are allocated, ExecuteNativeSegment will
-    // re-allocate them and fail if they are currently allocated.
-    for (int i = 0; i < ctx->num_outputs(); i++) {
-      ctx->release_output(i);
-    }
     ExecuteNativeSegment(ctx, helper);
     return;
   }
@@ -597,7 +592,9 @@ bool TRTEngineOp::ExecuteTrtEngine(OpKernelContext* ctx,
     if (!status.ok()) {
       LOG(ERROR) << "Allocating output failed with " << status;
       ctx->SetStatus(status);
-      return kRetry;
+      // Do not retry since we cannot allocate the same output twice.
+      // TODO(aaroey): ideally we should retry, fix this.
+      return !kRetry;
     }
     auto dtype = cuda_engine->getBindingDataType(binding_index);
     switch (dtype) {

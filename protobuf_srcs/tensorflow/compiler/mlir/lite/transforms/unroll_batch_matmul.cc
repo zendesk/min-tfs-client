@@ -187,9 +187,10 @@ TF::PackOp ConvertTFBatchMatMulOp<BatchMatMulOpType>::createMatMulOps(
   Type packed_type = RankedTensorType::get(
       {bcast.output_batch_size(), rows, cols}, element_type);
 
+  auto N = rewriter.getI64IntegerAttr(matmuls.size());
   auto axis = rewriter.getI64IntegerAttr(0);
   return rewriter.create<TF::PackOp>(loc, packed_type,
-                                     /*values=*/matmuls, axis);
+                                     /*values=*/matmuls, N, axis);
 }
 
 template <typename BatchMatMulOpType>
@@ -247,7 +248,7 @@ PatternMatchResult ConvertTFBatchMatMulOp<BatchMatMulOpType>::matchAndRewrite(
   }
 
   if (lhs_shape[dims_a - 1] != rhs_shape[dims_b - 2]) {
-    // Input dimensions must be compatible for multiplication.
+    // Input dimensions must be compatible for multipication.
     return this->matchFailure();
   }
 
