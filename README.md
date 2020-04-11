@@ -72,6 +72,10 @@ Run unit / integration tests with
 pytest tests/<unit or integration>
 ```
 
+## Updating upstream changes
+
+See [this README](protobuf_srcs/README.md) for instructions on how to update the protobuf definitions from `tensorflow/tensorflow` and/or `tensorflow/serving`.
+
 ## Contribution Guidelines
 Improvements are always welcome. Please follow these steps to contribute:
 1. Submit a Pull Request with a detailed explanation of changes
