@@ -36,92 +36,82 @@ from tensorflow.python.ops import gen_math_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import variables
-from tensorflow.python.ops.ragged import ragged_factory_ops
 from tensorflow.python.platform import test
 
 
-@test_util.run_all_in_graph_and_eager_modes
 class ForLoopTest(test.TestCase):
 
   def test_tensor(self):
-    s = control_flow.for_stmt(
-        constant_op.constant([1, 2, 3, 4]),
-        extra_test=lambda s: True,
-        body=lambda i, s: (s * 10 + i,),
-        get_state=lambda: (),
-        set_state=lambda _: None,
-        init_vars=(0,),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
-    self.assertEqual(self.evaluate(s), (1234,))
+    with ops.Graph().as_default():
+      s = control_flow.for_stmt(
+          constant_op.constant([1, 2, 3, 4]),
+          extra_test=lambda s: True,
+          body=lambda i, s: (s * 10 + i,),
+          get_state=lambda: (),
+          set_state=lambda _: None,
+          init_vars=(0,))
+      self.assertEqual(self.evaluate(s), (1234,))
 
   def test_range_tensor(self):
-    s = control_flow.for_stmt(
-        math_ops.range(5),
-        extra_test=lambda s: True,
-        body=lambda i, s: (s * 10 + i,),
-        get_state=lambda: (),
-        set_state=lambda _: None,
-        init_vars=(0,),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
-    self.assertEqual(self.evaluate(s), (1234,))
+    with ops.Graph().as_default():
+      s = control_flow.for_stmt(
+          math_ops.range(5),
+          extra_test=lambda s: True,
+          body=lambda i, s: (s * 10 + i,),
+          get_state=lambda: (),
+          set_state=lambda _: None,
+          init_vars=(0,))
+      self.assertEqual(self.evaluate(s), (1234,))
 
   def test_range_tensor_random_delta(self):
-    random_one = random_ops.random_uniform((), 1, 2, dtype=dtypes.int32)
-    s = control_flow.for_stmt(
-        math_ops.range(0, 5, random_one),
-        extra_test=lambda s: True,
-        body=lambda i, s: (s * 10 + i,),
-        get_state=lambda: (),
-        set_state=lambda _: None,
-        init_vars=(0,),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
-    self.assertEqual(self.evaluate(s), (1234,))
+
+    with ops.Graph().as_default():
+      random_one = random_ops.random_uniform((), 1, 2, dtype=dtypes.int32)
+      s = control_flow.for_stmt(
+          math_ops.range(0, 5, random_one),
+          extra_test=lambda s: True,
+          body=lambda i, s: (s * 10 + i,),
+          get_state=lambda: (),
+          set_state=lambda _: None,
+          init_vars=(0,))
+      self.assertEqual(self.evaluate(s), (1234,))
 
   def test_range_tensor_explicit_limit_delta(self):
-    s = control_flow.for_stmt(
-        math_ops.range(-17, -3, 5),
-        extra_test=lambda s: True,
-        body=lambda i, s: (s * 100 + i,),
-        get_state=lambda: (),
-        set_state=lambda _: None,
-        init_vars=(0,),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
-    self.assertEqual(self.evaluate(s), (-171207,))
+    with ops.Graph().as_default():
+      s = control_flow.for_stmt(
+          math_ops.range(-17, -3, 5),
+          extra_test=lambda s: True,
+          body=lambda i, s: (s * 100 + i,),
+          get_state=lambda: (),
+          set_state=lambda _: None,
+          init_vars=(0,))
+      self.assertEqual(self.evaluate(s), (-171207,))
 
   def test_range_tensor_random_negative_delta(self):
-    random_neg_five = random_ops.random_uniform((), -5, -4, dtype=dtypes.int32)
-    s = control_flow.for_stmt(
-        math_ops.range(17, 3, random_neg_five),
-        extra_test=lambda s: True,
-        body=lambda i, s: (s * 100 + i,),
-        get_state=lambda: (),
-        set_state=lambda _: None,
-        init_vars=(0,),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
-    self.assertEqual(self.evaluate(s), (171207,))
+    with ops.Graph().as_default():
+      random_neg_five = random_ops.random_uniform((),
+                                                  -5,
+                                                  -4,
+                                                  dtype=dtypes.int32)
+      s = control_flow.for_stmt(
+          math_ops.range(17, 3, random_neg_five),
+          extra_test=lambda s: True,
+          body=lambda i, s: (s * 100 + i,),
+          get_state=lambda: (),
+          set_state=lambda _: None,
+          init_vars=(0,))
+      self.assertEqual(self.evaluate(s), (171207,))
 
   def test_range_tensor_negative_delta(self):
-    s = control_flow.for_stmt(
-        math_ops.range(17, 3, -5),
-        extra_test=lambda s: True,
-        body=lambda i, s: (s * 100 + i,),
-        get_state=lambda: (),
-        set_state=lambda _: None,
-        init_vars=(0,),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
-    self.assertEqual(self.evaluate(s), (171207,))
+    with ops.Graph().as_default():
+      s = control_flow.for_stmt(
+          math_ops.range(17, 3, -5),
+          extra_test=lambda s: True,
+          body=lambda i, s: (s * 100 + i,),
+          get_state=lambda: (),
+          set_state=lambda _: None,
+          init_vars=(0,))
+      self.assertEqual(self.evaluate(s), (171207,))
 
   def test_tensor_with_extra_test_only_python_state(self):
     class MutableObject(object):
@@ -146,10 +136,7 @@ class ForLoopTest(test.TestCase):
         extra_test=lambda: state.field_1 < 6,
         get_state=get_state,
         set_state=set_state,
-        init_vars=(),
-        basic_symbol_names=(),
-        composite_symbol_names=(),
-        opts={})
+        init_vars=())
     self.assertEqual(self.evaluate(state.field_1), 6)
     self.assertEqual(self.evaluate(state.field_2), 6)
 
@@ -160,24 +147,19 @@ class ForLoopTest(test.TestCase):
         body=lambda i, s: (s * 10 + i,),
         get_state=None,
         set_state=None,
-        init_vars=(0,),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
+        init_vars=(0,))
     self.assertEqual(s, (1234,))
 
   def test_tf_dataset(self):
-    s = control_flow.for_stmt(
-        dataset_ops.Dataset.range(5),
-        extra_test=None,
-        body=lambda i, s: (s * 10 + i,),
-        get_state=lambda: (),
-        set_state=lambda _: None,
-        init_vars=(constant_op.constant(0, dtype=dtypes.int64),),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
-    self.assertEqual(self.evaluate(s), (1234,))
+    with ops.Graph().as_default():
+      s = control_flow.for_stmt(
+          dataset_ops.Dataset.range(5),
+          extra_test=None,
+          body=lambda i, s: (s * 10 + i,),
+          get_state=lambda: (),
+          set_state=lambda _: None,
+          init_vars=(constant_op.constant(0, dtype=dtypes.int64),))
+      self.assertEqual(self.evaluate(s), (1234,))
 
   def test_dataset_with_extra_test(self):
     s = control_flow.for_stmt(
@@ -186,10 +168,7 @@ class ForLoopTest(test.TestCase):
         body=lambda i, s: (s + i,),
         get_state=lambda: (),
         set_state=lambda _: None,
-        init_vars=(constant_op.constant(0, dtype=dtypes.int64),),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
+        init_vars=(constant_op.constant(0, dtype=dtypes.int64),))
     self.assertEqual(self.evaluate(s), (3,))
 
   def test_dataset_with_extra_test_and_state(self):
@@ -211,10 +190,7 @@ class ForLoopTest(test.TestCase):
         body=body,
         get_state=get_state,
         set_state=set_state,
-        init_vars=(constant_op.constant(0, dtype=dtypes.int64),),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
+        init_vars=(constant_op.constant(0, dtype=dtypes.int64),))
     self.assertEqual(self.evaluate(s), (3,))
     self.assertEqual(self.evaluate(state[0]), (3,))
 
@@ -230,12 +206,10 @@ class ForLoopTest(test.TestCase):
         body=guarded_body,
         get_state=lambda: (),
         set_state=lambda _: None,
-        init_vars=(constant_op.constant(0, dtype=dtypes.int64),),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
+        init_vars=(constant_op.constant(0, dtype=dtypes.int64),))
     self.assertEqual(self.evaluate(s), (3,))
 
+  @test_util.run_v2_only
   def test_tf_dataset_no_loop_vars(self):
     v = variables.Variable(0, dtype=dtypes.int64)
     self.evaluate(v.initializer)
@@ -243,8 +217,7 @@ class ForLoopTest(test.TestCase):
     def stateless_with_side_effects(i):
       v.assign(v.read_value() * 10 + i)
 
-    # tf.function required for the automatic control dependencies, and because
-    # ops test for its presence.
+    # function is important here, because ops test for its presence.
     @def_function.function(autograph=False)
     def test_fn():
       control_flow.for_stmt(
@@ -253,12 +226,9 @@ class ForLoopTest(test.TestCase):
           body=stateless_with_side_effects,
           get_state=lambda: (),
           set_state=lambda _: None,
-          init_vars=(),
-          basic_symbol_names=('i',),
-          composite_symbol_names=(),
-          opts={})
+          init_vars=())
 
-    self.evaluate(test_fn())
+    test_fn()
     self.assertEqual(self.evaluate(v.read_value()), 1234)
 
   def test_tf_iterator(self):
@@ -272,21 +242,18 @@ class ForLoopTest(test.TestCase):
           body=lambda i, s: (s * 10 + i,),
           get_state=lambda: (),
           set_state=lambda _: None,
-          init_vars=(constant_op.constant(0, dtype=dtypes.int64),),
-          basic_symbol_names=('s',),
-          composite_symbol_names=(),
-          opts={})
+          init_vars=(constant_op.constant(0, dtype=dtypes.int64),))
     s, = test_fn()
     self.assertAllEqual(s, 1234)
 
+  @test_util.run_v2_only
   def test_tf_iterator_no_loop_vars(self):
     v = variables.Variable(0, dtype=dtypes.int64)
-    self.evaluate(v.initializer)
 
     def stateless_with_side_effects(i):
       v.assign(v.read_value() * 10 + i)
 
-    # tf.function required for the automatic control dependencies.
+    # graph-mode iterators are only supported inside tf.function.
     @def_function.function(autograph=False)
     def test_fn():
       control_flow.for_stmt(
@@ -295,73 +262,15 @@ class ForLoopTest(test.TestCase):
           body=stateless_with_side_effects,
           get_state=lambda: (),
           set_state=lambda _: None,
-          init_vars=(),
-          basic_symbol_names=('i',),
-          composite_symbol_names=(),
-          opts={})
+          init_vars=())
 
-    self.evaluate(test_fn())
+    test_fn()
     self.assertEqual(self.evaluate(v.read_value()), 1234)
 
-  def test_tf_ragged_tensor(self):
-    s = control_flow.for_stmt(
-        ragged_factory_ops.constant([[1], [2, 4], [3]]),
-        extra_test=lambda s: True,
-        body=lambda i, s: (s * 10 + i[0],),
-        get_state=lambda: (),
-        set_state=lambda _: None,
-        init_vars=(0,),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
-    self.assertEqual(self.evaluate(s), (123,))
 
-  def test_tf_ragged_tensor_higher_dimensional(self):
-    ragged_3d = [
-        [[1], [1, 1], [1]],
-        [[2], [2]],
-    ]
-    s = control_flow.for_stmt(
-        ragged_factory_ops.constant(ragged_3d),
-        extra_test=lambda s: True,
-        body=lambda i, s: (s * 10 + i[0][0],),
-        get_state=lambda: (),
-        set_state=lambda _: None,
-        init_vars=(0,),
-        basic_symbol_names=('s',),
-        composite_symbol_names=(),
-        opts={})
-    self.assertEqual(self.evaluate(s), (12,))
-
-  def test_tf_ragged_tensor_no_loop_vars(self):
-    v = variables.Variable(0, dtype=dtypes.int32)
-    self.evaluate(v.initializer)
-
-    def stateless_with_side_effects(i):
-      v.assign(v.read_value() * 10 + i[0])
-
-    # tf.function required for the automatic control dependencies.
-    @def_function.function(autograph=False)
-    def test_fn():
-      control_flow.for_stmt(
-          ragged_factory_ops.constant([[1], [2, 4], [3]]),
-          extra_test=None,
-          body=stateless_with_side_effects,
-          get_state=lambda: (),
-          set_state=lambda _: None,
-          init_vars=(),
-          basic_symbol_names=(),
-          composite_symbol_names=(),
-          opts={})
-
-    self.evaluate(test_fn())
-    # Note: 123 = ((0*10 + 1)*10+2)*10+3 (first element of each row).
-    self.assertEqual(self.evaluate(v.read_value()), 123)
-
-
-@test_util.run_all_in_graph_and_eager_modes
 class WhileLoopTest(test.TestCase):
 
+  @test_util.run_deprecated_v1
   def test_tensor(self):
     n = constant_op.constant(5)
     results = control_flow.while_stmt(
@@ -369,13 +278,11 @@ class WhileLoopTest(test.TestCase):
         body=lambda i, s: (i + 1, s + i),
         get_state=lambda: (),
         set_state=lambda _: None,
-        init_vars=(0, 0),
-        basic_symbol_names=('i', 's'),
-        composite_symbol_names=(),
-        opts={})
+        init_vars=(0, 0))
     self.assertEqual((5, 10), self.evaluate(results))
 
   def test_tensor_with_tf_side_effects_in_cond(self):
+
     n = constant_op.constant(5, dtype=dtypes.int64)
     v = variables.Variable(0, dtype=dtypes.int64)
 
@@ -383,7 +290,7 @@ class WhileLoopTest(test.TestCase):
       v.assign(v.read_value() + 1)
       return v.read_value()
 
-    # tf.function required for the automatic control dependencies.
+    # function is important here, because ops test for its presence.
     @def_function.function(autograph=False)
     def test_fn():
       return control_flow.while_stmt(
@@ -391,10 +298,7 @@ class WhileLoopTest(test.TestCase):
           body=lambda i: (i + 1,),
           get_state=lambda: (),
           set_state=lambda _: None,
-          init_vars=(0,),
-          basic_symbol_names=('i',),
-          composite_symbol_names=(),
-          opts={})
+          init_vars=(0,))
 
     results = test_fn()
 
@@ -424,13 +328,11 @@ class WhileLoopTest(test.TestCase):
         body=body,
         get_state=get_state,
         set_state=set_state,
-        init_vars=(0, 0),
-        basic_symbol_names=('i',),
-        composite_symbol_names=(),
-        opts={})
+        init_vars=(0, 0))
     self.assertEqual(self.evaluate(s), (5, 10))
     self.assertEqual(self.evaluate(state.field), 10)
 
+  @test_util.run_deprecated_v1
   def test_python_with_tensor_state(self):
     n = 5
     results = control_flow.while_stmt(
@@ -438,10 +340,7 @@ class WhileLoopTest(test.TestCase):
         body=lambda i, s: (i + 1, s + i),
         get_state=lambda: (),
         set_state=lambda _: None,
-        init_vars=(0, constant_op.constant(0)),
-        basic_symbol_names=('i', 's'),
-        composite_symbol_names=(),
-        opts={})
+        init_vars=(0, constant_op.constant(0)))
     result_i, result_s = results
     self.assertEqual(5, result_i)
     self.assertEqual(10, self.evaluate(result_s))
@@ -453,10 +352,7 @@ class WhileLoopTest(test.TestCase):
         body=lambda i, s: (i + 1, s + i),
         get_state=None,
         set_state=None,
-        init_vars=(0, 0),
-        basic_symbol_names=('i', 's'),
-        composite_symbol_names=(),
-        opts={})
+        init_vars=(0, 0))
     self.assertEqual((5, 10), results)
 
   def test_python_infinite_loop(self):
@@ -468,10 +364,7 @@ class WhileLoopTest(test.TestCase):
               body=lambda i: (i + 1,),
               get_state=None,
               set_state=None,
-              init_vars=(0,),
-              basic_symbol_names=('i',),
-              composite_symbol_names=(),
-              opts={})
+              init_vars=(0,))
 
   def test_python_long_loop_unroll_warning(self):
     if __debug__:
@@ -487,78 +380,53 @@ class WhileLoopTest(test.TestCase):
                 body=lambda i, _: (i + 1, gen_math_ops.add(i, 1),),
                 get_state=None,
                 set_state=None,
-                init_vars=(0, None),
-                basic_symbol_names=('i',),
-                composite_symbol_names=(),
-                opts={})
+                init_vars=(0, None))
           self.assertTrue(re.match(
               r'.*ops.*loop.*large.*iterations.*Add.*',
               out_capturer.getvalue()))
 
 
-@test_util.run_all_in_graph_and_eager_modes
 class IfStmtTest(test.TestCase):
 
+  def single_return_if_stmt(self, cond):
+    return control_flow.if_stmt(
+        cond=cond,
+        body=lambda: 1,
+        orelse=lambda: -1,
+        get_state=lambda: (),
+        set_state=lambda _: None)
+
+  def multi_return_if_stmt(self, cond):
+    return control_flow.if_stmt(
+        cond=cond,
+        body=lambda: (1, 2),
+        orelse=lambda: (-1, -2),
+        get_state=lambda: (),
+        set_state=lambda _: None)
+
+  @test_util.run_deprecated_v1
   def test_tensor(self):
-
-    def test_fn(cond):
-      return control_flow.if_stmt(
-          cond=cond,
-          body=lambda: constant_op.constant(1),
-          orelse=lambda: constant_op.constant(-1),
-          get_state=lambda: (),
-          set_state=lambda _: None,
-          basic_symbol_names=('_',),
-          composite_symbol_names=())
-
-    self.assertEqual(1, self.evaluate(test_fn(constant_op.constant(True))))
-    self.assertEqual(-1, self.evaluate(test_fn(constant_op.constant(False))))
-
-  def test_tensor_multiple_returns(self):
-
-    def test_fn(cond):
-      return control_flow.if_stmt(
-          cond=cond,
-          body=lambda: (constant_op.constant(1), constant_op.constant(2)),
-          orelse=lambda: (constant_op.constant(-1), constant_op.constant(-2)),
-          get_state=lambda: (),
-          set_state=lambda _: None,
-          basic_symbol_names=('_',),
-          composite_symbol_names=())
-
-    self.assertEqual((1, 2), self.evaluate(test_fn(constant_op.constant(True))))
-    self.assertEqual((-1, -2),
-                     self.evaluate(test_fn(constant_op.constant(False))))
+    with self.cached_session():
+      t = self.single_return_if_stmt(constant_op.constant(True))
+      self.assertEqual(1, self.evaluate(t))
+      t = self.single_return_if_stmt(constant_op.constant(False))
+      self.assertEqual(-1, self.evaluate(t))
 
   def test_python(self):
+    self.assertEqual(1, self.single_return_if_stmt(True))
+    self.assertEqual(-1, self.single_return_if_stmt(False))
 
-    def test_fn(cond):
-      return control_flow.if_stmt(
-          cond=cond,
-          body=lambda: 1,
-          orelse=lambda: -1,
-          get_state=lambda: (),
-          set_state=lambda _: None,
-          basic_symbol_names=('_',),
-          composite_symbol_names=())
-
-    self.assertEqual(1, test_fn(True))
-    self.assertEqual(-1, test_fn(False))
+  @test_util.run_deprecated_v1
+  def test_tensor_multiple_returns(self):
+    with self.cached_session():
+      t = self.multi_return_if_stmt(constant_op.constant(True))
+      self.assertAllEqual([1, 2], self.evaluate(t))
+      t = self.multi_return_if_stmt(constant_op.constant(False))
+      self.assertAllEqual([-1, -2], self.evaluate(t))
 
   def test_python_multiple_returns(self):
-
-    def test_fn(cond):
-      return control_flow.if_stmt(
-          cond=cond,
-          body=lambda: (1, 2),
-          orelse=lambda: (-1, -2),
-          get_state=lambda: (),
-          set_state=lambda _: None,
-          basic_symbol_names=('_',),
-          composite_symbol_names=())
-
-    self.assertEqual((1, 2), test_fn(True))
-    self.assertEqual((-1, -2), test_fn(False))
+    self.assertEqual((1, 2), self.multi_return_if_stmt(True))
+    self.assertEqual((-1, -2), self.multi_return_if_stmt(False))
 
 
 if __name__ == '__main__':

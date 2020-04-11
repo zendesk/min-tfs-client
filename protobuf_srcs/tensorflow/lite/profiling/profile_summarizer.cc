@@ -27,7 +27,7 @@ namespace {
 struct OperatorDetails {
   uint32_t subgraph_index;
   uint32_t node_index;
-  std::string op_description;
+  std::string name;
   std::vector<std::string> inputs;
   std::vector<std::string> outputs;
 };
@@ -74,11 +74,20 @@ OperatorDetails GetOperatorDetails(const tflite::Interpreter& interpreter,
   auto node_reg = subgraph->node_and_registration(node_index);
   auto inputs = node_reg->first.inputs;
   auto outputs = node_reg->first.outputs;
+  int code = node_reg->second.builtin_code;
+  const char* op_name = nullptr;
+  if (code == tflite::BuiltinOperator_CUSTOM) {
+    const char* custom_name = node_reg->second.custom_name;
+    op_name = custom_name ? custom_name : "UnknownCustomOp";
+  } else {
+    op_name = tflite::EnumNamesBuiltinOperator()[code];
+  }
   const char* profiling_string =
       interpreter.OpProfilingString(node_reg->second, &node_reg->first);
   OperatorDetails details;
+  details.name = op_name;
   if (profiling_string) {
-    details.op_description = std::string(profiling_string);
+    details.name += ":" + std::string(profiling_string);
   }
   details.inputs = GetTensorNames(interpreter, inputs);
   details.outputs = GetTensorNames(interpreter, outputs);
@@ -123,6 +132,9 @@ void ProfileSummarizer::ProcessProfiles(
 
   int64_t base_start_us = events[0]->begin_timestamp_us;
   int node_num = 0;
+  auto tag_string = [](const string& s, const string& t) {
+    return (t == "OpInvoke" || t == "DelegateOpInvoke") ? s : s + "/" + t;
+  };
 
   // Total time will be accumulated per subgraph.
   std::map<uint32_t, int64_t> total_us_per_subgraph_map;
@@ -142,16 +154,13 @@ void ProfileSummarizer::ProcessProfiles(
 
       const auto op_details =
           GetOperatorDetails(interpreter, subgraph_index, node_index);
-      std::string type_in_stats(event->tag);
-      if (!op_details.op_description.empty()) {
-        type_in_stats += "/" + op_details.op_description;
-      }
+      const auto type_in_stats = tag_string(op_details.name, event->tag);
 
       const auto node_name = ToString(op_details.outputs);
       // Append node index to node name because 'stats_calculator' can not
       // distinguish two nodes w/ the same 'node_name'.
       const auto node_name_in_stats =
-          node_name + ":" + std::to_string(node_index);
+          tag_string(node_name + ":" + std::to_string(node_index), event->tag);
 
       stats_calculator->AddNodeStats(node_name_in_stats, type_in_stats,
                                      node_num, start_us, node_exec_time,

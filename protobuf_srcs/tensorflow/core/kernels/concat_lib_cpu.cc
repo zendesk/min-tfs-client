@@ -57,9 +57,10 @@ int64 EstimateBytesPerElement(
 // reshapes all the inputs to matrices), by sampling the lengths of the actual
 // strings in the various tensors.
 template <>
-int64 EstimateBytesPerElement<tstring>(
+int64 EstimateBytesPerElement<std::string>(
     const std::vector<
-        std::unique_ptr<typename TTypes<tstring, 2>::ConstMatrix>>& inputs) {
+        std::unique_ptr<typename TTypes<std::string, 2>::ConstMatrix>>&
+        inputs) {
   // randomly sample a few input strings to get a sense of the average size
   // of each element
   int num_samples = 0;

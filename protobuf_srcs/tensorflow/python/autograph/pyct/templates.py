@@ -120,7 +120,6 @@ class ReplaceTransformer(gast.NodeTransformer):
     self.preserved_annos = {
         anno.Basic.ORIGIN,
         anno.Basic.SKIP_PROCESSING,
-        anno.Basic.DIRECTIVES,
         anno.Static.ORIG_DEFINITIONS,
         'extra_test',
         'function_context_name',
@@ -261,7 +260,7 @@ def replace(template, **replacements):
   for k in replacements:
     replacements[k] = _convert_to_ast(replacements[k])
   template_str = parser.STANDARD_PREAMBLE + textwrap.dedent(template)
-  nodes = parser.parse(
+  nodes = parser.parse_str(
       template_str,
       preamble_len=parser.STANDARD_PREAMBLE_LEN,
       single_node=False)

@@ -62,7 +62,7 @@ class RepeatDatasetParams : public DatasetParams {
   int64 count_;
 };
 
-class RepeatDatasetOpTest : public DatasetOpsTestBase {};
+class RepeatDatasetOpTest : public DatasetOpsTestBaseV2 {};
 
 RepeatDatasetParams FiniteRepeatDatasetParams() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(

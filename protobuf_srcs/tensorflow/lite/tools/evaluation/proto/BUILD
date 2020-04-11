@@ -13,8 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
+# Placeholder for Google-internal load statements.
 load(
-    "//tensorflow/core/platform:build_config.bzl",
+    "//tensorflow/core/platform:default/build_config.bzl",
     "tf_proto_library_py",
 )
 

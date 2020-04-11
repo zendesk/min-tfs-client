@@ -16,16 +16,11 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/lite/utils/lstm_utils.h"
 
 #include <memory>
-#include <ostream>
-#include <string>
-#include <vector>
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/Dialect/StandardOps/Ops.h"  // TF:local_config_mlir
-#include "mlir/IR/Attributes.h"  // TF:local_config_mlir
 #include "mlir/IR/Builders.h"  // TF:local_config_mlir
 #include "mlir/IR/Function.h"  // TF:local_config_mlir
 #include "mlir/IR/Location.h"  // TF:local_config_mlir
@@ -40,7 +35,7 @@ limitations under the License.
 namespace mlir {
 namespace TFL {
 
-FuncOp createLstmCompositeFunc(mlir::Builder* builder, bool ln, bool cifg) {
+FuncOp createFusedFunc(mlir::Builder* builder) {
   SmallVector<int64_t, 2> input_shape{1, 2};
   SmallVector<int64_t, 2> weight_shape{3, 12};
   SmallVector<int64_t, 1> bias_shape{2};
@@ -65,22 +60,6 @@ FuncOp createLstmCompositeFunc(mlir::Builder* builder, bool ln, bool cifg) {
                                         builder->getContext()),
                      "fused_func", func_type, {});
   func.addEntryBlock();
-
-  std::vector<std::string> attributes;
-  if (ln) {
-    attributes.push_back(kLayerNormalizedLstmCellSimple);
-  } else {
-    attributes.push_back(kLstmCellSimple);
-  }
-
-  if (cifg) {
-    attributes.push_back(kCoupleInputForgetGates);
-  }
-
-  mlir::StringAttr attr_values =
-      builder->getStringAttr(llvm::join(attributes, ","));
-
-  func.setAttr(kTFImplements, attr_values);
   return func;
 }
 
@@ -93,35 +72,30 @@ class LstmUtilsTest : public ::testing::Test {
 
   void SetUp() override {
     builder_ = std::unique_ptr<mlir::Builder>(new Builder(&context_));
-    fused_lstm_func_ = createLstmCompositeFunc(builder_.get(), false, false);
-    fused_lstm_func_cifg_ =
-        createLstmCompositeFunc(builder_.get(), false, true);
-    fused_ln_lstm_func_ = createLstmCompositeFunc(builder_.get(), true, false);
+    fused_lstm_func_ = createFusedFunc(builder_.get());
   }
 
   void TearDown() override {
     fused_lstm_func_.erase();
-    fused_lstm_func_cifg_.erase();
-    fused_ln_lstm_func_.erase();
     builder_.reset();
   }
   FuncOp fused_lstm_func_;
-  FuncOp fused_lstm_func_cifg_;
-  FuncOp fused_ln_lstm_func_;
   mlir::MLIRContext context_;
   std::unique_ptr<mlir::Builder> builder_;
 };
 
 TEST_F(LstmUtilsTest, ConvertLSTMCellSimple) {
-  mlir::TFL::ConvertLSTMCellSimpleToFusedLSTM convert(fused_lstm_func_);
+  mlir::TFL::ConvertLSTMCellSimpleToFusedLSTM convert(fused_lstm_func_, false);
 
-  auto result = convert.RewriteFunc();
+  auto result = convert.Initialize();
   EXPECT_FALSE(failed(result));
+
+  convert.RewriteFunc();
   fused_lstm_func_.dump();
 
   // verify transpose
   EXPECT_EQ(
-      fused_lstm_func_.getAttrOfType<StringAttr>(kTFImplements).getValue(),
+      fused_lstm_func_.getAttrOfType<StringAttr>("tf._implements").getValue(),
       convert.GetCompositeOpName());
   EXPECT_EQ(fused_lstm_func_.getNumArguments(), 5);
   EXPECT_EQ(fused_lstm_func_.getType().getNumResults(), 1);
@@ -188,19 +162,15 @@ TEST_F(LstmUtilsTest, ConvertLSTMCellSimple) {
 }
 
 TEST_F(LstmUtilsTest, ConvertLSTMCellSimpleToFusedLSTMCoupleInputForget) {
-  mlir::TFL::ConvertLSTMCellSimpleToFusedLSTM convert(fused_lstm_func_cifg_);
+  mlir::TFL::ConvertLSTMCellSimpleToFusedLSTM convert(fused_lstm_func_, true);
 
-  auto result = convert.RewriteFunc();
+  auto result = convert.Initialize();
   EXPECT_FALSE(failed(result));
-  fused_lstm_func_cifg_.dump();
 
-  llvm::SmallVector<std::string, 2> attributes{kLstmCellSimple,
-                                               kCoupleInputForgetGates};
-  EXPECT_EQ(
-      fused_lstm_func_cifg_.getAttrOfType<StringAttr>(kTFImplements).getValue(),
-      llvm::join(attributes, ","));
+  convert.RewriteFunc();
+  fused_lstm_func_.dump();
 
-  auto it = fused_lstm_func_cifg_.getBody().back().rbegin();
+  auto it = fused_lstm_func_.getBody().back().rbegin();
   EXPECT_EQ(it->getName().getStringRef(), mlir::ReturnOp::getOperationName());
   it++;
   it++;
@@ -214,19 +184,21 @@ TEST_F(LstmUtilsTest, ConvertLSTMCellSimpleToFusedLSTMCoupleInputForget) {
 
 TEST_F(LstmUtilsTest, ConvertLayerNormLSTMCellSimpleToFusedLSTM) {
   mlir::TFL::ConvertLayerNormalizedLSTMCellSimpleToFusedLSTM convert(
-      fused_ln_lstm_func_);
+      fused_lstm_func_, false);
 
-  auto result = convert.RewriteFunc();
+  auto result = convert.Initialize();
   EXPECT_FALSE(failed(result));
-  fused_ln_lstm_func_.dump();
+
+  convert.RewriteFunc();
+  fused_lstm_func_.dump();
 
   EXPECT_EQ(
-      fused_ln_lstm_func_.getAttrOfType<StringAttr>(kTFImplements).getValue(),
+      fused_lstm_func_.getAttrOfType<StringAttr>("tf._implements").getValue(),
       convert.GetCompositeOpName());
-  EXPECT_EQ(fused_ln_lstm_func_.getNumArguments(), 5);
-  EXPECT_EQ(fused_ln_lstm_func_.getType().getNumResults(), 1);
+  EXPECT_EQ(fused_lstm_func_.getNumArguments(), 5);
+  EXPECT_EQ(fused_lstm_func_.getType().getNumResults(), 1);
 
-  auto it = fused_ln_lstm_func_.getBody().back().rbegin();
+  auto it = fused_lstm_func_.getBody().back().rbegin();
   EXPECT_EQ(it->getName().getStringRef(), mlir::ReturnOp::getOperationName());
   it++;
   it++;
@@ -245,8 +217,8 @@ TEST_F(LstmUtilsTest, ConvertLayerNormLSTMCellSimpleToFusedLSTM) {
   EXPECT_EQ(
       it->getOperand(20)->getType().cast<RankedTensorType>().getDimSize(0), 3);
 
-  EXPECT_EQ(fused_ln_lstm_func_.getType().getNumResults(), 1);
-  auto output_types = fused_ln_lstm_func_.getType().getResults();
+  EXPECT_EQ(fused_lstm_func_.getType().getNumResults(), 1);
+  auto output_types = fused_lstm_func_.getType().getResults();
   SmallVector<int64_t, 2> output_shape{1, -1};
   EXPECT_EQ(output_types[0].cast<RankedTensorType>().getShape().size(),
             output_shape.size());

@@ -32,10 +32,8 @@ from tensorflow.python.util.tf_export import tf_export
 class AdamOptimizer(optimizer.Optimizer):
   """Optimizer that implements the Adam algorithm.
 
-  References:
-    Adam - A Method for Stochastic Optimization:
-      [Kingma et al., 2015](https://arxiv.org/abs/1412.6980)
-      ([pdf](https://arxiv.org/pdf/1412.6980.pdf))
+  See [Kingma et al., 2014](http://arxiv.org/abs/1412.6980)
+  ([pdf](http://arxiv.org/pdf/1412.6980.pdf)).
   """
 
   def __init__(self,

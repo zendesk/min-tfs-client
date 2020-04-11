@@ -19,22 +19,23 @@ from __future__ import division
 from __future__ import print_function
 
 from tensorflow.python.distribute import multi_process_runner
-from tensorflow.python.distribute import multi_worker_test_base
+from tensorflow.python.distribute.multi_process_runner import MultiProcessRunner
 from tensorflow.python.eager import test
 
 
 class MultiProcessRunnerNoInitTest(test.TestCase):
 
-  def test_not_calling_correct_main(self):
+  def test_stdout_captured(self):
 
     def simple_func():
       return 'foobar'
 
+    job_count_dict = {'worker': 1}
     with self.assertRaisesRegexp(RuntimeError,
                                  '`multi_process_runner` is not initialized.'):
-      multi_process_runner.run(
+      MultiProcessRunner().run(
           simple_func,
-          multi_worker_test_base.create_cluster_spec(num_workers=1))
+          multi_process_runner.job_count_to_cluster_spec(job_count_dict))
 
 
 if __name__ == '__main__':

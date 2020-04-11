@@ -4,6 +4,8 @@ package(
         "//tensorflow/c/experimental/filesystem/plugins/posix:__pkg__",
         # tensorflow/core:lib effectively exposes all targets under tensorflow/core/lib/**
         "//tensorflow/core:__pkg__",
+        # tensorflow/core/platform:env uses :path
+        "//tensorflow/core/platform:__pkg__",
     ],
     licenses = ["notice"],  # Apache 2.0
 )
@@ -101,9 +103,15 @@ cc_library(
 
 cc_library(
     name = "path",
+    srcs = ["path.cc"],
     hdrs = ["path.h"],
     deps = [
-        "//tensorflow/core/platform:path",
+        "//tensorflow/core/platform:logging",
+        "//tensorflow/core/platform:mutex",
+        "//tensorflow/core/platform:scanner",
+        "//tensorflow/core/platform:strcat",
+        "//tensorflow/core/platform:stringpiece",
+        "//tensorflow/core/platform:types",
     ],
     alwayslink = True,
 )
@@ -314,6 +322,7 @@ filegroup(
         "inputbuffer.cc",
         "inputstream_interface.cc",
         "iterator.cc",
+        "path.cc",
         "random_inputstream.cc",
         "record_reader.cc",
         "record_writer.cc",

@@ -229,8 +229,6 @@ tpu_strategies = [
     tpu_strategy_one_step
 ]
 
-all_strategies = strategies_minus_tpu + tpu_strategies
-
 
 def strategy_minus_tpu_combinations():
   return combinations.combine(

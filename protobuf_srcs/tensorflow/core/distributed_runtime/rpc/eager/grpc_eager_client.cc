@@ -74,8 +74,7 @@ class GrpcEagerClient : public EagerClient {
       override {                                                          \
     new RPCState<protobuf::Message>(                                      \
         &stub_, cq_, "/tensorflow.eager.EagerService/" #method, *request, \
-        response, std::move(done), nullptr, nullptr, /*max_retries=*/0,   \
-        /*fail_fast=*/true);                                              \
+        response, std::move(done), nullptr, nullptr, /*max_retries=*/0);  \
   }
 
   CLIENT_METHOD(CreateContext);
@@ -100,7 +99,7 @@ class GrpcEagerClient : public EagerClient {
     const auto& it = enqueue_dispatchers_.find(request->context_id());
     if (it != enqueue_dispatchers_.end()) {
       it->second.CancelCall();
-      enqueue_dispatchers_.erase(it);
+      enqueue_dispatchers_.erase(request->context_id());
     } else if (EnableStreaming()) {
       LOG(ERROR) << "Remote EagerContext with id " << request->context_id()
                  << " does not seem to exist.";
@@ -113,7 +112,8 @@ class GrpcEagerClient : public EagerClient {
     if (EnableStreaming()) {
       tf_shared_lock l(mu_);
       auto it = enqueue_dispatchers_.find(request->context_id());
-      if (it == enqueue_dispatchers_.end()) {
+      if (enqueue_dispatchers_.find(request->context_id()) ==
+          enqueue_dispatchers_.end()) {
         auto it_and_bool = enqueue_dispatchers_.emplace(
             std::piecewise_construct,
             std::forward_as_tuple(request->context_id()),

@@ -1163,7 +1163,9 @@ void VirtualScheduler::GenerateRunMetadata(RunMetadata* metadata) {
         node_stats->set_timeline_label(timeline_label);
       }
       node_stats->set_node_name(node_def->name());
-      // Timestamps in microseconds (can be used by timeline_server).
+      // Timestamps in microseconds.
+      // TODO(b/138165866): Remove once TimelineServer support is no longer
+      // needed.
       node_stats->set_op_start_rel_micros(0);
       node_stats->set_all_start_micros(
           nodestate.time_scheduled.asMicroSeconds().count());
@@ -1173,7 +1175,7 @@ void VirtualScheduler::GenerateRunMetadata(RunMetadata* metadata) {
       node_stats->set_all_end_rel_micros(
           nodestate.time_finished.asMicroSeconds().count() -
           nodestate.time_scheduled.asMicroSeconds().count());
-      // Timestamps in nanoseconds (can be used by xprof trace).
+      // Timestamps in nanoseconds.
       node_stats->set_op_start_rel_nanos(0);
       node_stats->set_all_start_nanos(nodestate.time_scheduled.count());
       node_stats->set_op_end_rel_nanos(nodestate.time_finished.count() -

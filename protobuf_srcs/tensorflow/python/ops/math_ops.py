@@ -55,7 +55,7 @@ tf.math.segment_sum(c, tf.constant([0, 0, 1]))
 
 The standard `segment_*` functions assert that the segment indices are sorted.
 If you have unsorted indices use the equivalent `unsorted_segment_` function.
-These functions take an additional argument `num_segments` so that the output
+Thses functions take an additional argument `num_segments` so that the output
 tensor can be efficiently allocated.
 
 ``` python
@@ -75,6 +75,7 @@ import six
 from six.moves import builtins
 from six.moves import xrange  # pylint: disable=redefined-builtin
 
+from tensorflow.python.compat import compat as fwd_compat
 from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
@@ -317,24 +318,7 @@ class DivideDelegateWithName(object):
 @tf_export("math.divide", "divide")
 @dispatch.add_dispatch_support
 def divide(x, y, name=None):
-  """Computes Python style division of `x` by `y`.
-
-  For example:
-
-  >>> x = tf.constant([16, 12, 11])
-  >>> y = tf.constant([4, 6, 2])
-  >>> tf.divide(x,y)
-  <tf.Tensor: shape=(3,), dtype=float64,
-  numpy=array([4. , 2. , 5.5])>
-
-  Args:
-    x: A `Tensor`
-    y: A `Tensor`
-    name: A name for the operation (optional).
-
-  Returns:
-    A `Tensor` with same shape as input
-  """
+  """Computes Python style division of `x` by `y`."""
 
   if name is not None:
     # Cannot use tensors operator overload, because it has no way to track
@@ -1363,7 +1347,10 @@ def tensor_equals(self, other):
   g = getattr(self, "graph", None)
   if (ops.Tensor._USE_EQUALITY and ops.executing_eagerly_outside_functions() and
       (g is None or g._building_function)):  # pylint: disable=protected-access
-    return gen_math_ops.equal(self, other, incompatible_shape_error=False)
+    if fwd_compat.forward_compatible(2019, 9, 25):
+      return gen_math_ops.equal(self, other, incompatible_shape_error=False)
+    else:
+      return gen_math_ops.equal(self, other)
   else:
     # In legacy graph mode, tensor equality is object equality
     return self is other
@@ -1374,7 +1361,10 @@ def tensor_not_equals(self, other):
   if other is None:
     return True
   if ops.Tensor._USE_EQUALITY and ops.executing_eagerly_outside_functions():
-    return gen_math_ops.not_equal(self, other, incompatible_shape_error=False)
+    if fwd_compat.forward_compatible(2019, 9, 25):
+      return gen_math_ops.not_equal(self, other, incompatible_shape_error=False)
+    else:
+      return gen_math_ops.not_equal(self, other)
   else:
     # In legacy graph mode, tensor equality is object equality
     return self is not other
@@ -3299,52 +3289,32 @@ def cumsum(x, axis=0, exclusive=False, reverse=False, name=None):
 
   By default, this op performs an inclusive cumsum, which means that the first
   element of the input is identical to the first element of the output:
-  For example:
 
-  # tf.cumsum([a, b, c])   # [a, a + b, a + b + c]
-  >>> x = tf.constant([2, 4, 6, 8])
-  >>> tf.cumsum(x)
-  <tf.Tensor: shape=(4,), dtype=int32,
-  numpy=array([ 2,  6, 12, 20], dtype=int32)>
-  
-  # using varying `axis` values
-  >>> y = tf.constant([[2, 4, 6, 8], [1,3,5,7]])
-  >>> tf.cumsum(y, axis=0)
-  <tf.Tensor: shape=(2, 4), dtype=int32, numpy=
-  array([[ 2,  4,  6,  8],
-         [ 3,  7, 11, 15]], dtype=int32)>
-         
-  >>> tf.cumsum(y, axis=1)
-  <tf.Tensor: shape=(2, 4), dtype=int32, numpy=
-  array([[ 2,  6, 12, 20],
-         [ 1,  4,  9, 16]], dtype=int32)>
- 
+  ```python
+  tf.cumsum([a, b, c])  # [a, a + b, a + b + c]
+  ```
+
   By setting the `exclusive` kwarg to `True`, an exclusive cumsum is performed
   instead:
-  
-  # tf.cumsum([a, b, c], exclusive=True)  => [0, a, a + b]
-  >>> x = tf.constant([2, 4, 6, 8])
-  >>> tf.cumsum(x, exclusive=True)
-  <tf.Tensor: shape=(4,), dtype=int32,
-  numpy=array([ 0,  2,  6, 12], dtype=int32)>
+
+  ```python
+  tf.cumsum([a, b, c], exclusive=True)  # [0, a, a + b]
+  ```
 
   By setting the `reverse` kwarg to `True`, the cumsum is performed in the
   opposite direction:
-  
-  # tf.cumsum([a, b, c], reverse=True)  # [a + b + c, b + c, c]
-  >>> x = tf.constant([2, 4, 6, 8])
-  >>> tf.cumsum(x, reverse=True) 
-  <tf.Tensor: shape=(4,), dtype=int32,
-  numpy=array([20, 18, 14,  8], dtype=int32)>
+
+  ```python
+  tf.cumsum([a, b, c], reverse=True)  # [a + b + c, b + c, c]
+  ```
 
   This is more efficient than using separate `tf.reverse` ops.
+
   The `reverse` and `exclusive` kwargs can also be combined:
-  
-  # tf.cumsum([a, b, c], exclusive=True, reverse=True)  # [b + c, c, 0]
-  >>> x = tf.constant([2, 4, 6, 8])
-  >>> tf.cumsum(x, exclusive=True, reverse=True)
-  <tf.Tensor: shape=(4,), dtype=int32,
-  numpy=array([18, 14,  8,  0], dtype=int32)>
+
+  ```python
+  tf.cumsum([a, b, c], exclusive=True, reverse=True)  # [b + c, c, 0]
+  ```
 
   Args:
     x: A `Tensor`. Must be one of the following types: `float32`, `float64`,
@@ -4150,8 +4120,8 @@ def tensordot(a, b, axes, name=None):
 def polyval(coeffs, x, name=None):
   r"""Computes the elementwise value of a polynomial.
 
-  If `x` is a tensor and `coeffs` is a list n + 1 tensors,
-  this function returns the value of the n-th order polynomial
+  If `x` is a tensor and `coeffs` is a list n + 1 tensors, this function returns
+  the value of the n-th order polynomial
 
      p(x) = coeffs[n-1] + coeffs[n-2] * x + ...  + coeffs[0] * x**(n-1)
 
@@ -4166,8 +4136,8 @@ def polyval(coeffs, x, name=None):
     name: A name for the operation (optional).
 
   Returns:
-    A `tensor` of the shape as the expression p(x) with usual broadcasting
-    rules for element-wise addition and multiplication applied.
+    A `tensor` of the shape as the expression p(x) with usual broadcasting rules
+    for element-wise addition and multiplication applied.
 
   @compatibility(numpy)
   Equivalent to numpy.polyval.

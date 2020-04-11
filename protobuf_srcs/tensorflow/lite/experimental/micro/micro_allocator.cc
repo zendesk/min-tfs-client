@@ -15,9 +15,7 @@ limitations under the License.
 
 #include "tensorflow/lite/experimental/micro/micro_allocator.h"
 
-#include <cstddef>
-
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/c/c_api_internal.h"
 #include "tensorflow/lite/core/api/flatbuffer_conversions.h"
 #include "tensorflow/lite/core/api/op_resolver.h"
 #include "tensorflow/lite/core/api/tensor_utils.h"
@@ -41,6 +39,8 @@ struct TensorInfo {
 // We align tensor buffers to 16-byte boundaries, since this is a common
 // requirement for SIMD extensions.
 constexpr int kBufferAlignment = 16;
+// For common data structures that doesn't need SIMD extensions.
+constexpr int kDefaultAlignment = sizeof(int);
 
 class MicroBuiltinDataAllocator : public BuiltinDataAllocator {
  public:
@@ -48,10 +48,7 @@ class MicroBuiltinDataAllocator : public BuiltinDataAllocator {
       : memory_allocator_(memory_allocator) {}
 
   void* Allocate(size_t size) override {
-    // Align to an address that is proper for all primitive types, but no more
-    // than the size.
-    return memory_allocator_->AllocateFromTail(
-        size, std::min(size, alignof(std::max_align_t)));
+    return memory_allocator_->AllocateFromTail(size, kDefaultAlignment);
   }
   void Deallocate(void* data) override {
     // Do not deallocate, builtin data needs to be available for the life time
@@ -87,13 +84,7 @@ MicroAllocator::MicroAllocator(TfLiteContext* context, const Model* model,
   context_->tensors_size = tensors_->size();
   context_->tensors =
       reinterpret_cast<TfLiteTensor*>(memory_allocator_.AllocateFromTail(
-          sizeof(TfLiteTensor) * context_->tensors_size,
-          alignof(TfLiteTensor)));
-  if (context_->tensors == nullptr) {
-    error_reporter_->Report(
-        "Failed to allocate memory for context->tensors, %d bytes required",
-        sizeof(TfLiteTensor) * context_->tensors_size);
-  }
+          sizeof(TfLiteTensor) * context_->tensors_size, kDefaultAlignment));
 
   // Null all inputs so we can later perform a null check to avoid re-allocating
   // registered pre-allocated inputs.
@@ -130,8 +121,7 @@ TfLiteStatus MicroAllocator::AllocateNodeAndRegistrations(
 
   auto* output =
       reinterpret_cast<NodeAndRegistration*>(memory_allocator_.AllocateFromTail(
-          sizeof(NodeAndRegistration) * operators_->size(),
-          alignof(NodeAndRegistration)));
+          sizeof(NodeAndRegistration) * operators_->size(), kDefaultAlignment));
   if (output == nullptr) {
     error_reporter_->Report(
         "Failed to allocate memory for node_and_registrations.");
@@ -234,13 +224,7 @@ TfLiteStatus MicroAllocator::FinishTensorAllocation() {
   auto tmp_allocator = memory_allocator_.CreateChildAllocator();
   TensorInfo* tensor_info =
       reinterpret_cast<TensorInfo*>(tmp_allocator.AllocateFromTail(
-          sizeof(TensorInfo) * tensors_size, alignof(TensorInfo)));
-  if (tensor_info == nullptr) {
-    error_reporter_->Report(
-        "Failed to allocate memory for tensor_info, %d bytes required",
-        sizeof(TfLiteTensor) * context_->tensors_size);
-    return kTfLiteError;
-  }
+          sizeof(TensorInfo) * tensors_size, sizeof(TensorInfo)));
 
   // Set up the runtime data structures for all tensors.
   for (size_t i = 0; i < tensors_size; ++i) {
@@ -452,8 +436,8 @@ TfLiteStatus MicroAllocator::InitializeRuntimeTensor(
   // form. We have to allocate memory for this.
   result->dims =
       reinterpret_cast<TfLiteIntArray*>(memory_allocator_.AllocateFromTail(
-          TfLiteIntArrayGetSizeInBytes(flatbuffer_tensor.shape()->Length()),
-          alignof(TfLiteIntArray)));
+          sizeof(int) * (flatbuffer_tensor.shape()->Length() + 1),
+          kDefaultAlignment));
   result->dims->size = flatbuffer_tensor.shape()->Length();
   for (size_t n = 0; n < flatbuffer_tensor.shape()->Length(); ++n) {
     result->dims->data[n] = flatbuffer_tensor.shape()->Get(n);
@@ -478,27 +462,25 @@ TfLiteStatus MicroAllocator::InitializeRuntimeTensor(
     int channels = src_quantization->scale()->size();
     TfLiteAffineQuantization* quantization =
         reinterpret_cast<TfLiteAffineQuantization*>(
-            memory_allocator_.AllocateFromTail(
-                sizeof(TfLiteAffineQuantization),
-                alignof(TfLiteAffineQuantization)));
-    quantization->zero_point =
-        reinterpret_cast<TfLiteIntArray*>(memory_allocator_.AllocateFromTail(
-            TfLiteIntArrayGetSizeInBytes(channels), alignof(TfLiteIntArray)));
-    quantization->scale =
-        reinterpret_cast<TfLiteFloatArray*>(memory_allocator_.AllocateFromTail(
-            TfLiteFloatArrayGetSizeInBytes(channels),
-            alignof(TfLiteFloatArray)));
-    quantization->zero_point->size = channels;
-    quantization->scale->size = channels;
-    int* zero_point_data = quantization->zero_point->data;
-    float* scale_data = quantization->scale->data;
+            memory_allocator_.AllocateFromTail(sizeof(TfLiteAffineQuantization),
+                                               kDefaultAlignment));
+    int* zero_point_array =
+        reinterpret_cast<int*>(memory_allocator_.AllocateFromTail(
+            channels * sizeof(int) + sizeof(int), kDefaultAlignment));
+    int* scale_array =
+        reinterpret_cast<int*>(memory_allocator_.AllocateFromTail(
+            channels * sizeof(float) + sizeof(int), kDefaultAlignment));
+    zero_point_array[0] = channels;
+    scale_array[0] = channels;
+    int* zero_point_data = &zero_point_array[1];
+    float* scale_data = reinterpret_cast<float*>(&scale_array[1]);
     for (int i = 0; i < channels; i++) {
       zero_point_data[i] = src_quantization->zero_point()->Get(i);
       scale_data[i] = src_quantization->scale()->Get(i);
     }
-    // TODO(rocky): Need to add a micro_allocator test case that fails when
-    // this is not copied:
-    quantization->quantized_dimension = src_quantization->quantized_dimension();
+    quantization->scale = reinterpret_cast<TfLiteFloatArray*>(scale_array);
+    quantization->zero_point =
+        reinterpret_cast<TfLiteIntArray*>(zero_point_array);
 
     result->quantization = {kTfLiteAffineQuantization, quantization};
   }

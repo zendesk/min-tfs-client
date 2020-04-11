@@ -471,7 +471,7 @@ class SerializationContext {
     bool serialize_data_tensors = true;
   };
 
-  explicit SerializationContext(Params params) : params_(params) {}
+  explicit SerializationContext(Params params) : params_(std::move(params)) {}
 
   std::vector<std::pair<string, Tensor>>* input_list() {
     return params_.input_list;
@@ -553,15 +553,15 @@ class IteratorBase {
     return SaveInternal(writer);
   }
 
+  // Restores the state of this iterator.
+  virtual Status Restore(IteratorContext* ctx, IteratorStateReader* reader) {
+    return RestoreInternal(ctx, reader);
+  }
+
  protected:
   // Returns a node that models this iterator.
   virtual std::shared_ptr<model::Node> CreateNode(
       IteratorContext* ctx, model::Node::Args args) const = 0;
-
-  // Restores the state of this iterator.
-  Status Restore(IteratorContext* ctx, IteratorStateReader* reader) {
-    return RestoreInternal(ctx, reader);
-  }
 
   // This is needed so that sub-classes of IteratorBase can call
   // `SaveInternal` on their input iterators.
@@ -591,10 +591,6 @@ class IteratorBase {
   //
   // This method is used to restore the state of the iterator from a checkpoint.
   //
-  // Implementations may assume that the iterator is in a clean state. That is,
-  // its `Initialize` method has been called, but its `GetNext` method has
-  // never been called.
-  //
   // TODO(jsimsa): Make this method pure virtual once all `IteratorBase`
   // implementations have an override.
   virtual Status RestoreInternal(IteratorContext* ctx,
@@ -609,8 +605,7 @@ class IteratorBase {
   }
 
  private:
-  // For access to `AddCleanupFunction` and `Restore`.
-  friend class DatasetBase;
+  friend class DatasetBase;          // for access to `AddCleanupFunction`
   friend class DatasetBaseIterator;  // for access to `node_`
 
   // Registers a cleanup function to be called upon object destruction.
@@ -721,25 +716,6 @@ class DatasetBase : public core::RefCounted {
   Status MakeIterator(IteratorContext&& ctx, const string& output_prefix,
                       std::unique_ptr<IteratorBase>* iterator) const {
     return MakeIterator(&ctx, output_prefix, iterator);
-  }
-
-  // Returns a new iterator restored from the checkpoint data in `reader`.
-  Status MakeIteratorFromCheckpoint(
-      IteratorContext* ctx, const string& output_prefix,
-      IteratorStateReader* reader,
-      std::unique_ptr<IteratorBase>* iterator) const {
-    std::unique_ptr<IteratorBase> it;
-    TF_RETURN_IF_ERROR(MakeIterator(ctx, output_prefix, &it));
-    TF_RETURN_IF_ERROR(it->Restore(ctx, reader));
-    *iterator = std::move(it);
-    return Status::OK();
-  }
-
-  Status MakeIteratorFromCheckpoint(
-      IteratorContext&& ctx, const string& output_prefix,
-      IteratorStateReader* reader,
-      std::unique_ptr<IteratorBase>* iterator) const {
-    return MakeIteratorFromCheckpoint(&ctx, output_prefix, reader, iterator);
   }
 
   // Returns a vector of DataType values, representing the respective
@@ -855,8 +831,6 @@ class DatasetBaseIterator : public IteratorBase {
     return params_.dataset->output_shapes();
   }
 
-  virtual const DatasetBase* dataset() const { return params_.dataset; }
-
   // The sequence of iterators leading up to this iterator.
   const string& prefix() const override { return params_.prefix; }
 
@@ -868,11 +842,6 @@ class DatasetBaseIterator : public IteratorBase {
 
   Status GetNext(IteratorContext* ctx, std::vector<Tensor>* out_tensors,
                  bool* end_of_sequence) final;
-
-  Status GetNext(IteratorContext&& ctx, std::vector<Tensor>* out_tensors,
-                 bool* end_of_sequence) {
-    return GetNext(&ctx, out_tensors, end_of_sequence);
-  }
 
   Status Save(SerializationContext* ctx, IteratorStateWriter* writer) final {
     TF_RETURN_IF_ERROR(params_.dataset->CheckExternalState());
@@ -942,7 +911,7 @@ class DatasetBaseIterator : public IteratorBase {
   // this iterator has started work.
   void RecordStart(IteratorContext* ctx, bool stop_output = false) {
     if (collect_resource_usage(ctx)) {
-      int64 now_nanos = EnvTime::NowNanos();
+      int64 now_nanos = Env::Default()->NowNanos();
       if (stop_output && node_->output()) {
         node_->output()->record_stop(now_nanos);
       }
@@ -954,7 +923,7 @@ class DatasetBaseIterator : public IteratorBase {
   // this iterator has stopped work.
   void RecordStop(IteratorContext* ctx, bool start_output = false) {
     if (collect_resource_usage(ctx)) {
-      int64 now_nanos = EnvTime::NowNanos();
+      int64 now_nanos = Env::Default()->NowNanos();
       node_->record_stop(now_nanos);
       if (start_output && node_->output()) {
         node_->output()->record_start(now_nanos);
@@ -989,7 +958,12 @@ class DatasetIterator : public DatasetBaseIterator {
         typed_dataset_(params.dataset) {}
 
   // The dataset from which this iterator was created.
-  const DatasetType* dataset() const final { return typed_dataset_; }
+  const DatasetType* dataset() const { return typed_dataset_; }
+
+ protected:
+  virtual Status GetNextInternal(IteratorContext* ctx,
+                                 std::vector<Tensor>* out_tensors,
+                                 bool* end_of_sequence) = 0;
 
  private:
   const DatasetType* const typed_dataset_;  // Not owned.
@@ -1028,7 +1002,7 @@ Status ParseVectorArgument(OpKernelContext* ctx,
 // graph execution engine.
 class DatasetOpKernel : public OpKernel {
  public:
-  explicit DatasetOpKernel(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+  DatasetOpKernel(OpKernelConstruction* ctx) : OpKernel(ctx) {}
 
   void Compute(OpKernelContext* ctx) final;
 
@@ -1046,8 +1020,7 @@ class DatasetOpKernel : public OpKernel {
 // TensorFlow graph execution engine.
 class UnaryDatasetOpKernel : public DatasetOpKernel {
  public:
-  explicit UnaryDatasetOpKernel(OpKernelConstruction* ctx)
-      : DatasetOpKernel(ctx) {}
+  UnaryDatasetOpKernel(OpKernelConstruction* ctx) : DatasetOpKernel(ctx) {}
 
  protected:
   void MakeDataset(OpKernelContext* ctx, DatasetBase** output) final;
@@ -1059,8 +1032,7 @@ class UnaryDatasetOpKernel : public DatasetOpKernel {
 // TensorFlow graph execution engine.
 class BinaryDatasetOpKernel : public DatasetOpKernel {
  public:
-  explicit BinaryDatasetOpKernel(OpKernelConstruction* ctx)
-      : DatasetOpKernel(ctx) {}
+  BinaryDatasetOpKernel(OpKernelConstruction* ctx) : DatasetOpKernel(ctx) {}
 
  protected:
   void MakeDataset(OpKernelContext* ctx, DatasetBase** output) final;

@@ -174,8 +174,6 @@ def _convert_tf1_model(flags):
 
   if flags.allow_custom_ops:
     converter.allow_custom_ops = flags.allow_custom_ops
-  if flags.custom_opdefs:
-    converter._custom_opdefs = _parse_array(flags.custom_opdefs)  # pylint: disable=protected-access
   if flags.target_ops:
     ops_set_options = lite.OpsSet.get_options()
     converter.target_spec.supported_ops = set()
@@ -205,9 +203,8 @@ def _convert_tf1_model(flags):
   if flags.conversion_summary_dir:
     converter.conversion_summary_dir = flags.conversion_summary_dir
 
-  # TODO(b/145312675): Enable the new converter by default. It requires to
-  # add a new command line argument like `experimental_legacy_converter`.
-  converter.experimental_new_converter = flags.experimental_new_converter
+  if flags.experimental_new_converter:
+    converter.experimental_new_converter = True
 
   # Convert model.
   output_data = converter.convert()
@@ -231,9 +228,8 @@ def _convert_tf2_model(flags):
     model = keras.models.load_model(flags.keras_model_file)
     converter = lite.TFLiteConverterV2.from_keras_model(model)
 
-  # TODO(b/145312675): Enable the new converter by default. It requires to
-  # add a new command line argument like `experimental_legacy_converter`.
-  converter.experimental_new_converter = flags.experimental_new_converter
+  if flags.experimental_new_converter:
+    converter.experimental_new_converter = True
 
   # Convert the model.
   tflite_model = converter.convert()
@@ -302,12 +298,6 @@ def _check_tf1_flags(flags, unparsed):
   if flags.dump_graphviz_video and not flags.dump_graphviz_dir:
     raise ValueError("--dump_graphviz_video must be used with "
                      "--dump_graphviz_dir")
-
-  if flags.custom_opdefs and not flags.experimental_new_converter:
-    raise ValueError("--custom_opdefs must be used with "
-                     "--experimental_new_converter")
-  if flags.custom_opdefs and not flags.allow_custom_ops:
-    raise ValueError("--custom_opdefs must be used with --allow_custom_ops")
 
 
 def _check_tf2_flags(flags):
@@ -472,12 +462,6 @@ def _get_tf1_flags(parser):
             "created for any op that is unknown. The developer will need to "
             "provide these to the TensorFlow Lite runtime with a custom "
             "resolver. (default False)"))
-  parser.add_argument(
-      "--custom_opdefs",
-      type=str,
-      help=("String representing a list of custom ops OpDefs delineated with "
-            "commas that are included in the GraphDef. Required when using "
-            "custom operations with --experimental_new_converter."))
   parser.add_argument(
       "--target_ops",
       type=str,

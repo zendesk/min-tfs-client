@@ -1,4 +1,4 @@
-load("//tensorflow:tensorflow.bzl", "tf_py_test")
+load("//tensorflow:tensorflow.bzl", "py_test")
 
 package(
     default_visibility = ["//tensorflow:internal"],
@@ -7,56 +7,59 @@ package(
 
 exports_files(["LICENSE"])
 
-exports_files(
-    ["autotune_benchmark.py"],
-    visibility = ["//tensorflow:internal"],
-)
-
-tf_py_test(
+py_test(
     name = "autotune_benchmark",
     srcs = ["autotune_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:session",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
     ],
 )
 
-tf_py_test(
+py_test(
     name = "choose_fastest_benchmark",
     srcs = ["choose_fastest_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_ops",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:session",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
     ],
 )
 
-tf_py_test(
+py_test(
     name = "choose_fastest_branch_benchmark",
     srcs = ["choose_fastest_branch_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_ops",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:session",
         "//tensorflow/python/data/benchmarks:benchmark_base",
-        "//tensorflow/python/data/experimental/ops:testing",
+        "//tensorflow/python/data/experimental/ops:sleep",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
     ],
 )
 
-tf_py_test(
+py_test(
     name = "csv_dataset_benchmark",
     srcs = ["csv_dataset_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    tags = ["no_pip"],
+    deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:parsing_ops",
         "//tensorflow/python:platform",
@@ -64,15 +67,16 @@ tf_py_test(
         "//tensorflow/python:session",
         "//tensorflow/python/data/experimental/ops:readers",
         "//tensorflow/python/data/ops:readers",
+        "//third_party/py/numpy",
     ],
-    tags = ["no_pip"],
 )
 
-tf_py_test(
+py_test(
     name = "map_and_batch_benchmark",
     srcs = ["map_and_batch_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -83,13 +87,16 @@ tf_py_test(
         "//tensorflow/python:session",
         "//tensorflow/python/data/experimental/ops:batching",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
     ],
 )
 
-tf_py_test(
+py_test(
     name = "map_defun_benchmark",
     srcs = ["map_defun_benchmark.py"],
-    additional_deps = [
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:dtypes",
@@ -101,11 +108,12 @@ tf_py_test(
     ],
 )
 
-tf_py_test(
+py_test(
     name = "map_vectorization_benchmark",
     srcs = ["map_vectorization_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -116,15 +124,17 @@ tf_py_test(
         "//tensorflow/python:session",
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/data/util:nest",
+        "//third_party/py/numpy",
     ],
 )
 
-tf_py_test(
+py_test(
     name = "matching_files_benchmark",
     size = "small",
     srcs = ["matching_files_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:dtypes",
@@ -132,54 +142,61 @@ tf_py_test(
         "//tensorflow/python:util",
         "//tensorflow/python/data/experimental/ops:matching_files",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
     ],
 )
 
-tf_py_test(
+py_test(
     name = "optimize_benchmark",
     srcs = ["optimize_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_ops",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:session",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
     ],
 )
 
-tf_py_test(
+py_test(
     name = "parallel_interleave_benchmark",
     srcs = ["parallel_interleave_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:session",
         "//tensorflow/python/data/experimental/ops:interleave_ops",
-        "//tensorflow/python/data/experimental/ops:testing",
+        "//tensorflow/python/data/experimental/ops:sleep",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
     ],
 )
 
-tf_py_test(
+py_test(
     name = "rejection_resample_benchmark",
     srcs = ["rejection_resample_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
-        "@six_archive//:six",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    tags = ["no_pip"],
+    deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python/data/experimental/ops:resampling",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
+        "@six_archive//:six",
     ],
-    tags = ["no_pip"],
 )
 
-tf_py_test(
+py_test(
     name = "snapshot_dataset_benchmark",
     srcs = ["snapshot_dataset_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:errors",
@@ -190,14 +207,16 @@ tf_py_test(
         "//tensorflow/python/data/experimental/ops:snapshot",
         "//tensorflow/python/data/kernel_tests:test_base",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
     ],
 )
 
-tf_py_test(
+py_test(
     name = "unbatch_benchmark",
     srcs = ["unbatch_benchmark.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:dtypes",
@@ -205,5 +224,6 @@ tf_py_test(
         "//tensorflow/python:session",
         "//tensorflow/python/data/experimental/ops:batching",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//third_party/py/numpy",
     ],
 )

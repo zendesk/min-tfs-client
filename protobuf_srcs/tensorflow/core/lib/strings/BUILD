@@ -2,8 +2,6 @@ package(
     default_visibility = [
         # tensorflow/core:lib effectively exposes all targets under tensorflow/core/lib/**
         "//tensorflow/core:__pkg__",
-        # tensorflow/core/framework references some of the headers in this package
-        "//tensorflow/core/framework:__subpackages__",
         # tensorflow/core/platform still references some of the headers in this package
         "//tensorflow/core/platform:__subpackages__",
     ],
@@ -14,9 +12,11 @@ package(
 
 cc_library(
     name = "base64",
+    srcs = ["base64.cc"],
     hdrs = ["base64.h"],
     deps = [
-        "//tensorflow/core/platform:base64",
+        "//tensorflow/core/lib/core:errors",
+        "//tensorflow/core/lib/core:status",
     ],
 )
 
@@ -111,6 +111,7 @@ filegroup(
 filegroup(
     name = "legacy_lib_strings_all_srcs",
     srcs = [
+        "base64.cc",
         "ordered_code.cc",
         "proto_serialization.cc",
         "proto_text_util.cc",

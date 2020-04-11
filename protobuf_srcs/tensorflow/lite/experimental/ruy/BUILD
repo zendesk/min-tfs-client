@@ -118,7 +118,6 @@ cc_library(
         ":opt_set",
         ":platform",
         ":time",
-        "@gemmlowp//:profiler",
     ],
 )
 
@@ -754,10 +753,6 @@ ruy_benchmark(
         ("u8", "u8", "i32", "i16"),
         ("i8", "i8", "i32", "i32"),
     ],
-    deps = [
-        "//tensorflow/lite/experimental/ruy:test_lib",
-        "@gemmlowp//:profiler",  # Note also tagged as req_dep.
-    ],
 )
 
 ruy_test(
@@ -773,11 +768,6 @@ ruy_test(
         ("i8", "u8", "i32", "i8"),
         ("u8", "u8", "i32", "i16"),
         ("i8", "i8", "i32", "i32"),
-        ("i8", "u8", "i32", "i32"),
-    ],
-    deps = [
-        "//tensorflow/lite/experimental/ruy:test_lib",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -793,10 +783,6 @@ ruy_test(
         ("i8", "i8", "i32", "i32"),
     ],
     tags = ["slow"],
-    deps = [
-        "//tensorflow/lite/experimental/ruy:test_lib",
-        "@com_google_googletest//:gtest_main",
-    ],
 )
 
 ruy_test(
@@ -807,10 +793,6 @@ ruy_test(
         ("f32", "f32", "f32", "f32"),
         ("u8", "u8", "i32", "u8"),
         ("u8", "u8", "i32", "i16"),
-    ],
-    deps = [
-        "//tensorflow/lite/experimental/ruy:test_lib",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -834,9 +816,5 @@ ruy_benchmark_opt_sets(
         "1ff",
         "3ff",
         "7ff",
-    ],
-    deps = [
-        "//tensorflow/lite/experimental/ruy:test_lib",
-        "@gemmlowp//:profiler",  # Note also tagged as req_dep.
     ],
 )

@@ -80,7 +80,6 @@ class InstantiatedCapturedFunction {
   // possible. This can be useful for calling a captured
   // function in cases where an `IteratorContext*` is not available
   // (such as a destructor).
-  // TODO(b/144278100): Avoid running functions without IteratorContext.
   Status RunInstantiated(const std::vector<Tensor>& args,
                          std::vector<Tensor>* rets);
 
@@ -110,10 +109,8 @@ class InstantiatedCapturedFunction {
   FunctionLibraryRuntime* const lib_;
   const FunctionLibraryRuntime::Handle f_handle_;
   const DataTypeVector ret_types_;
-  // Note: Since we have no IteratorContext in `RunInstantiated`, we have to
-  // capture these at function instantiation time.
   std::function<void(std::function<void()>)> captured_runner_;
-  CancellationManager* captured_cancellation_manager_;
+  CancellationManager* cancellation_manager_;
   CapturedFunction* const captured_func_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(InstantiatedCapturedFunction);

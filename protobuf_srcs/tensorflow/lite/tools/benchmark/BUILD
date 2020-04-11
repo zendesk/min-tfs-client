@@ -106,12 +106,7 @@ cc_library(
     name = "benchmark_tflite_model_lib",
     srcs = ["benchmark_tflite_model.cc"],
     hdrs = ["benchmark_tflite_model.h"],
-    copts = common_copts + select({
-        "//tensorflow:ios": [
-            "-xobjective-c++",
-        ],
-        "//conditions:default": [],
-    }),
+    copts = common_copts,
     deps = [
         ":benchmark_model_lib",
         ":benchmark_utils",
@@ -130,9 +125,6 @@ cc_library(
         "//tensorflow:android": [
             "//tensorflow/lite/delegates/gpu:delegate",
         ],
-        "//tensorflow:ios": [
-            "//tensorflow/lite/delegates/gpu:metal_delegate",
-        ],
         "//conditions:default": [],
     }),
 )
@@ -150,7 +142,7 @@ cc_library(
         ":benchmark_utils",
         ":logging",
         "//tensorflow/core:stats_calculator_portable",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
         "//tensorflow/lite/nnapi:nnapi_util",
         "//tensorflow/lite/profiling:time",
         "//tensorflow/lite/tools:command_line_flags",
@@ -185,7 +177,7 @@ cc_library(
         ":logging",
         "//tensorflow/core:stats_calculator_portable",
         "//tensorflow/lite:framework",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/c:c_api_internal",
         "//tensorflow/lite/profiling:memory_info",
         "//tensorflow/lite/profiling:time",
         "//tensorflow/lite/tools:command_line_flags",

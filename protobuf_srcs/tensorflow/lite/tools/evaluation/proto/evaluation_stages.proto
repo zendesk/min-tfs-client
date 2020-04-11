@@ -210,7 +210,7 @@ message InferenceProfilerMetrics {
 // Proto containing information about all the objects (predicted or
 // ground-truth) contained in an image.
 //
-// Next ID: 4
+// Next ID: 3
 message ObjectDetectionResult {
   // One instance of an object detected in an image.
   // Next ID: 4
@@ -238,10 +238,8 @@ message ObjectDetectionResult {
   }
 
   repeated ObjectInstance objects = 1;
-  // Filename of the image.
+  // Required for ground-truth data, to compare against inference results.
   optional string image_name = 2;
-  // Unique id for the image.
-  optional int64 image_id = 3;
 }
 
 // Proto containing ground-truth ObjectsSets for all images in a COCO validation

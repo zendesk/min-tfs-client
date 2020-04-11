@@ -15,7 +15,6 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/dynamic_dimension_inference.h"
 
-#include "absl/strings/match.h"
 #include "tensorflow/compiler/xla/literal_util.h"
 #include "tensorflow/compiler/xla/service/dfs_hlo_visitor_with_default.h"
 #include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
@@ -182,8 +181,7 @@ Status DynamicDimensionInferenceVisitor::HandleCustomCall(HloInstruction* hlo) {
       hlo, [&](HloInstruction* operand, ShapeIndex index, int64 dimension,
                int64 operand_index, HloInstruction* dynamic_size,
                DimensionConstraint constraint) {
-        if (hlo->custom_call_target() != "Unpad" ||
-            absl::StartsWith(hlo->custom_call_target(), "Resize")) {
+        if (hlo->custom_call_target() != "Unpad") {
           return Unimplemented(
               "CustomCall is not supported to have a dynamic dimension");
         }
@@ -419,47 +417,14 @@ Status DynamicDimensionInferenceVisitor::HandleConvolution(
 
 Status DynamicDimensionInferenceVisitor::HandleConcatenate(
     HloInstruction* hlo) {
-  // First handle concatenate dimensions. We do this by iterating through all
-  // operands while tracking both dynamic and static dimensions.
-
-  // static_size is used to keep track of the concated size of static
-  // dimensions.
-  int64 static_size = 0;
-  std::vector<HloInstruction*> dynamic_concat_dims;
-  for (int64 i = 0; i < hlo->operand_count(); ++i) {
-    HloInstruction* dynamic_size = parent_->GetDynamicSize(
-        hlo->mutable_operand(i), {}, hlo->concatenate_dimension());
-    if (dynamic_size == nullptr) {
-      // This is a static dimension.
-      static_size +=
-          hlo->operand(i)->shape().dimensions(hlo->concatenate_dimension());
-    } else {
-      dynamic_concat_dims.push_back(dynamic_size);
-    }
-  }
-  // If concat dimension is dynamic, calculate its size by summing up static
-  // dims and dynamic dims together.
-  if (!dynamic_concat_dims.empty()) {
-    HloInstruction* dim_size_total =
-        hlo->parent()->AddInstruction(HloInstruction::CreateConstant(
-            LiteralUtil::CreateR0<int32>(static_size)));
-    for (HloInstruction* dynamic_dim : dynamic_concat_dims) {
-      dim_size_total = hlo->parent()->AddInstruction(
-          HloInstruction::CreateBinary(dim_size_total->shape(), HloOpcode::kAdd,
-                                       dim_size_total, dynamic_dim));
-    }
-    parent_->SetDynamicSize(hlo, {}, hlo->concatenate_dimension(),
-                            dim_size_total, {.stride = 1, .multiple_of = 1});
-  }
-
-  // Simply pass through non-concat dynamic dimensions.
   return ForEachOperandDynamicDimension(
       hlo, [&](HloInstruction* operand, ShapeIndex index, int64 dimension,
                int64 operand_index, HloInstruction* dynamic_size,
                DimensionConstraint constraint) {
         int64 concatenate_dimension = hlo->concatenate_dimension();
         if (concatenate_dimension == dimension) {
-          return Status::OK();
+          return Unimplemented("Dynamic concatenation is not supported yet: %s",
+                               operand->ToString());
         }
         parent_->SetDynamicSize(hlo, index, dimension, dynamic_size,
                                 constraint);
@@ -504,7 +469,7 @@ Status DynamicDimensionInferenceVisitor::HandleSetDimensionSize(
     // Propagate dynamic dimension indicated by this set dimension size
     // instruction.
     parent_->SetDynamicSize(hlo, {}, hlo->dimension(), hlo->mutable_operand(1),
-                            {.stride = 1, .multiple_of = 1});
+                            DimensionConstraint(1, 1));
   }
 
   // Also Propagate dynamic dimension already set by operands.
@@ -848,7 +813,7 @@ Status DynamicDimensionInferenceVisitor::HandleReshape(HloInstruction* hlo) {
 
           parent_->SetDynamicSize(
               reshape, {}, output_dynamic_dimension, new_dynamic_size,
-              {.stride = 1, .multiple_of = constraint.multiple_of / divisor});
+              DimensionConstraint(1, constraint.multiple_of / divisor));
         }
 
         if (input_dim_size < output_dim_size) {
@@ -885,12 +850,12 @@ Status DynamicDimensionInferenceVisitor::HandleReshape(HloInstruction* hlo) {
               hlo->parent()->AddInstruction(HloInstruction::CreateBinary(
                   output_dynamic_size->shape(), HloOpcode::kMultiply,
                   new_dynamic_size, operand_dynamic_size));
+          int64 new_multiple_of_constraint =
+              constraint.multiple_of * output_dim_size /
+              operand->shape().dimensions(input_dynamic_dimension);
           parent_->SetDynamicSize(
               reshape, {}, output_dynamic_dimension, new_dynamic_size,
-              {.stride = 1,
-               .multiple_of =
-                   constraint.multiple_of * output_dim_size /
-                   operand->shape().dimensions(input_dynamic_dimension)});
+              DimensionConstraint(1, new_multiple_of_constraint));
         }
 
         return Status::OK();
@@ -1262,7 +1227,7 @@ Status DynamicDimensionInferenceVisitor::HandleParameter(HloInstruction* hlo) {
         parent_->SetDynamicSize(target_parameter,
                                 dynamic_dimension.parameter_index,
                                 dynamic_dimension.dimension, dynamic_size,
-                                {.stride = 1, .multiple_of = 1});
+                                DimensionConstraint(1, 1));
         return Status::OK();
       });
 }
@@ -1351,9 +1316,9 @@ Status DynamicDimensionInference::ForwardDynamicSize(HloInstruction* inst,
     DynamicDimension dynamic_dimension{inst, index, dim};
     auto iter = dynamic_mapping_.find(dynamic_dimension);
     if (iter != dynamic_mapping_.end()) {
-      dynamic_mapping_.insert({dynamic_dimension_new, iter->second});
-      constraint_mapping_.insert(
-          {dynamic_dimension_new, constraint_mapping_[dynamic_dimension]});
+      dynamic_mapping_.try_emplace(dynamic_dimension_new, iter->second);
+      constraint_mapping_.try_emplace(dynamic_dimension_new,
+                                      constraint_mapping_[dynamic_dimension]);
       auto iter = per_hlo_dynamic_dimensions_.try_emplace(new_inst);
       iter.first->second.emplace(dynamic_dimension_new);
     }

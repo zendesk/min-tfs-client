@@ -56,15 +56,7 @@ tensorflow::EventsWriter::Close
 [py_func_lib] # py_func
 tensorflow::InitializePyTrampoline
 
-[framework_internal_impl] # op_def_registry, dtypes
-tensorflow::BaseType
-tensorflow::DataTypeString
-tensorflow::DataTypeIsComplex
-tensorflow::DataTypeIsFloating
-tensorflow::DataTypeIsInteger
-tensorflow::DataTypeIsQuantized
-tensorflow::DataTypeIsUnsigned
-tensorflow::DataTypeSize
+[framework_internal_impl] # op_def_registry
 tensorflow::OpRegistry::Global
 tensorflow::OpRegistry::LookUpOpDef
 tensorflow::RemoveNonDeprecationDescriptionsFromOpDef
@@ -80,8 +72,7 @@ tensorflow::DeviceFactory::AddDevices
 tensorflow::SessionOptions::SessionOptions
 tensorflow::DoQuantizeTrainingOnSerializedGraphDef
 
-[protos_all]  # device_lib, dtypes
-tensorflow::DataType_IsValid
+[protos_all]  # device_lib
 tensorflow::ConfigProto::ConfigProto
 tensorflow::ConfigProto::ParseFromString
 tensorflow::DeviceAttributes::SerializeToString
@@ -89,6 +80,12 @@ tensorflow::DeviceAttributes::SerializeToString
 [py_exception_registry] # py_exception_registry
 tensorflow::PyExceptionRegistry::Init
 tensorflow::PyExceptionRegistry::Lookup
+
+[python_scoped_annotation] # scoped_annotation
+tensorflow::profiler::PythonScopedAnnotation::Init
+tensorflow::profiler::PythonScopedAnnotation::Enter
+tensorflow::profiler::PythonScopedAnnotation::Exit
+tensorflow::profiler::PythonScopedAnnotation::IsEnabled
 
 [kernel_registry] # kernel_registry
 tensorflow::swig::TryFindKernelClass
@@ -100,6 +97,15 @@ toco::TocoGetPotentiallySupportedOps
 [transform_graph_lib] # transform_graph
 tensorflow::graph_transforms::TransformGraph
 tensorflow::graph_transforms::ParseTransformParameters
+
+[python_traceme] # traceme
+tensorflow::profiler::PythonTraceMe::Init
+tensorflow::profiler::PythonTraceMe::Enter
+tensorflow::profiler::PythonTraceMe::Exit
+tensorflow::profiler::PythonTraceMe::IsEnabled
+
+[traceme_recorder] # traceme
+tensorflow::profiler::internal::g_trace_level
 
 [checkpoint_reader] # py_checkpoint_reader
 tensorflow::checkpoint::CheckpointReader
@@ -121,5 +127,3 @@ tensorflow::TensorToNdarray
 tensorflow::detail::PyDecrefDeleter
 tensorflow::make_safe
 
-[python_op_gen] # python_op_gen
-tensorflow::GetPythonWrappers

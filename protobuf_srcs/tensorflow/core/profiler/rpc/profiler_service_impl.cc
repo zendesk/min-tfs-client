@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "grpcpp/support/status.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/grpc_services.h"
 #include "tensorflow/core/profiler/lib/profiler_session.h"
 #include "tensorflow/core/util/ptr_util.h"
 

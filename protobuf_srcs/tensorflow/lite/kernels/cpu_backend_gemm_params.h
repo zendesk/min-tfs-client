@@ -157,26 +157,17 @@ void ValidateGemmParams(
     TFLITE_DCHECK(!params.multiplier_fixedpoint_perchannel);
     TFLITE_DCHECK(!params.multiplier_exponent_perchannel);
   } else if (quantization_flavor ==
-                 QuantizationFlavor::kIntegerWithUniformMultiplier &&
-             !std::is_same<DstScalar, int32_t>::value) {
+             QuantizationFlavor::kIntegerWithUniformMultiplier) {
     TFLITE_DCHECK(params.multiplier_fixedpoint);
     // Nothing to check about multiplier_exponent
     TFLITE_DCHECK(!params.multiplier_fixedpoint_perchannel);
     TFLITE_DCHECK(!params.multiplier_exponent_perchannel);
   } else if (quantization_flavor ==
-                 QuantizationFlavor::kIntegerWithPerRowMultiplier &&
-             !std::is_same<DstScalar, int32_t>::value) {
+             QuantizationFlavor::kIntegerWithPerRowMultiplier) {
     TFLITE_DCHECK(!params.multiplier_fixedpoint);
     TFLITE_DCHECK(!params.multiplier_exponent);
     TFLITE_DCHECK(params.multiplier_fixedpoint_perchannel);
     TFLITE_DCHECK(params.multiplier_exponent_perchannel);
-  } else {
-    // For the get raw accumulator case, we should make sure none of the
-    // quantization params are set.
-    TFLITE_DCHECK(!params.multiplier_fixedpoint);
-    TFLITE_DCHECK(!params.multiplier_exponent);
-    TFLITE_DCHECK(!params.multiplier_fixedpoint_perchannel);
-    TFLITE_DCHECK(!params.multiplier_exponent_perchannel);
   }
 }
 

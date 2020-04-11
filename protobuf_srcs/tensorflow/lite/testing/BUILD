@@ -21,8 +21,6 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
-exports_files(["generated_examples_zip_test.cc"])
-
 [gen_zip_test(
     name = "zip_test_%s" % test_name,
     size = "medium",
@@ -491,10 +489,8 @@ edgetpu_ops = [
     "depthwiseconv",  # high error
     "fully_connected",
     "l2norm",  # high error
-    "maximum",
     "max_pool",
     "mean",
-    "minimum",
     "mul",
     "pad",  # high error
     "relu",
@@ -513,7 +509,6 @@ edgetpu_ops = [
     "sub",
     "sum",  # high error
     "tanh",
-    "transpose_conv",
 ]
 
 [gen_zipped_test_file(

@@ -69,7 +69,7 @@ inline std::vector<std::string>* CoveredPaths() {
   return &covered_paths;
 }
 
-inline const char* PathName(Path path) {
+const char* PathName(Path path) {
 #define RUY_PATHNAME_CASE(NAME) \
   case Path::NAME:              \
     return #NAME;
@@ -90,7 +90,7 @@ inline const char* PathName(Path path) {
 #undef RUY_PATHNAME_CASE
 }
 
-inline const char* TuningName(Tuning tuning) {
+const char* TuningName(Tuning tuning) {
 #define RUY_SUBPATHNAME_CASE(NAME) \
   case Tuning::NAME:               \
     return #NAME;
@@ -104,7 +104,7 @@ inline const char* TuningName(Tuning tuning) {
 #undef RUY_SUBPATHNAME_CASE
 }
 
-inline const char* PathName(ExternalPath path) {
+const char* PathName(ExternalPath path) {
 #define RUY_PATHNAME_CASE(NAME) \
   case ExternalPath::NAME:      \
     return #NAME;
@@ -120,12 +120,11 @@ inline const char* PathName(ExternalPath path) {
 #undef RUY_PATHNAME_CASE
 }
 
-inline std::ostream& operator<<(std::ostream& stream, Path path) {
+std::ostream& operator<<(std::ostream& stream, Path path) {
   return stream << PathName(path);
 }
 
-inline std::ostream& operator<<(std::ostream& stream,
-                                ExternalPath external_path) {
+std::ostream& operator<<(std::ostream& stream, ExternalPath external_path) {
   return stream << PathName(external_path);
 }
 
@@ -180,7 +179,6 @@ struct LogCoveredPathsOnDestruction final {
 enum class RandomRange {
   kGeneral,
   kAvoidMinValue,
-  kOffCenterAvoidMinValue,
   kReasonableSrcZeroPoint,
   kReasonableDstZeroPoint,
   kBias
@@ -198,8 +196,6 @@ struct RandomRangeBounds<Scalar, true> {
         return -1;
       case RandomRange::kAvoidMinValue:
         return -1;
-      case RandomRange::kOffCenterAvoidMinValue:
-        return -1;
       case RandomRange::kReasonableSrcZeroPoint:
         return 0;
       case RandomRange::kReasonableDstZeroPoint:
@@ -216,8 +212,6 @@ struct RandomRangeBounds<Scalar, true> {
       case RandomRange::kGeneral:
         return 1;
       case RandomRange::kAvoidMinValue:
-        return 1;
-      case RandomRange::kOffCenterAvoidMinValue:
         return 1;
       case RandomRange::kReasonableSrcZeroPoint:
         return 0;
@@ -250,19 +244,11 @@ Scalar Parametrized(float param) {
 template <typename Scalar>
 struct RandomRangeBounds<Scalar, false> {
   static Scalar GetMinBound(RandomRange range) {
-    static constexpr double offcentredness =
-        0.02;  // Shift lower limit by about 5 for range of 255.
     switch (range) {
       case RandomRange::kGeneral:
         return std::numeric_limits<Scalar>::lowest();
       case RandomRange::kAvoidMinValue:
         return 1 + std::numeric_limits<Scalar>::lowest();
-      case RandomRange::kOffCenterAvoidMinValue:
-        return 1 + std::numeric_limits<Scalar>::lowest() +
-               static_cast<Scalar>(
-                   offcentredness * std::numeric_limits<Scalar>::max() -
-                   offcentredness *
-                       (std::numeric_limits<Scalar>::lowest() + 1));
       case RandomRange::kReasonableSrcZeroPoint:
         return std::numeric_limits<Scalar>::lowest();
       case RandomRange::kReasonableDstZeroPoint:
@@ -281,8 +267,6 @@ struct RandomRangeBounds<Scalar, false> {
       case RandomRange::kGeneral:
         return std::numeric_limits<Scalar>::max();
       case RandomRange::kAvoidMinValue:
-        return std::numeric_limits<Scalar>::max();
-      case RandomRange::kOffCenterAvoidMinValue:
         return std::numeric_limits<Scalar>::max();
       case RandomRange::kReasonableSrcZeroPoint:
         return std::numeric_limits<Scalar>::max();
@@ -358,8 +342,8 @@ void MakeRandomVector(RandomRange range, int size, std::vector<Scalar>* dst) {
 
 enum class LayoutStyle { kPackedLinear, kLinear };
 
-inline void MakeLayout(int rows, int cols, Order order,
-                       LayoutStyle layout_style, Layout* layout) {
+void MakeLayout(int rows, int cols, Order order, LayoutStyle layout_style,
+                Layout* layout) {
   layout->rows = rows;
   layout->cols = cols;
   layout->order = order;
@@ -547,7 +531,7 @@ struct TestSet final {
   bool benchmark_prepack_rhs = false;
 };
 
-inline Context& GlobalContext() {
+Context& GlobalContext() {
   static Context context;
   return context;
 }
@@ -661,7 +645,7 @@ struct GemmlowpOrder<Order::kRowMajor> {
   static constexpr gemmlowp::MapOrder kValue = gemmlowp::MapOrder::RowMajor;
 };
 
-inline gemmlowp::GemmContext& GlobalGemmlowpContext() {
+gemmlowp::GemmContext& GlobalGemmlowpContext() {
   static gemmlowp::GemmContext context;
   return context;
 }
@@ -1267,7 +1251,7 @@ struct Stats {
   double max;
 };
 
-inline std::string StatsAsString(const Stats& stats) {
+std::string StatsAsString(const Stats& stats) {
   char buf[256];
   snprintf(buf, sizeof(buf), "(median = %g, mean = %g, min = %g, max = %g)",
            stats.median, stats.mean, stats.min, stats.max);
@@ -1401,9 +1385,9 @@ void ComputeReasonableMultiplier(const Matrix<LhsScalar>& lhs,
   RUY_CHECK_GT(*multiplier, 0.0);
 }
 
-inline void QuantizeMultiplier(double multiplier_double,
-                               std::int32_t* multiplier_fixedpoint,
-                               int* multiplier_exponent) {
+void QuantizeMultiplier(double multiplier_double,
+                        std::int32_t* multiplier_fixedpoint,
+                        int* multiplier_exponent) {
   RUY_CHECK_GT(multiplier_double, 0);
   if (multiplier_double == 0.) {
     *multiplier_fixedpoint = 0;
@@ -1544,7 +1528,7 @@ template <typename LhsScalar, typename RhsScalar, typename SpecType>
 void TestSet<LhsScalar, RhsScalar, SpecType>::MakeLhsRhs() {
   RUY_CHECK_EQ(life_stage, LifeStage::kHasZeroPoints);
   MakeRandom(rows, depth, lhs_order, lhs_zero_point, layout_style,
-             RandomRange::kOffCenterAvoidMinValue, &lhs);
+             RandomRange::kAvoidMinValue, &lhs);
   MakeRandom(depth, cols, rhs_order, rhs_zero_point, layout_style,
              RandomRange::kGeneral, &rhs);
   life_stage = LifeStage::kHasLhsRhs;
@@ -1557,10 +1541,6 @@ void TestSet<LhsScalar, RhsScalar, SpecType>::MakeSpec() {
   if (!getenv("BENCHMARK_ONLY_MATMUL") && (global_random_engine()() & 1)) {
     MakeRandomVector(RandomRange::kBias, rows, &bias_data);
     spec.bias = bias_data.data();
-  }
-  if (lhs.matrix.zero_point == std::numeric_limits<LhsScalar>::lowest() &&
-      rhs.matrix.zero_point == std::numeric_limits<RhsScalar>::lowest()) {
-    lhs.matrix.zero_point += 1;
   }
   MakeSpecMultiplierFieldsImpl<TestSet>::Run(this);
   MakeSpecClampFields(lhs.matrix, rhs.matrix, dst_zero_point, &spec);
@@ -1588,7 +1568,7 @@ inline int GetHexIntEnvVarOrZero(const char* name) {
   if (!val) {
     return 0;
   }
-  return std::stoi(val, nullptr, 16);
+  return std::stoi(val, 0, 16);
 }
 
 inline bool GetBoolEnvVarOrFalse(const char* name) {
@@ -1604,7 +1584,7 @@ void TestSet<LhsScalar, RhsScalar, SpecType>::MakeOtherParams() {
   life_stage = LifeStage::kHasOtherParams;
 }
 
-inline std::vector<Path> PathsBitfieldAsVector(Path paths_bitfield) {
+std::vector<Path> PathsBitfieldAsVector(Path paths_bitfield) {
   std::vector<Path> result;
   std::uint32_t remaining_paths = static_cast<std::uint32_t>(paths_bitfield);
   std::uint32_t test_bit = 1;
@@ -1618,7 +1598,7 @@ inline std::vector<Path> PathsBitfieldAsVector(Path paths_bitfield) {
   return result;
 }
 
-inline std::vector<Tuning> EnumerateTuningsForPath(Path path, bool benchmark) {
+std::vector<Tuning> EnumerateTuningsForPath(Path path, bool benchmark) {
   if (benchmark) {
     return {Tuning::kAuto};
   }

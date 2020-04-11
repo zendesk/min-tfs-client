@@ -48,7 +48,17 @@ namespace tflite {
 namespace gpu {
 namespace cl {
 
-struct InferenceOptions : public tflite::gpu::InferenceOptions {};
+enum class InferencePriority {
+  MIN_LATENCY,
+
+  MAX_PRECISION,
+};
+
+struct InferenceOptions {
+  bool allow_precision_loss = false;
+
+  InferencePriority priority = InferencePriority::MAX_PRECISION;
+};
 
 // Indicates environment
 struct InferenceEnvironmentProperties {

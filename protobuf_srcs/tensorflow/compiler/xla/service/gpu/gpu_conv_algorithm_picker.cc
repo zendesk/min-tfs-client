@@ -652,9 +652,7 @@ StatusOr<bool> GpuConvAlgorithmPicker::RunOnInstruction(HloInstruction* instr) {
   StatusOr<AutotuneResult> best_algo_or =
       PickBestAlgorithm(Cast<HloCustomCallInstruction>(instr));
   if (!best_algo_or.ok()) {
-    LOG(WARNING) << "Failed to determine best cudnn convolution algorithm: "
-                 << best_algo_or.status()
-                 << "\n\nConvolution performance may be suboptimal.";
+    LOG(ERROR) << best_algo_or.status();
     return false;
   }
 

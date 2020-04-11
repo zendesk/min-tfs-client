@@ -201,6 +201,3 @@ class LinearOperatorInversion(linear_operator.LinearOperator):
 
   def _eigvals(self):
     return 1. / self.operator.eigvals()
-
-  def _cond(self):
-    return self.operator.cond()

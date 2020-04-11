@@ -15,13 +15,12 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_EXPERIMENTAL_MICRO_MICRO_INTERPRETER_H_
 #define TENSORFLOW_LITE_EXPERIMENTAL_MICRO_MICRO_INTERPRETER_H_
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/c/c_api_internal.h"
 #include "tensorflow/lite/core/api/error_reporter.h"
 #include "tensorflow/lite/core/api/op_resolver.h"
 #include "tensorflow/lite/experimental/micro/micro_allocator.h"
-#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+#include "tensorflow/lite/experimental/micro/micro_optional_debug_tools.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-#include "tensorflow/lite/type_to_tflitetype.h"
 
 namespace tflite {
 
@@ -59,47 +58,14 @@ class MicroInterpreter {
 
   size_t tensors_size() const { return context_.tensors_size; }
   TfLiteTensor* tensor(size_t tensor_index);
-  template <class T>
-  T* typed_tensor(int tensor_index) {
-    if (TfLiteTensor* tensor_ptr = tensor(tensor_index)) {
-      if (tensor_ptr->type == typeToTfLiteType<T>()) {
-        return GetTensorData<T>(tensor_ptr);
-      }
-    }
-    return nullptr;
-  }
 
   TfLiteTensor* input(size_t index);
   size_t inputs_size() const { return subgraph_->inputs()->Length(); }
-  const flatbuffers::Vector<int32_t>& inputs() const {
-    return *subgraph_->inputs();
-  }
-  TfLiteTensor* input_tensor(size_t index) { return input(index); }
-  template <class T>
-  T* typed_input_tensor(int tensor_index) {
-    if (TfLiteTensor* tensor_ptr = input_tensor(tensor_index)) {
-      if (tensor_ptr->type == typeToTfLiteType<T>()) {
-        return GetTensorData<T>(tensor_ptr);
-      }
-    }
-    return nullptr;
-  }
+  const flatbuffers::Vector<int32_t>* inputs() { return subgraph_->inputs(); }
 
   TfLiteTensor* output(size_t index);
   size_t outputs_size() const { return subgraph_->outputs()->Length(); }
-  const flatbuffers::Vector<int32_t>& outputs() const {
-    return *subgraph_->outputs();
-  }
-  TfLiteTensor* output_tensor(size_t index) { return output(index); }
-  template <class T>
-  T* typed_output_tensor(int tensor_index) {
-    if (TfLiteTensor* tensor_ptr = output_tensor(tensor_index)) {
-      if (tensor_ptr->type == typeToTfLiteType<T>()) {
-        return GetTensorData<T>(tensor_ptr);
-      }
-    }
-    return nullptr;
-  }
+  const flatbuffers::Vector<int32_t>* outputs() { return subgraph_->outputs(); }
 
   TfLiteStatus initialization_status() const { return initialization_status_; }
 

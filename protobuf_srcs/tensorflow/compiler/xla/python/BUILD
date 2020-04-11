@@ -1,5 +1,5 @@
-load("//tensorflow/core/platform:build_config.bzl", "pyx_library")
-load("//tensorflow/compiler/xla:xla.bzl", "xla_py_test_deps")
+load("//tensorflow/core/platform:default/build_config.bzl", "pyx_library")
+load("//tensorflow/compiler/xla:xla.bzl", "xla_py_test_deps", "xla_python_default_plugins")
 load("//tensorflow:tensorflow.bzl", "pybind_extension")
 load("//tensorflow:tensorflow.bzl", "py_test", "tf_cc_test")
 
@@ -26,7 +26,6 @@ py_test(
     name = "xla_client_test",
     srcs = ["xla_client_test.py"],
     main = "xla_client_test.py",
-    python_version = "PY3",
     srcs_version = "PY2AND3",
     tags = ["no_oss"],  # TODO(phawkins): This test passes, but requires --config=monolithic.
     deps = [
@@ -64,7 +63,7 @@ cc_library(
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
-        "//tensorflow/compiler/xla:xla_data_proto_cc",
+        "//tensorflow/compiler/xla:xla_data_proto",
         "//tensorflow/core:lib",
         "//third_party/py/numpy:headers",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -171,7 +170,7 @@ cc_library(
         "//tensorflow/compiler/xla:status",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla:xla_data_proto_cc",
+        "//tensorflow/compiler/xla:xla_data_proto",
         "//tensorflow/compiler/xla/client:client_library",
         "//tensorflow/compiler/xla/client:executable_build_options",
         "//tensorflow/compiler/xla/client:local_client",
@@ -247,11 +246,6 @@ py_test(
     ] + xla_py_test_deps(),
 )
 
-config_setting(
-    name = "enable_gpu",
-    values = {"define": "xla_python_enable_gpu=true"},
-)
-
 pybind_extension(
     name = "xla_extension",
     srcs = [
@@ -284,7 +278,7 @@ pybind_extension(
         "//tensorflow/compiler/xla:status",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla:xla_data_proto_cc",
+        "//tensorflow/compiler/xla:xla_data_proto",
         "//tensorflow/compiler/xla/client:client_library",
         "//tensorflow/compiler/xla/client:executable_build_options",
         "//tensorflow/compiler/xla/client:local_client",
@@ -313,8 +307,5 @@ pybind_extension(
         # not require Tensorflow.
         "//tensorflow/core:lib_internal_impl",  # buildcleaner: keep
         "//tensorflow/stream_executor:device_memory_allocator",
-    ] + select({
-        ":enable_gpu": ["//tensorflow/compiler/xla/service:gpu_plugin"],
-        "//conditions:default": [],
-    }),
+    ] + xla_python_default_plugins(),
 )

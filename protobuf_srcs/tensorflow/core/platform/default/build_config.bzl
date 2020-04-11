@@ -1,34 +1,14 @@
 # Platform-specific build configurations.
 
 load("@com_google_protobuf//:protobuf.bzl", "proto_gen")
-load("//tensorflow:tensorflow.bzl", "clean_dep", "if_not_windows")
-load("//tensorflow/core/platform:build_config_root.bzl", "if_static")
+load("//tensorflow:tensorflow.bzl", "if_not_windows")
+load("//tensorflow/core/platform:default/build_config_root.bzl", "if_static")
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
 load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm")
 load(
     "//third_party/mkl:build_defs.bzl",
     "if_mkl_ml",
 )
-
-def well_known_proto_libs():
-    """Set of standard protobuf protos, like Any and Timestamp.
-
-    This list should be provided by protobuf.bzl, but it's not.
-    """
-    return [
-        "@com_google_protobuf//:any_proto",
-        "@com_google_protobuf//:api_proto",
-        "@com_google_protobuf//:compiler_plugin_proto",
-        "@com_google_protobuf//:descriptor_proto",
-        "@com_google_protobuf//:duration_proto",
-        "@com_google_protobuf//:empty_proto",
-        "@com_google_protobuf//:field_mask_proto",
-        "@com_google_protobuf//:source_context_proto",
-        "@com_google_protobuf//:struct_proto",
-        "@com_google_protobuf//:timestamp_proto",
-        "@com_google_protobuf//:type_proto",
-        "@com_google_protobuf//:wrappers_proto",
-    ]
 
 # Appends a suffix to a list of deps.
 def tf_deps(deps, suffix):
@@ -185,14 +165,13 @@ def cc_proto_library(
       **kargs: other keyword arguments that are passed to cc_library.
     """
 
-    wkt_deps = ["@com_google_protobuf//:cc_wkt_protos"]
-    all_protolib_deps = protolib_deps + wkt_deps
-
     includes = []
     if include != None:
         includes = [include]
     if protolib_name == None:
         protolib_name = name
+    if not protolib_deps:
+        protolib_deps = deps
 
     if internal_bootstrap_hack:
         # For pre-checked-in generated files, we add the internal_bootstrap_hack
@@ -203,7 +182,7 @@ def cc_proto_library(
             includes = includes,
             protoc = protoc,
             visibility = ["//visibility:public"],
-            deps = [s + "_genproto" for s in all_protolib_deps],
+            deps = [s + "_genproto" for s in protolib_deps],
         )
 
         # An empty cc_library to make rule dependency consistent.
@@ -235,31 +214,21 @@ def cc_proto_library(
         plugin_options = plugin_options,
         protoc = protoc,
         visibility = ["//visibility:public"],
-        deps = [s + "_genproto" for s in all_protolib_deps],
+        deps = [s + "_genproto" for s in protolib_deps],
     )
 
     if use_grpc_plugin:
         cc_libs += select({
-            clean_dep("//tensorflow:linux_s390x"): ["//external:grpc_lib_unsecure"],
+            "//tensorflow:linux_s390x": ["//external:grpc_lib_unsecure"],
             "//conditions:default": ["//external:grpc_lib"],
         })
 
-    impl_name = name + "_impl"
-    header_only_name = name + "_headers_only"
-    header_only_deps = tf_deps(protolib_deps, "_cc_headers_only")
-
     if make_default_target_header_only:
-        native.alias(
-            name = name,
-            actual = header_only_name,
-            visibility = kargs["visibility"],
-        )
+        header_only_name = name
+        impl_name = name + "_impl"
     else:
-        native.alias(
-            name = name,
-            actual = impl_name,
-            visibility = kargs["visibility"],
-        )
+        header_only_name = name + "_headers_only"
+        impl_name = name
 
     native.cc_library(
         name = impl_name,
@@ -272,12 +241,22 @@ def cc_proto_library(
     )
     native.cc_library(
         name = header_only_name,
-        deps = [
-            "@com_google_protobuf//:protobuf_headers",
-        ] + header_only_deps + if_static([impl_name]),
+        deps = ["@com_google_protobuf//:protobuf_headers"] + if_static([impl_name]),
         hdrs = gen_hdrs,
         **kargs
     )
+
+    # Temporarily also add an alias with the 'protolib_name'. So far we relied
+    # on copybara to switch dependencies to the _cc dependencies. Now that these
+    # copybara rules are removed, we need to first change the internal BUILD
+    # files to depend on the correct targets instead, then this can be removed.
+    # TODO(b/143648532): Remove this once all reverse dependencies are migrated.
+    if protolib_name != name:
+        native.alias(
+            name = protolib_name,
+            actual = name,
+            visibility = kargs["visibility"],
+        )
 
 # Re-defined protocol buffer rule to bring in the change introduced in commit
 # https://github.com/google/protobuf/commit/294b5758c373cbab4b72f35f4cb62dc1d8332b68
@@ -394,13 +373,18 @@ def tf_proto_library_cc(
             deps = [s + "_genproto" for s in protolib_deps],
         )
 
+        # Temporarily also add an alias with 'name'. So far we relied on
+        # copybara to switch dependencies to the _cc dependencies. Now that these
+        # copybara rules are removed, we need to change the internal BUILD files to
+        # depend on the correct targets instead.
+        # TODO(b/143648532): Remove this once all reverse dependencies are
+        # migrated.
         native.alias(
-            name = cc_name + "_headers_only",
+            name = name,
             actual = cc_name,
             testonly = testonly,
             visibility = visibility,
         )
-
         native.cc_library(
             name = cc_name,
             deps = cc_deps + ["@com_google_protobuf//:protobuf_headers"] + if_static([name + "_cc_impl"]),
@@ -434,7 +418,7 @@ def tf_proto_library_cc(
         use_grpc_namespace = use_grpc_namespace,
         visibility = visibility,
         deps = cc_deps + ["@com_google_protobuf//:cc_wkt_protos"],
-        protolib_deps = protolib_deps,
+        protolib_deps = protolib_deps + ["@com_google_protobuf//:cc_wkt_protos"],
     )
 
 def tf_proto_library_py(
@@ -459,7 +443,7 @@ def tf_proto_library_py(
         )
         native.py_library(
             name = py_name,
-            deps = py_deps + [clean_dep("@com_google_protobuf//:protobuf_python")],
+            deps = py_deps + ["@com_google_protobuf//:protobuf_python"],
             testonly = testonly,
             visibility = visibility,
         )
@@ -469,12 +453,12 @@ def tf_proto_library_py(
         name = py_name,
         testonly = testonly,
         srcs = srcs,
-        default_runtime = clean_dep("@com_google_protobuf//:protobuf_python"),
+        default_runtime = "@com_google_protobuf//:protobuf_python",
         protoc = "@com_google_protobuf//:protoc",
         srcs_version = srcs_version,
         use_grpc_plugin = use_grpc_plugin,
         visibility = visibility,
-        deps = deps + py_deps + [clean_dep("@com_google_protobuf//:protobuf_python")],
+        deps = deps + py_deps + ["@com_google_protobuf//:protobuf_python"],
     )
 
 def tf_jspb_proto_library(**kwargs):
@@ -493,32 +477,18 @@ def tf_proto_library(
         cc_libs = [],
         cc_api_version = 2,
         cc_grpc_version = None,
-        use_grpc_namespace = False,
         j2objc_api_version = 1,
         js_codegen = "jspb",
         make_default_target_header_only = False,
         exports = []):
     """Make a proto library, possibly depending on other proto libraries."""
-
-    # TODO(b/145545130): Add docstring explaining what rules this creates and how
-    # opensource projects importing TF in bazel can use them safely (i.e. w/o ODR or
-    # ABI violations).
     _ignore = (js_codegen, exports)
-
-    native.proto_library(
-        name = name,
-        srcs = srcs,
-        deps = protodeps + well_known_proto_libs(),
-        visibility = visibility,
-        testonly = testonly,
-    )
 
     tf_proto_library_cc(
         name = name,
         testonly = testonly,
         srcs = srcs,
         cc_grpc_version = cc_grpc_version,
-        use_grpc_namespace = use_grpc_namespace,
         cc_libs = cc_libs,
         make_default_target_header_only = make_default_target_header_only,
         protodeps = protodeps,
@@ -548,7 +518,7 @@ def tf_platform_srcs(files):
     posix_set = base_set + ["posix/" + f for f in files]
 
     return select({
-        clean_dep("//tensorflow:windows"): native.glob(windows_set),
+        "//tensorflow:windows": native.glob(windows_set),
         "//conditions:default": native.glob(posix_set),
     })
 
@@ -562,7 +532,7 @@ def tf_additional_lib_hdrs(exclude = []):
         "default/posix_file_system.h",
     ])
     return select({
-        clean_dep("//tensorflow:windows"): windows_hdrs,
+        "//tensorflow:windows": windows_hdrs,
         "//conditions:default": native.glob([
             "default/*.h",
             "posix/*.h",
@@ -585,7 +555,7 @@ def tf_additional_lib_srcs(exclude = []):
         "default/stacktrace_handler.cc",
     ])
     return select({
-        clean_dep("//tensorflow:windows"): windows_srcs,
+        "//tensorflow:windows": windows_srcs,
         "//conditions:default": native.glob([
             "default/*.cc",
             "posix/*.cc",
@@ -600,9 +570,6 @@ def tf_additional_monitoring_srcs():
         "default/monitoring.cc",
     ]
 
-def tf_additional_env_hdrs():
-    return []
-
 def tf_additional_proto_hdrs():
     return [
         "default/integral_types.h",
@@ -610,31 +577,31 @@ def tf_additional_proto_hdrs():
     ]
 
 def tf_additional_all_protos():
-    return [clean_dep("//tensorflow/core:protos_all")]
+    return ["//tensorflow/core:protos_all"]
 
 def tf_protos_all_impl():
     return [
-        clean_dep("//tensorflow/core:autotuning_proto_cc_impl"),
-        clean_dep("//tensorflow/core:conv_autotuning_proto_cc_impl"),
-        clean_dep("//tensorflow/core:protos_all_cc_impl"),
+        "//tensorflow/core:autotuning_proto_cc_impl",
+        "//tensorflow/core:conv_autotuning_proto_cc_impl",
+        "//tensorflow/core:protos_all_cc_impl",
     ]
 
 def tf_protos_all():
     return if_static(
         extra_deps = tf_protos_all_impl(),
-        otherwise = [clean_dep("//tensorflow/core:protos_all_cc")],
+        otherwise = ["//tensorflow/core:protos_all_cc"],
     )
 
-def tf_protos_profiler_impl():
-    return [clean_dep("//tensorflow/core/profiler/protobuf:xplane_proto_cc_impl")]
+def tf_profiler_all_protos():
+    return ["//tensorflow/core/profiler:protos_all"]
 
 def tf_protos_grappler_impl():
-    return [clean_dep("//tensorflow/core/grappler/costs:op_performance_data_cc_impl")]
+    return ["//tensorflow/core/grappler/costs:op_performance_data_cc_impl"]
 
 def tf_protos_grappler():
     return if_static(
         extra_deps = tf_protos_grappler_impl(),
-        otherwise = [clean_dep("//tensorflow/core/grappler/costs:op_performance_data_cc")],
+        otherwise = ["//tensorflow/core/grappler/costs:op_performance_data_cc"],
     )
 
 def tf_additional_device_tracer_srcs():
@@ -666,45 +633,45 @@ def tf_additional_lib_deps():
         "@com_google_absl//absl/types:span",
         "@com_google_absl//absl/types:optional",
     ] + if_static(
-        [clean_dep("@nsync//:nsync_cpp")],
-        [clean_dep("@nsync//:nsync_headers")],
+        ["@nsync//:nsync_cpp"],
+        ["@nsync//:nsync_headers"],
     )
 
 def tf_additional_core_deps():
     return select({
-        clean_dep("//tensorflow:android"): [],
-        clean_dep("//tensorflow:ios"): [],
-        clean_dep("//tensorflow:linux_s390x"): [],
-        clean_dep("//tensorflow:windows"): [],
-        clean_dep("//tensorflow:no_gcp_support"): [],
+        "//tensorflow:android": [],
+        "//tensorflow:ios": [],
+        "//tensorflow:linux_s390x": [],
+        "//tensorflow:windows": [],
+        "//tensorflow:no_gcp_support": [],
         "//conditions:default": [
             "//tensorflow/core/platform/cloud:gcs_file_system",
         ],
     }) + select({
-        clean_dep("//tensorflow:android"): [],
-        clean_dep("//tensorflow:ios"): [],
-        clean_dep("//tensorflow:linux_s390x"): [],
-        clean_dep("//tensorflow:windows"): [],
-        clean_dep("//tensorflow:no_hdfs_support"): [],
+        "//tensorflow:android": [],
+        "//tensorflow:ios": [],
+        "//tensorflow:linux_s390x": [],
+        "//tensorflow:windows": [],
+        "//tensorflow:no_hdfs_support": [],
         "//conditions:default": [
-            clean_dep("//tensorflow/core/platform/hadoop:hadoop_file_system"),
+            "//tensorflow/core/platform/hadoop:hadoop_file_system",
         ],
     }) + select({
-        clean_dep("//tensorflow:android"): [],
-        clean_dep("//tensorflow:ios"): [],
-        clean_dep("//tensorflow:linux_s390x"): [],
-        clean_dep("//tensorflow:windows"): [],
-        clean_dep("//tensorflow:no_aws_support"): [],
+        "//tensorflow:android": [],
+        "//tensorflow:ios": [],
+        "//tensorflow:linux_s390x": [],
+        "//tensorflow:windows": [],
+        "//tensorflow:no_aws_support": [],
         "//conditions:default": [
-            clean_dep("//tensorflow/core/platform/s3:s3_file_system"),
+            "//tensorflow/core/platform/s3:s3_file_system",
         ],
     })
 
 def tf_lib_proto_parsing_deps():
     return [
         ":protos_all_cc",
-        clean_dep("//third_party/eigen3"),
-        clean_dep("//tensorflow/core/platform/default/build_config:proto_parsing"),
+        "//third_party/eigen3",
+        "//tensorflow/core/platform/default/build_config:proto_parsing",
     ]
 
 def tf_py_clif_cc(name, visibility = None, **kwargs):
@@ -720,24 +687,24 @@ def tf_pyclif_proto_library(
     native.filegroup(name = name + "_pb2")
 
 def tf_additional_binary_deps():
-    return [clean_dep("@nsync//:nsync_cpp")] + if_cuda(
+    return ["@nsync//:nsync_cpp"] + if_cuda(
         [
-            clean_dep("//tensorflow/stream_executor:cuda_platform"),
+            "//tensorflow/stream_executor:cuda_platform",
         ],
     ) + if_rocm(
         [
-            clean_dep("//tensorflow/stream_executor:rocm_platform"),
-            clean_dep("//tensorflow/core/platform/default/build_config:rocm"),
+            "//tensorflow/stream_executor:rocm_platform",
+            "//tensorflow/core/platform/default/build_config:rocm",
         ],
     ) + [
         # TODO(allenl): Split these out into their own shared objects (they are
         # here because they are shared between contrib/ op shared objects and
         # core).
-        clean_dep("//tensorflow/core/kernels:lookup_util"),
-        clean_dep("//tensorflow/core/util/tensor_bundle"),
+        "//tensorflow/core/kernels:lookup_util",
+        "//tensorflow/core/util/tensor_bundle",
     ] + if_mkl_ml(
         [
-            clean_dep("//third_party/mkl:intel_binary_blob"),
+            "//third_party/mkl:intel_binary_blob",
         ],
     )
 
@@ -755,15 +722,15 @@ def tf_fingerprint_deps():
 def tf_protobuf_deps():
     return if_static(
         [
-            clean_dep("@com_google_protobuf//:protobuf"),
+            "@com_google_protobuf//:protobuf",
         ],
-        otherwise = [clean_dep("@com_google_protobuf//:protobuf_headers")],
+        otherwise = ["@com_google_protobuf//:protobuf_headers"],
     )
 
 def tf_protobuf_compiler_deps():
     return if_static(
         [
-            clean_dep("@com_google_protobuf//:protobuf"),
+            "@com_google_protobuf//:protobuf",
         ],
-        otherwise = [clean_dep("@com_google_protobuf//:protobuf_headers")],
+        otherwise = ["@com_google_protobuf//:protobuf_headers"],
     )

@@ -119,7 +119,8 @@ class MemoryCleanupTest(test_base.DatasetTestBase, parameterized.TestCase):
     ]
     self.assertEmpty(tensors, "%d Tensors are still alive." % len(tensors))
 
-  @combinations.generate(test_base.eager_only_combinations())
+  @combinations.generate(
+      combinations.combine(tf_api_version=[1, 2], mode="eager"))
   def testFilter(self):
 
     def get_dataset():
@@ -143,7 +144,8 @@ class MemoryCleanupTest(test_base.DatasetTestBase, parameterized.TestCase):
 
     self._testIteratorMemoryLeak(get_dataset)
 
-  @combinations.generate(test_base.eager_only_combinations())
+  @combinations.generate(
+      combinations.combine(tf_api_version=[1, 2], mode="eager"))
   def testFlatMap(self):
 
     def get_dataset():
@@ -155,7 +157,8 @@ class MemoryCleanupTest(test_base.DatasetTestBase, parameterized.TestCase):
 
     self._testIteratorMemoryLeak(get_dataset)
 
-  @combinations.generate(test_base.eager_only_combinations())
+  @combinations.generate(
+      combinations.combine(tf_api_version=[1, 2], mode="eager"))
   def testFromGenerator(self):
 
     def get_dataset():
@@ -168,8 +171,8 @@ class MemoryCleanupTest(test_base.DatasetTestBase, parameterized.TestCase):
     self._testIteratorMemoryLeak(get_dataset)
 
   @combinations.generate(
-      combinations.times(test_base.eager_only_combinations(),
-                         combinations.combine(num_parallel_calls=[None, 10])))
+      combinations.combine(
+          tf_api_version=[1, 2], mode="eager", num_parallel_calls=[None, 10]))
   def testMap(self, num_parallel_calls):
 
     def get_dataset():
@@ -198,8 +201,8 @@ class MemoryCleanupTest(test_base.DatasetTestBase, parameterized.TestCase):
     self._testIteratorMemoryLeak(get_dataset)
 
   @combinations.generate(
-      combinations.times(test_base.eager_only_combinations(),
-                         combinations.combine(num_parallel_calls=[None, 10])))
+      combinations.combine(
+          tf_api_version=[1, 2], mode="eager", num_parallel_calls=[None, 10]))
   def testInterleave(self, num_parallel_calls):
 
     def get_dataset():

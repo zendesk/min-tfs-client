@@ -20,7 +20,7 @@ import android.graphics.Bitmap.Config;
 import java.nio.ByteBuffer;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.tensorflow.lite.DataType;
-import org.tensorflow.lite.support.common.SupportPreconditions;
+import org.tensorflow.lite.support.common.SupportPrecondtions;
 import org.tensorflow.lite.support.tensorbuffer.TensorBuffer;
 
 /**
@@ -62,7 +62,7 @@ public class TensorImage {
    *     {@link DataType#FLOAT32}.
    */
   public TensorImage(DataType dataType) {
-    SupportPreconditions.checkArgument(
+    SupportPrecondtions.checkArgument(
         dataType == DataType.UINT8 || dataType == DataType.FLOAT32,
         "Illegal data type for TensorImage: Only FLOAT32 and UINT8 are accepted");
     container = new ImageContainer(dataType);
@@ -106,9 +106,10 @@ public class TensorImage {
    * @throws IllegalArgumentException if {@code bitmap} is not in ARGB_8888.
    */
   public void load(@NonNull Bitmap bitmap) {
-    SupportPreconditions.checkNotNull(bitmap, "Cannot load null bitmap.");
-    SupportPreconditions.checkArgument(
-        bitmap.getConfig().equals(Config.ARGB_8888), "Only supports loading ARGB_8888 bitmaps.");
+    SupportPrecondtions.checkNotNull(bitmap, "Cannot load null bitmap.");
+    SupportPrecondtions.checkArgument(
+        bitmap.getConfig().equals(Config.ARGB_8888),
+        "Only supports loading ARGB_8888 bitmaps.");
     container.set(bitmap);
   }
 
@@ -122,7 +123,7 @@ public class TensorImage {
    * @param shape The shape of the image, should have 3 dims and the last dim should be 3.
    */
   public void load(@NonNull float[] pixels, @NonNull int[] shape) {
-    SupportPreconditions.checkArgument(
+    SupportPrecondtions.checkArgument(
         shape.length == 3 && shape[2] == 3,
         "Only supports image shape in (h, w, c), and channels representing R, G, B in order.");
     TensorBuffer buffer = TensorBuffer.createDynamic(getDataType());
@@ -140,7 +141,7 @@ public class TensorImage {
    * @param shape The shape of the image, should have 3 dims and the last dim should be 3.
    */
   public void load(@NonNull int[] pixels, @NonNull int[] shape) {
-    SupportPreconditions.checkArgument(
+    SupportPrecondtions.checkArgument(
         shape.length == 3 && shape[2] == 3,
         "Only supports image shape in (h, w, c), and channels representing R, G, B in order.");
     TensorBuffer buffer = TensorBuffer.createDynamic(getDataType());
@@ -278,7 +279,7 @@ public class TensorImage {
       if (isBufferUpdated) {
         return bufferImage;
       }
-      SupportPreconditions.checkArgument(
+      SupportPrecondtions.checkArgument(
           isBitmapUpdated, "Both buffer and bitmap data are obsolete.");
       int requiredFlatSize = bitmapImage.getWidth() * bitmapImage.getHeight() * 3;
       if (bufferImage == null

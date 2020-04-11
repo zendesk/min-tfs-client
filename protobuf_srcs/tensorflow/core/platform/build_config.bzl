@@ -9,7 +9,6 @@ load(
     _tf_additional_cupti_test_flags = "tf_additional_cupti_test_flags",
     _tf_additional_cupti_utils_cuda_deps = "tf_additional_cupti_utils_cuda_deps",
     _tf_additional_device_tracer_srcs = "tf_additional_device_tracer_srcs",
-    _tf_additional_env_hdrs = "tf_additional_env_hdrs",
     _tf_additional_lib_deps = "tf_additional_lib_deps",
     _tf_additional_lib_hdrs = "tf_additional_lib_hdrs",
     _tf_additional_lib_srcs = "tf_additional_lib_srcs",
@@ -33,7 +32,6 @@ load(
     _tf_protos_all_impl = "tf_protos_all_impl",
     _tf_protos_grappler = "tf_protos_grappler",
     _tf_protos_grappler_impl = "tf_protos_grappler_impl",
-    _tf_protos_profiler_impl = "tf_protos_profiler_impl",
     _tf_py_clif_cc = "tf_py_clif_cc",
     _tf_pyclif_proto_library = "tf_pyclif_proto_library",
 )
@@ -45,7 +43,6 @@ tf_additional_core_deps = _tf_additional_core_deps
 tf_additional_cupti_test_flags = _tf_additional_cupti_test_flags
 tf_additional_cupti_utils_cuda_deps = _tf_additional_cupti_utils_cuda_deps
 tf_additional_device_tracer_srcs = _tf_additional_device_tracer_srcs
-tf_additional_env_hdrs = _tf_additional_env_hdrs
 tf_additional_lib_deps = _tf_additional_lib_deps
 tf_additional_lib_hdrs = _tf_additional_lib_hdrs
 tf_additional_lib_srcs = _tf_additional_lib_srcs
@@ -69,6 +66,5 @@ tf_protos_all = _tf_protos_all
 tf_protos_all_impl = _tf_protos_all_impl
 tf_protos_grappler = _tf_protos_grappler
 tf_protos_grappler_impl = _tf_protos_grappler_impl
-tf_protos_profiler_impl = _tf_protos_profiler_impl
 tf_py_clif_cc = _tf_py_clif_cc
 tf_pyclif_proto_library = _tf_pyclif_proto_library

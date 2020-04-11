@@ -49,7 +49,6 @@ CONVERSION_RULES = (
     # Known libraries
     DoNotConvert('numpy'),
     DoNotConvert('tensorflow'),
-    DoNotConvert('PIL'),
 
     # TODO(b/133417201): Remove.
     DoNotConvert('tensorflow_probability'),

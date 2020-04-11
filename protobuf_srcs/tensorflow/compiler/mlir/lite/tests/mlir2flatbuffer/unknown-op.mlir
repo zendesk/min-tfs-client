@@ -2,7 +2,8 @@
 
 func @main(tensor<3x2xi32>) -> tensor<3x2xi32> {
 ^bb0(%arg0: tensor<3x2xi32>):
+  %0 = "tfl.pseudo_input" (%arg0) {name = "Input"} : (tensor<3x2xi32>) -> tensor<3x2xi32>
   // CHECK: error: 'unknown_op' op dialect is not registered
-  %0 = "unknown_op"(%arg0) : (tensor<3x2xi32>) -> tensor<3x2xi32>
-  return %0 : tensor<3x2xi32>
+  %1 = "unknown_op"(%0) : (tensor<3x2xi32>) -> tensor<3x2xi32>
+  return %1 : tensor<3x2xi32>
 }
