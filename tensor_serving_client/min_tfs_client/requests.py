@@ -7,6 +7,11 @@ from tensorflow_serving.apis.classification_pb2 import ClassificationRequest, Cl
 from tensorflow_serving.apis.predict_pb2 import PredictRequest, PredictResponse
 from tensorflow_serving.apis.prediction_service_pb2_grpc import PredictionServiceStub
 from tensorflow_serving.apis.regression_pb2 import RegressionRequest, RegressionResponse
+from tensorflow_serving.apis.get_model_status_pb2 import (
+    GetModelStatusRequest,
+    GetModelStatusResponse,
+)
+from tensorflow_serving.apis.model_service_pb2_grpc import ModelServiceStub
 
 from .tensors import ndarray_to_tensor_proto
 
@@ -24,13 +29,13 @@ class TensorServingClient:
         else:
             self._channel = grpc.insecure_channel(self._host_address)
 
-    def _make_request(
+    def _make_inference_request(
         self,
         model_name: str,
         input_dict: Dict[str, np.ndarray],
         request_pb: RequestTypes,
         timeout: int,
-        model_version: Optional[int]
+        model_version: Optional[int],
     ) -> ResponseTypes:
         stub = PredictionServiceStub(self._channel)
         request = request_pb()
@@ -57,7 +62,7 @@ class TensorServingClient:
             "request_pb": PredictRequest,
             "timeout": timeout,
         }
-        return self._make_request(**request_params)
+        return self._make_inference_request(**request_params)
 
     def classification_request(
         self,
@@ -73,7 +78,7 @@ class TensorServingClient:
             "request_pb": ClassificationRequest,
             "timeout": timeout,
         }
-        return self._make_request(**request_params)
+        return self._make_inference_request(**request_params)
 
     def regression_request(
         self,
@@ -89,4 +94,18 @@ class TensorServingClient:
             "request_pb": RegressionRequest,
             "timeout": timeout,
         }
-        return self._make_request(**request_params)
+        return self._make_inference_request(**request_params)
+
+    def model_status_request(
+        self,
+        model_name: Optional[str] = None,
+        model_version: Optional[int] = None,
+        timeout: Optional[int] = 10,
+    ) -> GetModelStatusResponse:
+        stub = ModelServiceStub(self._channel)
+        request = GetModelStatusRequest()
+        if model_name:
+            request.model_spec.name = model_name
+            if model_version:
+                request.model_spec.version.value = model_version
+        return stub.GetModelStatus(request, timeout)

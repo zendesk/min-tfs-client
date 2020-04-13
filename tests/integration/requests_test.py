@@ -1,17 +1,20 @@
+import json
+
 import numpy as np
+from google.protobuf.json_format import MessageToJson
 from numpy.testing import assert_array_almost_equal, assert_array_equal
-from pytest import fixture
 
 from min_tfs_client.requests import TensorServingClient
 from min_tfs_client.tensors import tensor_proto_to_ndarray
+from pytest import fixture
 
 
 @fixture(scope="function")
-def unsecured_ts_client():
+def unsecured_ts_client() -> TensorServingClient:
     return TensorServingClient(host="127.0.0.1", port=4080, credentials=None)
 
 
-def test_request(unsecured_ts_client):
+def test_predict_request(unsecured_ts_client):
     client = unsecured_ts_client
     response = client.predict_request(
         model_name="default",
@@ -31,3 +34,17 @@ def test_request(unsecured_ts_client):
     assert_array_equal(
         tensor_proto_to_ndarray(response.outputs["string_output"]), np.array(["hello world"])
     )
+
+
+def test_model_status_request(unsecured_ts_client):
+    client = unsecured_ts_client
+    response = client.model_status_request(model_name="default")
+    response_dict = json.loads(MessageToJson(response))
+
+    assert "model_version_status" in response_dict
+    assert len(response_dict["model_version_status"]) == 1
+    assert response_dict["model_version_status"][0] == {
+        "version": "1",
+        "state": "AVAILABLE",
+        "status": {},
+    }
