@@ -98,14 +98,13 @@ class TensorServingClient:
 
     def model_status_request(
         self,
-        model_name: Optional[str] = None,
+        model_name: str,
         model_version: Optional[int] = None,
         timeout: Optional[int] = 10,
     ) -> GetModelStatusResponse:
         stub = ModelServiceStub(self._channel)
         request = GetModelStatusRequest()
-        if model_name:
-            request.model_spec.name = model_name
-            if model_version:
-                request.model_spec.version.value = model_version
+        request.model_spec.name = model_name
+        if model_version:
+            request.model_spec.version.value = model_version
         return stub.GetModelStatus(request, timeout)
