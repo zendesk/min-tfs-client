@@ -7,16 +7,6 @@ jobs:
   main:
     name: python3-matrix
     runs-on: ubuntu-latest
-    env:
-      SRCCLR_API_TOKEN: ${{ secrets.SRCCLR_API_TOKEN }}
-    services:
-      mysql:
-        image: mysql:5.7
-        env:
-          MYSQL_ALLOW_EMPTY_PASSWORD: yes
-          MYSQL_DATABASE: test
-        ports:
-          - 3306:3306
     strategy:
       matrix:
         task: ['Tests Python 3.6', 'Tests Python 3.7', 'Tests Python 3.8', 'Linting Python 3.7', 'Type Checking Python 3.7']
@@ -47,6 +37,7 @@ jobs:
         ./scripts/travis/protoc_install.sh
         unset PYTHONDONTWRITEBYTECODE
         pip install -e .[dev]
+        pip install wheel
         python setup.py bdist_wheel
         pip install --no-index --find-links=dist/ min_tfs_client
         tensorflow_model_server --port=4080 --model_base_path=$PWD/tests/integration/fixtures && sleep 1 &
