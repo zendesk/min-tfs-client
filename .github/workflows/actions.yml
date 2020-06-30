@@ -1,0 +1,55 @@
+name: repo-checks
+on:
+  pull_request:
+    branches:
+    - master
+jobs:
+  main:
+    name: python3-matrix
+    runs-on: zendesk-stable
+    env:
+      SRCCLR_API_TOKEN: ${{ secrets.SRCCLR_API_TOKEN }}
+    services:
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+          MYSQL_DATABASE: test
+        ports:
+          - 3306:3306
+    strategy:
+      matrix:
+        task: ['Tests Python 3.6', 'Tests Python 3.7', 'Tests Python 3.8', 'Linting Python 3.7', 'Type Checking Python 3.7']
+        include:
+          - task: 'Tests Python 3.6'
+            python: 3.6
+            run: pytest -v tests
+          - task: 'Tests Python 3.7'
+            python: 3.7
+            run: pytest -v tests
+          - task: 'Tests Python 3.8'
+            python: 3.8
+            run: pytest -v tests
+          - task: 'Linting Python 3.7'
+            python: 3.7
+            run: flake8 tensor_serving_client/min_tfs_client tests/
+          - task: 'Type Checking Python 3.7'
+            python: 3.7
+            run: mypy tensor_serving_client/min_tfs_client --ignore-missing-imports
+    steps:
+    - uses: zendesk/checkout@v2
+    - uses: zendesk/setup-python@v2
+      with:
+        python-version: ${{ matrix.python }}
+    - name: install
+      run: |
+        ./scripts/travis/tensor_serving_install.sh
+        ./scripts/travis/protoc_install.sh
+        unset PYTHONDONTWRITEBYTECODE
+        pip install -e .[dev]
+        python setup.py bdist_wheel
+        pip install --no-index --find-links=dist/ min_tfs_client
+        tensorflow_model_server --port=4080 --model_base_path=$PWD/tests/integration/fixtures && sleep 1 &
+    - name: ${{ matrix.task }}
+      run: |
+        ${{ matrix.run }}
