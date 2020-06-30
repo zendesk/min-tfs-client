@@ -6,7 +6,7 @@ on:
 jobs:
   main:
     name: python3-matrix
-    runs-on: zendesk-stable
+    runs-on: ubuntu-latest
     env:
       SRCCLR_API_TOKEN: ${{ secrets.SRCCLR_API_TOKEN }}
     services:
