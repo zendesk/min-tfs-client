@@ -1,3 +1,4 @@
+![repo-checks](https://github.com/zendesk/min-tfs-client/workflows/repo-checks/badge.svg)
 # Minimal Tensor Serving Python Client
 A lightweight python client to communicate with Tensor Serving.
 
