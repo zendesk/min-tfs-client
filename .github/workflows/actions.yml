@@ -35,6 +35,7 @@ jobs:
       run: |
         ./scripts/travis/tensor_serving_install.sh
         ./scripts/travis/protoc_install.sh
+        echo "::add-path::$HOME/bin"
         unset PYTHONDONTWRITEBYTECODE
         pip install -e .[dev]
         pip install wheel
