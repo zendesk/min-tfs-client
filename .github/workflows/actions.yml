@@ -31,11 +31,15 @@ jobs:
     - uses: zendesk/setup-python@v2
       with:
         python-version: ${{ matrix.python }}
-    - name: install
+    - name: install dependencies
       run: |
         ./scripts/travis/tensor_serving_install.sh
         ./scripts/travis/protoc_install.sh
+    - name: add bin to path
+      run: |
         echo "::add-path::$HOME/bin"
+    - name: install python dependencies
+      run: |
         unset PYTHONDONTWRITEBYTECODE
         pip install -e .[dev]
         pip install wheel
