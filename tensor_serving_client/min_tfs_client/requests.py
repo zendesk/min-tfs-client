@@ -14,6 +14,7 @@ from tensorflow_serving.apis.get_model_status_pb2 import (
 from tensorflow_serving.apis.model_service_pb2_grpc import ModelServiceStub
 
 from .tensors import ndarray_to_tensor_proto
+from .options import AbstractgRPCChannelOptions
 
 RequestTypes = Union[PredictRequest, ClassificationRequest, RegressionRequest]
 ResponseTypes = Union[PredictResponse, ClassificationResponse, RegressionResponse]
@@ -21,13 +22,19 @@ ResponseTypes = Union[PredictResponse, ClassificationResponse, RegressionRespons
 
 class TensorServingClient:
     def __init__(
-        self, host: str, port: int, credentials: Optional[grpc.ssl_channel_credentials] = None,
+        self,
+        host: str,
+        port: int,
+        credentials: Optional[grpc.ssl_channel_credentials] = None,
+        options: Optional[AbstractgRPCChannelOptions] = None,
     ) -> None:
         self._host_address = f"{host}:{port}"
+        self._options = repr(options) if options else None
+
         if credentials:
-            self._channel = grpc.secure_channel(self._host_address, credentials)
+            self._channel = grpc.secure_channel(self._host_address, credentials, options=options)
         else:
-            self._channel = grpc.insecure_channel(self._host_address)
+            self._channel = grpc.insecure_channel(self._host_address, options=options)
 
     def _make_inference_request(
         self,
