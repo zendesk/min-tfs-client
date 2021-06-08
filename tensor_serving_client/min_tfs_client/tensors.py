@@ -23,7 +23,7 @@ def write_values_to_tensor_proto(
     else:
         proto_field.extend([coerce_to_bytes(v) for v in values])
     # OVMS is expecting tensor_content to be filled with the bytes, therefore we added this,
-    # after reverse-engineering the tensorflow_serving library.
+    # to be consistent with the way it is handled in the tensorflow_serving library.
     tensor_proto.tensor_content = values.tobytes()
     return tensor_proto
 
@@ -45,7 +45,7 @@ def extract_shape(tensor_proto: TensorProto) -> Tuple[int, ...]:
 def tensor_proto_to_ndarray(tensor_proto: TensorProto) -> np.ndarray:
     dtype = DataType(tensor_proto.dtype)
     shape = extract_shape(tensor_proto)
-    # MIIL extension: this is needed to deal with the format returned by OpenVino inference server.
+    # This is needed to deal with the format returned by OpenVino inference server.
     if tensor_proto.tensor_content:
         return (np.frombuffer(tensor_proto.tensor_content,
                               dtype=dtype.numpy_dtype).copy().reshape(shape))
