@@ -88,7 +88,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name="min_tfs_client",
-    version="1.0.2",
+    version="1.0.3+whl",
     description="A minified Tensor Serving Client for Python",
     long_description=long_description,
     long_description_content_type="text/markdown",
