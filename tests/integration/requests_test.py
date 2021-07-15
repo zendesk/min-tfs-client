@@ -48,3 +48,20 @@ def test_model_status_request(unsecured_ts_client):
         "state": "AVAILABLE",
         "status": {},
     }
+
+def test_model_metadata_request(unsecured_ts_client):
+    client = unsecured_ts_client
+    response = client.model_metadata_request(model_name="default")
+    response_dict = json.loads(MessageToJson(response))    
+
+    assert "modelSpec" in response_dict
+    assert response_dict["modelSpec"] == {
+        "name": "default",
+        "version": "1"
+    }
+    assert "metadata" in response_dict
+    assert list(response_dict["metadata"].keys()) == ["signature_def"]
+    assert "signatureDef" in response_dict["metadata"]["signature_def"]
+    sig_def = response_dict["metadata"]["signature_def"]["signatureDef"]
+    assert "inputs" in sig_def
+    assert "serving_default" in sig_def

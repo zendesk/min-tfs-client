@@ -11,6 +11,10 @@ from tensorflow_serving.apis.get_model_status_pb2 import (
     GetModelStatusRequest,
     GetModelStatusResponse,
 )
+from tensorflow_serving.apis.get_model_metadata_pb2 import  (
+    GetModelMetadataRequest, 
+    GetModelMetadataResponse
+)
 from tensorflow_serving.apis.model_service_pb2_grpc import ModelServiceStub
 
 from .tensors import ndarray_to_tensor_proto
@@ -108,3 +112,17 @@ class TensorServingClient:
         if model_version:
             request.model_spec.version.value = model_version
         return stub.GetModelStatus(request, timeout)
+
+    def model_metadata_request(
+        self,
+        model_name: str,
+        model_version: Optional[int] = None,
+        timeout: Optional[int] = 10,
+    ) -> GetModelMetadataResponse:
+        stub = PredictionServiceStub(self._channel)
+        request = GetModelMetadataRequest()
+        request.model_spec.name = model_name
+        if model_version is not None:
+            request.model_spec.version.value = model_version
+        request.metadata_field.append("signature_def")
+        return stub.GetModelMetadata(request, timeout)
