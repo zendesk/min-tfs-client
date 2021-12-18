@@ -21,13 +21,20 @@ ResponseTypes = Union[PredictResponse, ClassificationResponse, RegressionRespons
 
 class TensorServingClient:
     def __init__(
-        self, host: str, port: int, credentials: Optional[grpc.ssl_channel_credentials] = None,
+        self, host: Optional[str] = None, port: Optional[int] = None, credentials: Optional[grpc.ssl_channel_credentials] = None, socket: Optional[str] = None, 
     ) -> None:
-        self._host_address = f"{host}:{port}"
-        if credentials:
-            self._channel = grpc.secure_channel(self._host_address, credentials)
+
+        if socket:
+            if credentials:
+                self._channel = grpc.secure_channel(socket, credentials)
+            else:
+                self._channel = grpc.insecure_channel(socket)
         else:
-            self._channel = grpc.insecure_channel(self._host_address)
+            self._host_address = f"{host}:{port}"
+            if credentials:
+                self._channel = grpc.secure_channel(self._host_address, credentials)
+            else:
+                self._channel = grpc.insecure_channel(self._host_address)
 
     def _make_inference_request(
         self,
@@ -36,6 +43,7 @@ class TensorServingClient:
         request_pb: RequestTypes,
         timeout: int,
         model_version: Optional[int],
+        signature_name: Optional[str],
     ) -> ResponseTypes:
         stub = PredictionServiceStub(self._channel)
         request = request_pb()
@@ -43,6 +51,9 @@ class TensorServingClient:
 
         if model_version is not None:
             request.model_spec.version.value = model_version
+
+        if signature_name is not None:
+            request.model_spec.signature_name = signature_name
 
         for k, v in input_dict.items():
             request.inputs[k].CopyFrom(ndarray_to_tensor_proto(v))
@@ -54,6 +65,7 @@ class TensorServingClient:
         input_dict: Dict[str, np.ndarray],
         timeout: int = 60,
         model_version: Optional[int] = None,
+        signature_name: Optional[str] = None
     ) -> PredictResponse:
         request_params: Dict[str, Any] = {
             "model_name": model_name,
@@ -61,6 +73,7 @@ class TensorServingClient:
             "input_dict": input_dict,
             "request_pb": PredictRequest,
             "timeout": timeout,
+            "signature_name": signature_name,
         }
         return self._make_inference_request(**request_params)
 
