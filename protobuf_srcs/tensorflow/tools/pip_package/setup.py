@@ -75,7 +75,7 @@ REQUIRED_PACKAGES = [
     'six >= 1.12.0',
     # scipy < 1.4.1 causes segfaults due to pybind11
     # Latest scipy pip for py2 is scipy==1.2.2
-    'scipy == 1.4.1;python_version>="3"',
+    'scipy == 1.10.0;python_version>="3"',
     'scipy == 1.2.2;python_version<"3"',
 ]
 
