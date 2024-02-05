@@ -12,12 +12,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <stdint.h>
+
 #include <initializer_list>
+#include <vector>
+
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -26,12 +30,23 @@ using ::testing::ElementsAreArray;
 
 constexpr int kAxisIsATensor = -1000;
 
+enum class TestType {
+  kDynamic = 0,      // Both split_sizes and axis are dynamic
+  kConstAxis = 1,    // split_sizes is dynamic and axis is constant
+  kConstSplits = 2,  // Both split_sizes and axis are constant
+};
+
 class SplitVOpModel : public SingleOpModel {
  public:
   SplitVOpModel(const TensorData& input, const TensorData& size_splits,
-                int num_splits, int axis) {
+                int num_splits, int axis,
+                std::initializer_list<int> size_splits_data) {
     input_ = AddInput(input);
-    size_splits_ = AddInput(size_splits);
+    if (size_splits_data.size() == 0) {
+      size_splits_ = AddInput(size_splits);
+    } else {
+      size_splits_ = AddConstInput(size_splits, size_splits_data);
+    }
     if (axis == kAxisIsATensor) {
       axis_ = AddInput({TensorType_INT32, {1}});
     } else {
@@ -72,38 +87,81 @@ class SplitVOpModel : public SingleOpModel {
   std::vector<int> outputs_;
 };
 
-template <typename T, TensorType T1>
-void Check(int axis, std::initializer_list<int> input_shape,
+template <typename T>
+void Check(TestType test_type, int axis, std::initializer_list<int> input_shape,
            std::initializer_list<int> size_splits_shape,
            std::vector<std::initializer_list<int>> output_shapes,
            const std::initializer_list<T>& input_data,
            const std::initializer_list<int>& size_splits_data,
            const std::vector<std::initializer_list<T>>& output_data) {
   int num_splits = size_splits_data.size();
-  SplitVOpModel m({T1, input_shape}, {TensorType_INT32, size_splits_shape},
-                  num_splits, kAxisIsATensor);
-  m.SetInput<T>(input_data);
-  m.SetSizeSplits(size_splits_data);
-  m.SetAxis(axis);
-  m.Invoke();
-  for (int i = 0; i < num_splits; ++i) {
-    EXPECT_THAT(m.GetOutput<T>(i), ElementsAreArray(output_data[i]));
-    EXPECT_THAT(m.GetOutputShape(i), ElementsAreArray(output_shapes[i]));
+
+  switch (test_type) {
+    case TestType::kDynamic: {
+      SplitVOpModel m({GetTensorType<T>(), input_shape},
+                      {TensorType_INT32, size_splits_shape}, num_splits,
+                      kAxisIsATensor, {/*size_splits is a tensor*/});
+      m.SetInput<T>(input_data);
+      m.SetSizeSplits(size_splits_data);
+      m.SetAxis(axis);
+      ASSERT_EQ(m.Invoke(), kTfLiteOk);
+      for (int i = 0; i < num_splits; ++i) {
+        EXPECT_THAT(m.GetOutput<T>(i), ElementsAreArray(output_data[i]));
+        EXPECT_THAT(m.GetOutputShape(i), ElementsAreArray(output_shapes[i]));
+      }
+    } break;
+    case TestType::kConstAxis: {
+      SplitVOpModel m({GetTensorType<T>(), input_shape},
+                      {TensorType_INT32, size_splits_shape}, num_splits, axis,
+                      {/*size_splits is a tensor*/});
+      m.SetInput<T>(input_data);
+      m.SetSizeSplits(size_splits_data);
+      ASSERT_EQ(m.Invoke(), kTfLiteOk);
+      for (int i = 0; i < num_splits; ++i) {
+        EXPECT_THAT(m.GetOutput<T>(i), ElementsAreArray(output_data[i]));
+        EXPECT_THAT(m.GetOutputShape(i), ElementsAreArray(output_shapes[i]));
+      }
+    } break;
+    case TestType::kConstSplits: {
+      SplitVOpModel m({GetTensorType<T>(), input_shape},
+                      {TensorType_INT32, size_splits_shape}, num_splits, axis,
+                      size_splits_data);
+      m.SetInput<T>(input_data);
+      ASSERT_EQ(m.Invoke(), kTfLiteOk);
+      for (int i = 0; i < num_splits; ++i) {
+        EXPECT_THAT(m.GetOutputShape(i), ElementsAreArray(output_shapes[i]));
+        if (output_data[i].size() != 0) {
+          EXPECT_THAT(m.GetOutput<T>(i), ElementsAreArray(output_data[i]));
+        }
+      }
+    } break;
   }
-
-  SplitVOpModel const_m({T1, input_shape},
-                        {TensorType_INT32, size_splits_shape}, num_splits,
-                        axis);
-  const_m.SetInput<T>(input_data);
-  const_m.SetSizeSplits(size_splits_data);
-  const_m.Invoke();
-  for (int i = 0; i < num_splits; ++i) {
-    EXPECT_THAT(const_m.GetOutput<T>(i), ElementsAreArray(output_data[i]));
-    EXPECT_THAT(const_m.GetOutputShape(i), ElementsAreArray(output_shapes[i]));
-  }
 }
 
-TEST(SplitVOpTest, TwoDimensional) {
+template <typename T>
+class SplitVOpTypedTest : public ::testing::Test {};
+
+using DataTypes = ::testing::Types<float, uint8_t, int8_t, int16_t, int32_t>;
+TYPED_TEST_SUITE(SplitVOpTypedTest, DataTypes);
+
+#define TYPED_SPLIT_V_TEST(TestSuiteName, CaseName)                    \
+  template <typename TypeParam>                                        \
+  void Check##TestSuiteName##CaseName(TestType test_type);             \
+                                                                       \
+  TYPED_TEST(TestSuiteName, Dynamic##CaseName) {                       \
+    Check##TestSuiteName##CaseName<TypeParam>(TestType::kDynamic);     \
+  }                                                                    \
+  TYPED_TEST(TestSuiteName, ConstAxis##CaseName) {                     \
+    Check##TestSuiteName##CaseName<TypeParam>(TestType::kConstAxis);   \
+  }                                                                    \
+  TYPED_TEST(TestSuiteName, ConstSplits##CaseName) {                   \
+    Check##TestSuiteName##CaseName<TypeParam>(TestType::kConstSplits); \
+  }                                                                    \
+                                                                       \
+  template <typename TypeParam>                                        \
+  void Check##TestSuiteName##CaseName(TestType test_type)
+
+TYPED_SPLIT_V_TEST(SplitVOpTypedTest, TwoDimensional) {
   // Input shape: {4, 3}
   // size_splits: {1, 1, 2}
   // axis: 0
@@ -111,121 +169,72 @@ TEST(SplitVOpTest, TwoDimensional) {
   //  output 1 : {1, 3}
   //  output 2 : {1, 3}
   //  output 3 : {2, 3}
-  Check<float, TensorType_FLOAT32>(
-      /*axis=*/0, {4, 3}, {3}, {{1, 3}, {1, 3}, {2, 3}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, {1, 1, 2},
-      {{1, 2, 3}, {4, 5, 6}, {7, 8, 9, 10, 11, 12}});
+  Check<TypeParam>(test_type,
+                   /*axis=*/0, {4, 3}, {3}, {{1, 3}, {1, 3}, {2, 3}},
+                   {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, {1, 1, 2},
+                   {{1, 2, 3}, {4, 5, 6}, {7, 8, 9, 10, 11, 12}});
 }
 
-TEST(SplitVOpTest, FourDimensional) {
-  Check<float, TensorType_FLOAT32>(
-      /*axis=*/0, {2, 2, 2, 2}, {2}, {{1, 2, 2, 2}, {1, 2, 2, 2}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, {1, 1},
-      {
-          {1, 2, 3, 4, 5, 6, 7, 8},
-          {9, 10, 11, 12, 13, 14, 15, 16},
-      });
-  Check<float, TensorType_FLOAT32>(
-      /*axis=*/1, {2, 2, 2, 2}, {2}, {{2, 1, 2, 2}, {2, 1, 2, 2}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, {1, -1},
-      {
-          {1, 2, 3, 4, 9, 10, 11, 12},
-          {5, 6, 7, 8, 13, 14, 15, 16},
-      });
-  Check<float, TensorType_FLOAT32>(
-      /*axis=*/2, {2, 2, 2, 2}, {2}, {{2, 2, 1, 2}, {2, 2, 1, 2}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, {1, 1},
-      {
-          {1, 2, 5, 6, 9, 10, 13, 14},
-          {3, 4, 7, 8, 11, 12, 15, 16},
-      });
-  Check<float, TensorType_FLOAT32>(
-      /*axis=*/3, {2, 2, 2, 2}, {2}, {{2, 2, 2, 1}, {2, 2, 2, 1}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, {1, 1},
-      {
-          {1, 3, 5, 7, 9, 11, 13, 15},
-          {2, 4, 6, 8, 10, 12, 14, 16},
-      });
+TYPED_SPLIT_V_TEST(SplitVOpTypedTest, FourDimensional) {
+  Check<TypeParam>(test_type,
+                   /*axis=*/0, {2, 2, 2, 2}, {2}, {{1, 2, 2, 2}, {1, 2, 2, 2}},
+                   {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+                   {1, 1},
+                   {
+                       {1, 2, 3, 4, 5, 6, 7, 8},
+                       {9, 10, 11, 12, 13, 14, 15, 16},
+                   });
+  Check<TypeParam>(test_type,
+                   /*axis=*/1, {2, 2, 2, 2}, {2}, {{2, 1, 2, 2}, {2, 1, 2, 2}},
+                   {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+                   {1, -1},
+                   {
+                       {1, 2, 3, 4, 9, 10, 11, 12},
+                       {5, 6, 7, 8, 13, 14, 15, 16},
+                   });
+  Check<TypeParam>(test_type,
+                   /*axis=*/2, {2, 2, 2, 2}, {2}, {{2, 2, 1, 2}, {2, 2, 1, 2}},
+                   {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+                   {1, 1},
+                   {
+                       {1, 2, 5, 6, 9, 10, 13, 14},
+                       {3, 4, 7, 8, 11, 12, 15, 16},
+                   });
+  Check<TypeParam>(test_type,
+                   /*axis=*/3, {2, 2, 2, 2}, {2}, {{2, 2, 2, 1}, {2, 2, 2, 1}},
+                   {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+                   {1, 1},
+                   {
+                       {1, 3, 5, 7, 9, 11, 13, 15},
+                       {2, 4, 6, 8, 10, 12, 14, 16},
+                   });
 }
 
-TEST(SplitVOpTest, OneDimensional) {
-  Check<float, TensorType_FLOAT32>(
-      /*axis=*/0, {8}, {8}, {{1}, {1}, {1}, {1}, {1}, {1}, {1}, {1}},
-      {1, 2, 3, 4, 5, 6, 7, 8}, {1, 1, 1, 1, 1, 1, 1, 1},
-      {{1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}});
+TYPED_SPLIT_V_TEST(SplitVOpTypedTest, OneDimensional) {
+  Check<TypeParam>(test_type,
+                   /*axis=*/0, {8}, {8},
+                   {{1}, {1}, {1}, {1}, {1}, {1}, {1}, {1}},
+                   {1, 2, 3, 4, 5, 6, 7, 8}, {1, 1, 1, 1, 1, 1, 1, 1},
+                   {{1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}});
 }
 
-TEST(SplitVOpTest, OneDimensional2) {
-  Check<float, TensorType_FLOAT32>(
-      /*axis=*/0, {8}, {8}, {{1}, {1}, {1}, {1}, {1}, {1}, {2}, {0}},
-      {1, 2, 3, 4, 5, 6, 7, 8}, {1, 1, 1, 1, 1, 1, 2, -1},
-      {{1}, {2}, {3}, {4}, {5}, {6}, {7, 8}, {}});
+TYPED_SPLIT_V_TEST(SplitVOpTypedTest, OneDimensional2) {
+  Check<TypeParam>(test_type,
+                   /*axis=*/0, {8}, {8},
+                   {{1}, {1}, {1}, {1}, {1}, {1}, {2}, {0}},
+                   {1, 2, 3, 4, 5, 6, 7, 8}, {1, 1, 1, 1, 1, 1, 2, -1},
+                   {{1}, {2}, {3}, {4}, {5}, {6}, {7, 8}, {}});
 }
 
-TEST(SplitVOpTest, NegativeAxis) {
-  Check<float, TensorType_FLOAT32>(
-      /*axis=*/-4, {2, 2, 2, 2}, {2}, {{1, 2, 2, 2}, {1, 2, 2, 2}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, {1, 1},
-      {
-          {1, 2, 3, 4, 5, 6, 7, 8},
-          {9, 10, 11, 12, 13, 14, 15, 16},
-      });
-}
-
-TEST(SplitVOpTest, TwoDimensionalUint8) {
-  // Input shape: {4, 3}
-  // size_splits: {1, 1, 2}
-  // axis: 0
-  // We should have 3 outpus with shapes respectively:
-  //  output 1 : {1, 3}
-  //  output 2 : {1, 3}
-  //  output 3 : {2, 3}
-  Check<uint8_t, TensorType_UINT8>(
-      /*axis=*/0, {4, 3}, {3}, {{1, 3}, {1, 3}, {2, 3}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, {1, 1, 2},
-      {{1, 2, 3}, {4, 5, 6}, {7, 8, 9, 10, 11, 12}});
-}
-
-TEST(SplitVOpTest, TwoDimensionalInt16) {
-  // Input shape: {4, 3}
-  // size_splits: {1, 1, 2}
-  // axis: 0
-  // We should have 3 outpus with shapes respectively:
-  //  output 1 : {1, 3}
-  //  output 2 : {1, 3}
-  //  output 3 : {2, 3}
-  Check<int16_t, TensorType_INT16>(
-      /*axis=*/0, {4, 3}, {3}, {{1, 3}, {1, 3}, {2, 3}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, {1, 1, 2},
-      {{1, 2, 3}, {4, 5, 6}, {7, 8, 9, 10, 11, 12}});
-}
-
-TEST(SplitVOpTest, TwoDimensionalInt32) {
-  // Input shape: {4, 3}
-  // size_splits: {1, 1, 2}
-  // axis: 0
-  // We should have 3 outpus with shapes respectively:
-  //  output 1 : {1, 3}
-  //  output 2 : {1, 3}
-  //  output 3 : {2, 3}
-  Check<int32_t, TensorType_INT32>(
-      /*axis=*/0, {4, 3}, {3}, {{1, 3}, {1, 3}, {2, 3}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, {1, 1, 2},
-      {{1, 2, 3}, {4, 5, 6}, {7, 8, 9, 10, 11, 12}});
-}
-
-TEST(SplitVOpTest, TwoDimensionalInt64) {
-  // Input shape: {4, 3}
-  // size_splits: {1, 1, 2}
-  // axis: 0
-  // We should have 3 outpus with shapes respectively:
-  //  output 1 : {1, 3}
-  //  output 2 : {1, 3}
-  //  output 3 : {2, 3}
-  Check<int64_t, TensorType_INT64>(
-      /*axis=*/0, {4, 3}, {3}, {{1, 3}, {1, 3}, {2, 3}},
-      {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, {1, 1, 2},
-      {{1, 2, 3}, {4, 5, 6}, {7, 8, 9, 10, 11, 12}});
+TYPED_SPLIT_V_TEST(SplitVOpTypedTest, NegativeAxis) {
+  Check<TypeParam>(test_type,
+                   /*axis=*/-4, {2, 2, 2, 2}, {2}, {{1, 2, 2, 2}, {1, 2, 2, 2}},
+                   {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+                   {1, 1},
+                   {
+                       {1, 2, 3, 4, 5, 6, 7, 8},
+                       {9, 10, 11, 12, 13, 14, 15, 16},
+                   });
 }
 
 }  // namespace

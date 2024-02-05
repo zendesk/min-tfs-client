@@ -31,7 +31,7 @@ namespace toco {
   *modified = false;
   auto expand_it = model->operators.begin() + op_index;
   if (expand_it->get()->type != OperatorType::kExpandDims) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   ExpandDimsOperator* expand_op =
       static_cast<ExpandDimsOperator*>(expand_it->get());
@@ -41,18 +41,18 @@ namespace toco {
   const auto& input_array = model->GetArray(expand_op->inputs[0]);
   if (!input_array.has_shape()) {
     // Yield until input dims have been resolved.
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   const auto& axis_array = model->GetArray(expand_op->inputs[1]);
   if (!axis_array.has_shape()) {
     // Yield until input axis array shape has been resolved.
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   CHECK_EQ(RequiredBufferSizeForShape(axis_array.shape()), 1);
   if (!axis_array.buffer) {
     // Yield until the input axis array is constant
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   int axis = axis_array.GetBuffer<ArrayDataType::kInt32>().data[0];
   std::vector<int> reshape_dims(input_array.shape().dims());
@@ -76,8 +76,9 @@ namespace toco {
   reshape_op->outputs = expand_op->outputs;
 
   // Create a new input array
-  string axis_array_name = expand_op->inputs[1];
-  string shape_array_name = toco::AvailableArrayName(*model, axis_array_name);
+  std::string axis_array_name = expand_op->inputs[1];
+  std::string shape_array_name =
+      toco::AvailableArrayName(*model, axis_array_name);
   Array& shape_array = model->GetOrCreateArray(shape_array_name);
   *(shape_array.mutable_shape()->mutable_dims()) = {
       1, static_cast<int>(reshape_dims.size())};
@@ -98,7 +99,7 @@ namespace toco {
   DeleteOpAndArrays(model, expand_op);
 
   *modified = true;
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

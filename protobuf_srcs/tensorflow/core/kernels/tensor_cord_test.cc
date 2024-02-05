@@ -205,19 +205,19 @@ TEST(TensorCordTest, MoveConstructor) {
 void TensorCopyFromTensorBenchmark(benchmark::State& state, int num_elem,
                                    int string_size) {
   Tensor strings(DT_STRING, {num_elem});
-  auto t = strings.flat<string>();
+  auto t = strings.flat<tstring>();
   for (int i = 0; i < num_elem; ++i) {
     t(i).insert(0, string_size, 'a');
   }
   for (auto _ : state) {
-    testing::DoNotOptimize(tensor::DeepCopy(strings));
+    benchmark::DoNotOptimize(tensor::DeepCopy(strings));
   }
 }
 
 void TensorCordFromTensorBenchmark(benchmark::State& state, int num_elem,
                                    int string_size) {
   Tensor strings(DT_STRING, {num_elem});
-  auto t = strings.flat<string>();
+  auto t = strings.flat<tstring>();
   for (int i = 0; i < num_elem; ++i) {
     t(i).insert(0, string_size, 'a');
   }

@@ -22,7 +22,16 @@ limitations under the License.
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/protobuf/tensorflow_server.pb.h"
 
+namespace tsl {
+class CoordinationServiceAgent;
+}  // namespace tsl
+
 namespace tensorflow {
+
+class DeviceMgr;
+class EagerContext;
+class WorkerEnv;
+class MasterEnv;
 
 // This library supports a registration/factory-based mechanism for
 // creating TensorFlow server objects. Each server implementation must
@@ -57,16 +66,40 @@ class ServerInterface {
   // `tensorflow::NewSession()`.
   virtual const string target() const = 0;
 
+  virtual WorkerEnv* worker_env() = 0;
+  virtual MasterEnv* master_env() = 0;
+
+  // Update the set of workers that can be reached by the server
+  virtual Status UpdateServerDef(const ServerDef& server_def) = 0;
+
+  // Functions to operate on service-specific properties.
+  //
+  // Add master eager context to local eager service in order to handle enqueue
+  // requests from remote workers.
+  virtual Status AddMasterEagerContextToEagerService(
+      const tensorflow::uint64 context_id, EagerContext* context) = 0;
+  // Set coordination service agent instance to coordination service RPC handler
+  virtual Status SetCoordinationServiceAgentInstance(
+      tsl::CoordinationServiceAgent* agent) = 0;
+  // TODO(hanyangtay): Remove this method once gRPC server clean shutdown is
+  // supported.
+  virtual Status StopCoordinationService() = 0;
+
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(ServerInterface);
+  ServerInterface(const ServerInterface&) = delete;
+  void operator=(const ServerInterface&) = delete;
 };
 
 class ServerFactory {
  public:
+  struct Options {
+    // Local DeviceMgr to use.
+    tensorflow::DeviceMgr* local_device_mgr;
+  };
   // Creates a new server based on the given `server_def`, and stores
   // it in `*out_server`. Returns OK on success, otherwise returns an
   // error.
-  virtual Status NewServer(const ServerDef& server_def,
+  virtual Status NewServer(const ServerDef& server_def, const Options& options,
                            std::unique_ptr<ServerInterface>* out_server) = 0;
 
   // Returns true if and only if this factory can create a server
@@ -92,6 +125,9 @@ class ServerFactory {
 // `*out_server`. Returns OK on success, otherwise returns an error.
 Status NewServer(const ServerDef& server_def,
                  std::unique_ptr<ServerInterface>* out_server);
+Status NewServerWithOptions(const ServerDef& server_def,
+                            const ServerFactory::Options& options,
+                            std::unique_ptr<ServerInterface>* out_server);
 
 }  // namespace tensorflow
 

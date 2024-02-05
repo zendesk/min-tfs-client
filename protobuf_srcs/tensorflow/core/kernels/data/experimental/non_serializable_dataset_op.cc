@@ -54,7 +54,7 @@ class NonSerializableDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return absl::make_unique<Iterator>(
+      return std::make_unique<Iterator>(
           Iterator::Params{this, strings::StrCat(prefix, "::NonSerializable")});
     }
 
@@ -69,6 +69,12 @@ class NonSerializableDatasetOp : public UnaryDatasetOpKernel {
       return "NonSerializableDatasetOp::Dataset";
     }
 
+    Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      inputs->push_back(input_);
+      return OkStatus();
+    }
+
     Status CheckExternalState() const override {
       return input_->CheckExternalState();
     }
@@ -81,7 +87,9 @@ class NonSerializableDatasetOp : public UnaryDatasetOpKernel {
                                    " does not support serialization.");
     }
 
-    int64 Cardinality() const override { return input_->Cardinality(); }
+    int64_t CardinalityInternal(CardinalityOptions options) const override {
+      return input_->Cardinality(options);
+    }
 
    private:
     class Iterator : public DatasetIterator<Dataset> {
@@ -90,7 +98,8 @@ class NonSerializableDatasetOp : public UnaryDatasetOpKernel {
           : DatasetIterator<Dataset>(params) {}
 
       Status Initialize(IteratorContext* ctx) override {
-        return dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_);
+        return dataset()->input_->MakeIterator(ctx, this, prefix(),
+                                               &input_impl_);
       }
 
       Status GetNextInternal(IteratorContext* ctx,
@@ -105,15 +114,16 @@ class NonSerializableDatasetOp : public UnaryDatasetOpKernel {
         return model::MakeKnownRatioNode(std::move(args), /*ratio=*/1);
       }
 
-      Status SaveInternal(IteratorStateWriter* writer) override {
-        TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
-        return Status::OK();
+      Status SaveInternal(SerializationContext* ctx,
+                          IteratorStateWriter* writer) override {
+        TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
+        return OkStatus();
       }
 
       Status RestoreInternal(IteratorContext* ctx,
                              IteratorStateReader* reader) override {
         TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-        return Status::OK();
+        return OkStatus();
       }
 
      private:

@@ -13,6 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/schema/builtin_ops_header/generator.h"
+
+#include <string>
+
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
@@ -46,7 +49,8 @@ extern "C" {
 #endif  // __cplusplus
 
 // The enum for builtin operators.
-// Note: CUSTOM and DELEGATE are 2 special ops which are not real built-in ops.
+// Note: CUSTOM, DELEGATE, and PLACEHOLDER_FOR_GREATER_OP_CODES are 3 special
+// ops which are not real built-in ops.
 typedef enum {
 )";
 

@@ -14,17 +14,14 @@
 # ==============================================================================
 """Implements the graph generation for computation of gradients."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+from tensorflow.compiler.jit.ops import xla_ops_grad  # pylint: disable=unused-import
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_grad  # pylint: disable=unused-import
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import check_ops  # pylint: disable=unused-import
 from tensorflow.python.ops import control_flow_grad  # pylint: disable=unused-import
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import cudnn_rnn_grad  # pylint: disable=unused-import
 from tensorflow.python.ops import gradients_util
 from tensorflow.python.ops import image_grad  # pylint: disable=unused-import
 from tensorflow.python.ops import linalg_grad  # pylint: disable=unused-import
@@ -33,10 +30,21 @@ from tensorflow.python.ops import logging_ops  # pylint: disable=unused-import
 from tensorflow.python.ops import manip_grad  # pylint: disable=unused-import
 from tensorflow.python.ops import math_grad  # pylint: disable=unused-import
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import nccl_ops  # pylint: disable=unused-import
 from tensorflow.python.ops import optional_grad  # pylint: disable=unused-import
+from tensorflow.python.ops import proto_ops  # pylint: disable=unused-import
 from tensorflow.python.ops import random_grad  # pylint: disable=unused-import
+from tensorflow.python.ops import rnn_grad  # pylint: disable=unused-import
+from tensorflow.python.ops import sdca_ops  # pylint: disable=unused-import
+from tensorflow.python.ops import sets  # pylint: disable=unused-import
+from tensorflow.python.ops import sparse_grad  # pylint: disable=unused-import
+from tensorflow.python.ops import tensor_array_grad  # pylint: disable=unused-import
 from tensorflow.python.ops import tensor_array_ops
+from tensorflow.python.ops import while_loop
+from tensorflow.python.ops.linalg.sparse import sparse_csr_matrix_grad  # pylint: disable=unused-import
+from tensorflow.python.ops.signal import fft_ops  # pylint: disable=unused-import
 from tensorflow.python.ops.unconnected_gradients import UnconnectedGradients
+from tensorflow.python.training import checkpoint_ops  # pylint: disable=unused-import
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -58,7 +66,7 @@ def gradients(ys,
 
   `gradients()` adds ops to the graph to output the derivatives of `ys` with
   respect to `xs`.  It returns a list of `Tensor` of length `len(xs)` where
-  each tensor is the `sum(dy/dx)` for y in `ys`.
+  each tensor is the `sum(dy/dx)` for y in `ys` and for x in `xs`.
 
   `grad_ys` is a list of tensors of the same length as `ys` that holds
   the initial gradients for each y in `ys`.  When `grad_ys` is None,
@@ -109,11 +117,24 @@ def gradients(ys,
   ```python
   a = tf.ones([1, 2])
   b = tf.ones([3, 1])
-  g1 = tf.gradients([b], [a], unnconnected_gradients='none')
+  g1 = tf.gradients([b], [a], unconnected_gradients='none')
   sess.run(g1)  # [None]
 
   g2 = tf.gradients([b], [a], unconnected_gradients='zero')
   sess.run(g2)  # [array([[0., 0.]], dtype=float32)]
+  ```
+
+  Let us take one practical example which comes during the back propogation
+  phase. This function is used to evaluate the derivatives of the cost function
+  with respect to Weights `Ws` and Biases `bs`. Below sample implementation
+  provides the exaplantion of what it is actually used for :
+
+  ```python
+  Ws = tf.constant(0.)
+  bs = 2 * Ws
+  cost = Ws + bs  # This is just an example. So, please ignore the formulas.
+  g = tf.gradients(cost, [Ws, bs])
+  dCost_dW, dCost_db = g
   ```
 
 
@@ -138,7 +159,8 @@ def gradients(ys,
       `none`.
 
   Returns:
-    A list of `sum(dy/dx)` for each x in `xs`.
+    A list of `Tensor` of length `len(xs)` where each tensor is the `sum(dy/dx)`
+    for y in `ys` and for x in `xs`.
 
   Raises:
     LookupError: if one of the operations between `x` and `y` does not
@@ -170,13 +192,17 @@ def gradients_v2(ys,  # pylint: disable=invalid-name
                  unconnected_gradients=UnconnectedGradients.NONE):
   """Constructs symbolic derivatives of sum of `ys` w.r.t. x in `xs`.
 
+  `tf.gradients` is only valid in a graph context. In particular,
+  it is valid in the context of a `tf.function` wrapper, where code
+  is executing as a graph.
+
   `ys` and `xs` are each a `Tensor` or a list of tensors.  `grad_ys`
   is a list of `Tensor`, holding the gradients received by the
   `ys`. The list must be the same length as `ys`.
 
   `gradients()` adds ops to the graph to output the derivatives of `ys` with
   respect to `xs`.  It returns a list of `Tensor` of length `len(xs)` where
-  each tensor is the `sum(dy/dx)` for y in `ys`.
+  each tensor is the `sum(dy/dx)` for y in `ys` and for x in `xs`.
 
   `grad_ys` is a list of tensors of the same length as `ys` that holds
   the initial gradients for each y in `ys`.  When `grad_ys` is None,
@@ -192,22 +218,28 @@ def gradients_v2(ys,  # pylint: disable=invalid-name
   other things, this allows computation of partial derivatives as opposed to
   total derivatives. For example:
 
-  ```python
-  a = tf.constant(0.)
-  b = 2 * a
-  g = tf.gradients(a + b, [a, b], stop_gradients=[a, b])
-  ```
+  >>> @tf.function
+  ... def example():
+  ...   a = tf.constant(0.)
+  ...   b = 2 * a
+  ...   return tf.gradients(a + b, [a, b], stop_gradients=[a, b])
+  >>> example()
+  [<tf.Tensor: shape=(), dtype=float32, numpy=1.0>,
+  <tf.Tensor: shape=(), dtype=float32, numpy=1.0>]
 
   Here the partial derivatives `g` evaluate to `[1.0, 1.0]`, compared to the
   total derivatives `tf.gradients(a + b, [a, b])`, which take into account the
   influence of `a` on `b` and evaluate to `[3.0, 1.0]`.  Note that the above is
   equivalent to:
 
-  ```python
-  a = tf.stop_gradient(tf.constant(0.))
-  b = tf.stop_gradient(2 * a)
-  g = tf.gradients(a + b, [a, b])
-  ```
+  >>> @tf.function
+  ... def example():
+  ...   a = tf.stop_gradient(tf.constant(0.))
+  ...   b = tf.stop_gradient(2 * a)
+  ...   return tf.gradients(a + b, [a, b])
+  >>> example()
+  [<tf.Tensor: shape=(), dtype=float32, numpy=1.0>,
+  <tf.Tensor: shape=(), dtype=float32, numpy=1.0>]
 
   `stop_gradients` provides a way of stopping gradient after the graph has
   already been constructed, as compared to `tf.stop_gradient` which is used
@@ -224,16 +256,35 @@ def gradients_v2(ys,  # pylint: disable=invalid-name
   using the `'zero'` option. `tf.UnconnectedGradients` provides the
   following options and behaviors:
 
-  ```python
-  a = tf.ones([1, 2])
-  b = tf.ones([3, 1])
-  g1 = tf.gradients([b], [a], unnconnected_gradients='none')
-  sess.run(g1)  # [None]
+  >>> @tf.function
+  ... def example(use_zero):
+  ...   a = tf.ones([1, 2])
+  ...   b = tf.ones([3, 1])
+  ...   if use_zero:
+  ...     return tf.gradients([b], [a], unconnected_gradients='zero')
+  ...   else:
+  ...     return tf.gradients([b], [a], unconnected_gradients='none')
+  >>> example(False)
+  [None]
+  >>> example(True)
+  [<tf.Tensor: shape=(1, 2), dtype=float32, numpy=array([[0., 0.]], ...)>]
 
-  g2 = tf.gradients([b], [a], unconnected_gradients='zero')
-  sess.run(g2)  # [array([[0., 0.]], dtype=float32)]
-  ```
+  Let us take one practical example which comes during the back propogation
+  phase. This function is used to evaluate the derivatives of the cost function
+  with respect to Weights `Ws` and Biases `bs`. Below sample implementation
+  provides the exaplantion of what it is actually used for :
 
+  >>> @tf.function
+  ... def example():
+  ...   Ws = tf.constant(0.)
+  ...   bs = 2 * Ws
+  ...   cost = Ws + bs  # This is just an example. Please ignore the formulas.
+  ...   g = tf.gradients(cost, [Ws, bs])
+  ...   dCost_dW, dCost_db = g
+  ...   return dCost_dW, dCost_db
+  >>> example()
+  (<tf.Tensor: shape=(), dtype=float32, numpy=3.0>,
+  <tf.Tensor: shape=(), dtype=float32, numpy=1.0>)
 
   Args:
     ys: A `Tensor` or list of tensors to be differentiated.
@@ -254,7 +305,8 @@ def gradients_v2(ys,  # pylint: disable=invalid-name
       `none`.
 
   Returns:
-    A list of `sum(dy/dx)` for each x in `xs`.
+    A list of `Tensor` of length `len(xs)` where each tensor is the `sum(dy/dx)`
+    for y in `ys` and for x in `xs`.
 
   Raises:
     LookupError: if one of the operations between `x` and `y` does not
@@ -382,7 +434,7 @@ def hessians(ys,
     ]
     # Iterate over all elements of the gradient and compute second order
     # derivatives.
-    _, hessian = control_flow_ops.while_loop(
+    _, hessian = while_loop.while_loop(
         lambda j, _: j < n,
         lambda j, result: (j + 1,
                            result.write(j, gradients(gradient[j], x)[0])),
@@ -402,8 +454,34 @@ def HessiansV2(ys,
                gate_gradients=False,
                aggregation_method=None,
                name="hessians"):
-  return hessians(ys, xs, name=name, gate_gradients=gate_gradients,
-                  aggregation_method=aggregation_method)
+  """Constructs the Hessian of sum of `ys` with respect to `x` in `xs`.
 
+  `hessians()` adds ops to the graph to output the Hessian matrix of `ys`
+  with respect to `xs`.  It returns a list of `Tensor` of length `len(xs)`
+  where each tensor is the Hessian of `sum(ys)`.
 
-HessiansV2.__doc__ = hessians.__doc__
+  The Hessian is a matrix of second-order partial derivatives of a scalar
+  tensor (see https://en.wikipedia.org/wiki/Hessian_matrix for more details).
+
+  Args:
+    ys: A `Tensor` or list of tensors to be differentiated.
+    xs: A `Tensor` or list of tensors to be used for differentiation.
+    gate_gradients: See `gradients()` documentation for details.
+    aggregation_method: See `gradients()` documentation for details.
+    name: Optional name to use for grouping all the gradient ops together.
+      defaults to 'hessians'.
+
+  Returns:
+    A list of Hessian matrices of `sum(ys)` for each `x` in `xs`.
+
+  Raises:
+    LookupError: if one of the operations between `xs` and `ys` does not
+      have a registered gradient function.
+  """
+  return hessians(
+      ys,
+      xs,
+      name=name,
+      colocate_gradients_with_ops=True,
+      gate_gradients=gate_gradients,
+      aggregation_method=aggregation_method)

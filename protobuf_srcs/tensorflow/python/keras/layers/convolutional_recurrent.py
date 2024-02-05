@@ -13,35 +13,30 @@
 # limitations under the License.
 # ==============================================================================
 # pylint: disable=protected-access
-"""Convolutional-recurrent layers.
-"""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+# pylint: disable=g-classes-have-attributes
+"""Convolutional-recurrent layers."""
 
 import numpy as np
 
 from tensorflow.python.keras import activations
-from tensorflow.python.keras import backend as K
+from tensorflow.python.keras import backend
 from tensorflow.python.keras import constraints
 from tensorflow.python.keras import initializers
 from tensorflow.python.keras import regularizers
 from tensorflow.python.keras.engine.base_layer import Layer
 from tensorflow.python.keras.engine.input_spec import InputSpec
-from tensorflow.python.keras.layers.recurrent import _standardize_args
 from tensorflow.python.keras.layers.recurrent import DropoutRNNCellMixin
 from tensorflow.python.keras.layers.recurrent import RNN
 from tensorflow.python.keras.utils import conv_utils
 from tensorflow.python.keras.utils import generic_utils
 from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.ops import array_ops
-from tensorflow.python.util.tf_export import keras_export
 
 
 class ConvRNN2D(RNN):
   """Base class for convolutional-recurrent layers.
 
-  Arguments:
+  Args:
     cell: A RNN cell instance. A RNN cell is a class that has:
       - a `call(input_at_t, states_at_t)` method, returning
         `(output_at_t, states_at_t_plus_1)`. The call method of the
@@ -277,68 +272,20 @@ class ConvRNN2D(RNN):
 
   def get_initial_state(self, inputs):
     # (samples, timesteps, rows, cols, filters)
-    initial_state = K.zeros_like(inputs)
+    initial_state = backend.zeros_like(inputs)
     # (samples, rows, cols, filters)
-    initial_state = K.sum(initial_state, axis=1)
+    initial_state = backend.sum(initial_state, axis=1)
     shape = list(self.cell.kernel_shape)
     shape[-1] = self.cell.filters
     initial_state = self.cell.input_conv(initial_state,
-                                         array_ops.zeros(tuple(shape)),
+                                         array_ops.zeros(tuple(shape),
+                                                         initial_state.dtype),
                                          padding=self.cell.padding)
 
     if hasattr(self.cell.state_size, '__len__'):
       return [initial_state for _ in self.cell.state_size]
     else:
       return [initial_state]
-
-  def __call__(self, inputs, initial_state=None, constants=None, **kwargs):
-    inputs, initial_state, constants = _standardize_args(
-        inputs, initial_state, constants, self._num_constants)
-
-    if initial_state is None and constants is None:
-      return super(ConvRNN2D, self).__call__(inputs, **kwargs)
-
-    # If any of `initial_state` or `constants` are specified and are Keras
-    # tensors, then add them to the inputs and temporarily modify the
-    # input_spec to include them.
-
-    additional_inputs = []
-    additional_specs = []
-    if initial_state is not None:
-      kwargs['initial_state'] = initial_state
-      additional_inputs += initial_state
-      self.state_spec = []
-      for state in initial_state:
-        shape = K.int_shape(state)
-        self.state_spec.append(InputSpec(shape=shape))
-
-      additional_specs += self.state_spec
-    if constants is not None:
-      kwargs['constants'] = constants
-      additional_inputs += constants
-      self.constants_spec = [InputSpec(shape=K.int_shape(constant))
-                             for constant in constants]
-      self._num_constants = len(constants)
-      additional_specs += self.constants_spec
-    # at this point additional_inputs cannot be empty
-    for tensor in additional_inputs:
-      if K.is_keras_tensor(tensor) != K.is_keras_tensor(additional_inputs[0]):
-        raise ValueError('The initial state or constants of an RNN'
-                         ' layer cannot be specified with a mix of'
-                         ' Keras tensors and non-Keras tensors')
-
-    if K.is_keras_tensor(additional_inputs[0]):
-      # Compute the full input spec, including state and constants
-      full_input = [inputs] + additional_inputs
-      full_input_spec = self.input_spec + additional_specs
-      # Perform the call with temporarily replaced input_spec
-      original_input_spec = self.input_spec
-      self.input_spec = full_input_spec
-      output = super(ConvRNN2D, self).__call__(full_input, **kwargs)
-      self.input_spec = original_input_spec
-      return output
-    else:
-      return super(ConvRNN2D, self).__call__(inputs, **kwargs)
 
   def call(self,
            inputs,
@@ -348,24 +295,12 @@ class ConvRNN2D(RNN):
            constants=None):
     # note that the .build() method of subclasses MUST define
     # self.input_spec and self.state_spec with complete input shapes.
-    if isinstance(inputs, list):
-      inputs = inputs[0]
-    if initial_state is not None:
-      pass
-    elif self.stateful:
-      initial_state = self.states
-    else:
-      initial_state = self.get_initial_state(inputs)
+    inputs, initial_state, constants = self._process_inputs(
+        inputs, initial_state, constants)
 
     if isinstance(mask, list):
       mask = mask[0]
-
-    if len(initial_state) != len(self.states):
-      raise ValueError('Layer has ' + str(len(self.states)) +
-                       ' states but was passed ' +
-                       str(len(initial_state)) +
-                       ' initial states.')
-    timesteps = K.int_shape(inputs)[1]
+    timesteps = backend.int_shape(inputs)[1]
 
     kwargs = {}
     if generic_utils.has_arg(self.cell.call, 'training'):
@@ -376,25 +311,25 @@ class ConvRNN2D(RNN):
         raise ValueError('RNN cell does not support constants')
 
       def step(inputs, states):
-        constants = states[-self._num_constants:]
-        states = states[:-self._num_constants]
-        return self.cell.call(inputs, states, constants=constants,
-                              **kwargs)
+        constants = states[-self._num_constants:]  # pylint: disable=invalid-unary-operand-type
+        states = states[:-self._num_constants]  # pylint: disable=invalid-unary-operand-type
+        return self.cell.call(inputs, states, constants=constants, **kwargs)
     else:
       def step(inputs, states):
         return self.cell.call(inputs, states, **kwargs)
 
-    last_output, outputs, states = K.rnn(step,
-                                         inputs,
-                                         initial_state,
-                                         constants=constants,
-                                         go_backwards=self.go_backwards,
-                                         mask=mask,
-                                         input_length=timesteps)
+    last_output, outputs, states = backend.rnn(step,
+                                               inputs,
+                                               initial_state,
+                                               constants=constants,
+                                               go_backwards=self.go_backwards,
+                                               mask=mask,
+                                               input_length=timesteps)
     if self.stateful:
-      updates = []
-      for i in range(len(states)):
-        updates.append(K.update(self.states[i], states[i]))
+      updates = [
+          backend.update(self_state, state)
+          for self_state, state in zip(self.states, states)
+      ]
       self.add_update(updates)
 
     if self.return_sequences:
@@ -448,17 +383,17 @@ class ConvRNN2D(RNN):
     # initialize state if None
     if self.states[0] is None:
       if hasattr(self.cell.state_size, '__len__'):
-        self.states = [K.zeros(get_tuple_shape(dim))
+        self.states = [backend.zeros(get_tuple_shape(dim))
                        for dim in self.cell.state_size]
       else:
-        self.states = [K.zeros(get_tuple_shape(self.cell.state_size))]
+        self.states = [backend.zeros(get_tuple_shape(self.cell.state_size))]
     elif states is None:
       if hasattr(self.cell.state_size, '__len__'):
         for state, dim in zip(self.states, self.cell.state_size):
-          K.set_value(state, np.zeros(get_tuple_shape(dim)))
+          backend.set_value(state, np.zeros(get_tuple_shape(dim)))
       else:
-        K.set_value(self.states[0],
-                    np.zeros(get_tuple_shape(self.cell.state_size)))
+        backend.set_value(self.states[0],
+                          np.zeros(get_tuple_shape(self.cell.state_size)))
     else:
       if not isinstance(states, (list, tuple)):
         states = [states]
@@ -479,13 +414,13 @@ class ConvRNN2D(RNN):
                            str(get_tuple_shape(dim)) +
                            ', found shape=' + str(value.shape))
         # TODO(anjalisridhar): consider batch calls to `set_value`.
-        K.set_value(state, value)
+        backend.set_value(state, value)
 
 
 class ConvLSTM2DCell(DropoutRNNCellMixin, Layer):
   """Cell class for the ConvLSTM2D layer.
 
-  Arguments:
+  Args:
     filters: Integer, the dimensionality of the output space
       (i.e. the number of output filters in the convolution).
     kernel_size: An integer or tuple/list of n integers, specifying the
@@ -495,6 +430,9 @@ class ConvLSTM2DCell(DropoutRNNCellMixin, Layer):
       Specifying any stride value != 1 is incompatible with specifying
       any `dilation_rate` value != 1.
     padding: One of `"valid"` or `"same"` (case-insensitive).
+      `"valid"` means no padding. `"same"` results in padding evenly to 
+      the left/right or up/down of the input such that output has the same 
+      height/width dimension as the input.
     data_format: A string,
       one of `channels_last` (default) or `channels_first`.
       It defaults to the `image_data_format` value found in your
@@ -519,8 +457,8 @@ class ConvLSTM2DCell(DropoutRNNCellMixin, Layer):
     unit_forget_bias: Boolean.
       If True, add 1 to the bias of the forget gate at initialization.
       Use in combination with `bias_initializer="zeros"`.
-      This is recommended in [Jozefowicz et al.]
-      (http://www.jmlr.org/proceedings/papers/v37/jozefowicz15.pdf)
+      This is recommended in [Jozefowicz et al., 2015](
+        http://www.jmlr.org/proceedings/papers/v37/jozefowicz15.pdf)
     kernel_regularizer: Regularizer function applied to
       the `kernel` weights matrix.
     recurrent_regularizer: Regularizer function applied to
@@ -628,9 +566,9 @@ class ConvLSTM2DCell(DropoutRNNCellMixin, Layer):
       if self.unit_forget_bias:
 
         def bias_initializer(_, *args, **kwargs):
-          return K.concatenate([
+          return backend.concatenate([
               self.bias_initializer((self.filters,), *args, **kwargs),
-              initializers.Ones()((self.filters,), *args, **kwargs),
+              initializers.get('ones')((self.filters,), *args, **kwargs),
               self.bias_initializer((self.filters * 2,), *args, **kwargs),
           ])
       else:
@@ -706,19 +644,19 @@ class ConvLSTM2DCell(DropoutRNNCellMixin, Layer):
     return h, [h, c]
 
   def input_conv(self, x, w, b=None, padding='valid'):
-    conv_out = K.conv2d(x, w, strides=self.strides,
-                        padding=padding,
-                        data_format=self.data_format,
-                        dilation_rate=self.dilation_rate)
+    conv_out = backend.conv2d(x, w, strides=self.strides,
+                              padding=padding,
+                              data_format=self.data_format,
+                              dilation_rate=self.dilation_rate)
     if b is not None:
-      conv_out = K.bias_add(conv_out, b,
-                            data_format=self.data_format)
+      conv_out = backend.bias_add(conv_out, b,
+                                  data_format=self.data_format)
     return conv_out
 
   def recurrent_conv(self, x, w):
-    conv_out = K.conv2d(x, w, strides=(1, 1),
-                        padding='same',
-                        data_format=self.data_format)
+    conv_out = backend.conv2d(x, w, strides=(1, 1),
+                              padding='same',
+                              data_format=self.data_format)
     return conv_out
 
   def get_config(self):
@@ -754,14 +692,19 @@ class ConvLSTM2DCell(DropoutRNNCellMixin, Layer):
     return dict(list(base_config.items()) + list(config.items()))
 
 
-@keras_export('keras.layers.ConvLSTM2D')
 class ConvLSTM2D(ConvRNN2D):
-  """Convolutional LSTM.
+  """2D Convolutional LSTM layer.
 
-  It is similar to an LSTM layer, but the input transformations
-  and recurrent transformations are both convolutional.
+  A convolutional LSTM is similar to an LSTM, but the input transformations
+  and recurrent transformations are both convolutional. This layer is typically
+  used to process timeseries of images (i.e. video-like data).
 
-  Arguments:
+  It is known to perform well for weather data forecasting,
+  using inputs that are timeseries of 2D grids of sensor values.
+  It isn't usually applied to regular video data, due to its high computational
+  cost.
+
+  Args:
     filters: Integer, the dimensionality of the output space
       (i.e. the number of output filters in the convolution).
     kernel_size: An integer or tuple/list of n integers, specifying the
@@ -771,6 +714,9 @@ class ConvLSTM2D(ConvRNN2D):
       Specifying any stride value != 1 is incompatible with specifying
       any `dilation_rate` value != 1.
     padding: One of `"valid"` or `"same"` (case-insensitive).
+      `"valid"` means no padding. `"same"` results in padding evenly to
+      the left/right or up/down of the input such that output has the same
+      height/width dimension as the input.
     data_format: A string,
       one of `channels_last` (default) or `channels_first`.
       The ordering of the dimensions in the inputs.
@@ -800,8 +746,8 @@ class ConvLSTM2D(ConvRNN2D):
     unit_forget_bias: Boolean.
       If True, add 1 to the bias of the forget gate at initialization.
       Use in combination with `bias_initializer="zeros"`.
-      This is recommended in [Jozefowicz et al.]
-      (http://www.jmlr.org/proceedings/papers/v37/jozefowicz15.pdf)
+      This is recommended in [Jozefowicz et al., 2015](
+        http://www.jmlr.org/proceedings/papers/v37/jozefowicz15.pdf)
     kernel_regularizer: Regularizer function applied to
       the `kernel` weights matrix.
     recurrent_regularizer: Regularizer function applied to
@@ -814,7 +760,9 @@ class ConvLSTM2D(ConvRNN2D):
       the `recurrent_kernel` weights matrix.
     bias_constraint: Constraint function applied to the bias vector.
     return_sequences: Boolean. Whether to return the last output
-      in the output sequence, or the full sequence.
+      in the output sequence, or the full sequence. (default False)
+    return_state: Boolean Whether to return the last state
+      in addition to the output. (default False)
     go_backwards: Boolean (default False).
       If True, process the input sequence backwards.
     stateful: Boolean (default False). If True, the last state
@@ -828,7 +776,7 @@ class ConvLSTM2D(ConvRNN2D):
       the linear transformation of the recurrent state.
 
   Call arguments:
-    inputs: A 5D tensor.
+    inputs: A 5D float tensor (see input shape description below).
     mask: Binary tensor of shape `(samples, timesteps)` indicating whether
       a given timestep should be masked.
     training: Python boolean indicating whether the layer should behave in
@@ -847,31 +795,49 @@ class ConvLSTM2D(ConvRNN2D):
         `(samples, time, rows, cols, channels)`
 
   Output shape:
-    - If `return_sequences`
-       - If data_format='channels_first'
-          5D tensor with shape:
-          `(samples, time, filters, output_row, output_col)`
-       - If data_format='channels_last'
-          5D tensor with shape:
-          `(samples, time, output_row, output_col, filters)`
-    - Else
-      - If data_format ='channels_first'
-          4D tensor with shape:
-          `(samples, filters, output_row, output_col)`
-      - If data_format='channels_last'
-          4D tensor with shape:
-          `(samples, output_row, output_col, filters)`
-      where `o_row` and `o_col` depend on the shape of the filter and
-      the padding
+    - If `return_state`: a list of tensors. The first tensor is
+      the output. The remaining tensors are the last states,
+      each 4D tensor with shape:
+      `(samples, filters, new_rows, new_cols)`
+      if data_format='channels_first'
+      or 4D tensor with shape:
+      `(samples, new_rows, new_cols, filters)`
+      if data_format='channels_last'.
+      `rows` and `cols` values might have changed due to padding.
+    - If `return_sequences`: 5D tensor with shape:
+      `(samples, timesteps, filters, new_rows, new_cols)`
+      if data_format='channels_first'
+      or 5D tensor with shape:
+      `(samples, timesteps, new_rows, new_cols, filters)`
+      if data_format='channels_last'.
+    - Else, 4D tensor with shape:
+      `(samples, filters, new_rows, new_cols)`
+      if data_format='channels_first'
+      or 4D tensor with shape:
+      `(samples, new_rows, new_cols, filters)`
+      if data_format='channels_last'.
 
   Raises:
     ValueError: in case of invalid constructor arguments.
 
   References:
-    - [Convolutional LSTM Network: A Machine Learning Approach for
-    Precipitation Nowcasting](http://arxiv.org/abs/1506.04214v1)
-    The current implementation does not include the feedback loop on the
-    cells output.
+    - [Shi et al., 2015](http://arxiv.org/abs/1506.04214v1)
+    (the current implementation does not include the feedback loop on the
+    cells output).
+
+  Example:
+
+  ```python
+  steps = 10
+  height = 32
+  width = 32
+  input_channels = 3
+  output_channels = 6
+
+  inputs = tf.keras.Input(shape=(steps, height, width, input_channels))
+  layer = tf.keras.layers.ConvLSTM2D(filters=output_channels, kernel_size=3)
+  outputs = layer(inputs)
+  ```
   """
 
   def __init__(self,
@@ -896,6 +862,7 @@ class ConvLSTM2D(ConvRNN2D):
                recurrent_constraint=None,
                bias_constraint=None,
                return_sequences=False,
+               return_state=False,
                go_backwards=False,
                stateful=False,
                dropout=0.,
@@ -925,13 +892,13 @@ class ConvLSTM2D(ConvRNN2D):
                           dtype=kwargs.get('dtype'))
     super(ConvLSTM2D, self).__init__(cell,
                                      return_sequences=return_sequences,
+                                     return_state=return_state,
                                      go_backwards=go_backwards,
                                      stateful=stateful,
                                      **kwargs)
     self.activity_regularizer = regularizers.get(activity_regularizer)
 
   def call(self, inputs, mask=None, training=None, initial_state=None):
-    self._maybe_reset_cell_dropout_mask(self.cell)
     return super(ConvLSTM2D, self).call(inputs,
                                         mask=mask,
                                         training=training,

@@ -1,5 +1,6 @@
 op {
   graph_op_name: "BoostedTreesUpdateEnsembleV2"
+  deprecation_message: "Boosted Trees kernels in TF are deprecated. Please use TensorFlow Decision Forests instead (https://github.com/tensorflow/decision-forests)"
   visibility: HIDDEN
   in_arg {
     name: "tree_ensemble_handle"
@@ -91,6 +92,14 @@ END
     name: "logits_dimension"
     description: <<END
 scalar, dimension of the logits
+END
+  }
+  attr {
+    name: "num_groups"
+    description: <<END
+Number of groups of split information to process, where a group contains feature
+ids that are processed together in BoostedTreesCalculateBestFeatureSplitOpV2.
+INFERRED.
 END
   }
   summary: "Updates the tree ensemble by adding a layer to the last tree being grown"

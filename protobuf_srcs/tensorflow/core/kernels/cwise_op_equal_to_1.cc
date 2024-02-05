@@ -18,15 +18,29 @@ limitations under the License.
 namespace tensorflow {
 REGISTER7(BinaryOp, CPU, "Equal", functor::equal_to, float, Eigen::half, double,
           uint8, int8, int16, bfloat16);
+REGISTER8(BinaryOp, CPU, "Equal", functor::equal_to, uint16, uint32, uint64,
+          qint8, qint16, quint8, quint16, qint32);
 REGISTER_KERNEL_BUILDER(
     Name("ApproximateEqual").Device(DEVICE_CPU).TypeConstraint<float>("T"),
     ApproximateEqualOp<CPUDevice, float>);
 REGISTER_KERNEL_BUILDER(
     Name("ApproximateEqual").Device(DEVICE_CPU).TypeConstraint<double>("T"),
     ApproximateEqualOp<CPUDevice, double>);
+
+REGISTER_KERNEL_BUILDER(Name("Equal")
+                            .Device(DEVICE_DEFAULT)
+                            .HostMemory("x")
+                            .HostMemory("y")
+                            .HostMemory("z")
+                            .TypeConstraint<int32>("T"),
+                        BinaryOp<CPUDevice, functor::equal_to<int32>>);
+
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 REGISTER4(BinaryOp, GPU, "Equal", functor::equal_to, float, Eigen::half, double,
           uint8);
+#endif
+REGISTER(BinaryOp, GPU, "Equal", functor::equal_to, bfloat16);
 REGISTER_KERNEL_BUILDER(
     Name("ApproximateEqual").Device(DEVICE_GPU).TypeConstraint<float>("T"),
     ApproximateEqualOp<GPUDevice, float>);
@@ -45,17 +59,5 @@ REGISTER_KERNEL_BUILDER(Name("Equal")
                             .TypeConstraint<int32>("T"),
                         BinaryOp<CPUDevice, functor::equal_to<int32>>);
 #endif
-
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER5(BinaryOp, SYCL, "Equal", functor::equal_to, float, double, uint8,
-          int8, int16);
-REGISTER_KERNEL_BUILDER(Name("Equal")
-                            .Device(DEVICE_SYCL)
-                            .HostMemory("x")
-                            .HostMemory("y")
-                            .HostMemory("z")
-                            .TypeConstraint<int32>("T"),
-                        BinaryOp<CPUDevice, functor::equal_to<int32>>);
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow

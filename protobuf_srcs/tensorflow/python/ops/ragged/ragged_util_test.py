@@ -14,15 +14,12 @@
 # ==============================================================================
 """Tests for ragged_util."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import test_util
+from tensorflow.python.framework.errors import InvalidArgumentError
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops.ragged import ragged_util
 from tensorflow.python.platform import googletest
@@ -194,7 +191,7 @@ class RaggedUtilTest(test_util.TensorFlowTestCase,
           repeats=2,
           axis='foo',
           exception=TypeError,
-          error='axis must be an int'),
+          error='`axis` must be an int'),
   ])
   def testError(self,
                 descr,
@@ -220,8 +217,24 @@ class RaggedUtilTest(test_util.TensorFlowTestCase,
       data = array_ops.placeholder_with_default(data, None)
       repeats = array_ops.placeholder_with_default(repeats, None)
 
-    with self.assertRaisesRegexp(exception, error):
+    with self.assertRaisesRegex(exception, error):
       ragged_util.repeat(data, repeats, axis)
+
+  @parameterized.parameters([
+      dict(
+          params=[1, 2, 3],
+          splits=[-1, -3],
+          repeats=2,
+          exception=InvalidArgumentError,
+      ),
+      dict(params=[1, 2, 3], splits=[1, 2], repeats=0.5, exception=TypeError),
+  ])
+  def testInputCheck(self, params, splits, repeats, exception):
+    params = constant_op.constant(params)
+    splits = constant_op.constant(splits)
+    repeats = constant_op.constant(repeats)
+    with self.assertRaises(exception):
+      ragged_util.repeat_ranges(params, splits, repeats)
 
 
 if __name__ == '__main__':

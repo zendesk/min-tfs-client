@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for batch_to_space_nd."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
@@ -36,6 +32,7 @@ def make_batch_to_space_nd_tests(options):
           "crops": [[[0, 0], [0, 0]], [[1, 1], [1, 1]]],
           "constant_block_shape": [True, False],
           "constant_crops": [True, False],
+          "dynamic_range_quantize": [False],
       },
       # Single batch (no-op)
       {
@@ -45,17 +42,51 @@ def make_batch_to_space_nd_tests(options):
           "crops": [[[0, 0], [0, 0]], [[1, 1], [1, 1]]],
           "constant_block_shape": [True],
           "constant_crops": [True],
+          "dynamic_range_quantize": [True, False],
       },
-      # Non-4D use case: 1 batch dimension, 3 spatial dimensions, 2 others.
       {
           "dtype": [tf.float32],
-          "input_shape": [[8, 2, 2, 2, 1, 1]],
-          "block_shape": [[2, 2, 2]],
-          "crops": [[[0, 0], [0, 0], [0, 0]]],
-          "constant_block_shape": [True, False],
-          "constant_crops": [True, False],
+          "input_shape": [[1, 3, 3, 1]],
+          "block_shape": [[1, 1]],
+          "crops": [[[0, 0], [0, 0]], [[1, 1], [1, 1]]],
+          "constant_block_shape": [True],
+          "constant_crops": [True],
+          "fully_quantize": [True],
+          "quant_16x8": [False, True],
+      },
+      # 3D use case.
+      {
+          "dtype": [tf.float32],
+          "input_shape": [[1, 3, 3]],
+          "block_shape": [[1]],
+          "crops": [[[0, 0]], [[1, 1]]],
+          "constant_block_shape": [True],
+          "constant_crops": [True],
+          "dynamic_range_quantize": [True, False],
+      },
+      {
+          "dtype": [tf.float32],
+          "input_shape": [[1, 3, 3]],
+          "block_shape": [[1]],
+          "crops": [[[0, 0]], [[1, 1]]],
+          "constant_block_shape": [True],
+          "constant_crops": [True],
+          "fully_quantize": [True],
+          "quant_16x8": [False, True],
       },
   ]
+
+  if options.run_with_flex:
+    # Non-4D use case: 1 batch dimension, 3 spatial dimensions, 2 others.
+    test_parameters = test_parameters + [{
+        "dtype": [tf.float32],
+        "input_shape": [[8, 2, 2, 2, 1, 1]],
+        "block_shape": [[2, 2, 2]],
+        "crops": [[[0, 0], [0, 0], [0, 0]]],
+        "constant_block_shape": [True, False],
+        "constant_crops": [True, False],
+        "dynamic_range_quantize": [False],
+    }]
 
   def build_graph(parameters):
     """Build a batch_to_space graph given `parameters`."""
@@ -83,12 +114,17 @@ def make_batch_to_space_nd_tests(options):
           dtype=tf.int32, name="crops", shape=shape)
       input_tensors.append(crops)
 
-    out = tf.batch_to_space_nd(input_tensor, block_shape, crops)
+    out = tf.batch_to_space(input_tensor, block_shape, crops)
     return input_tensors, [out]
 
   def build_inputs(parameters, sess, inputs, outputs):
     values = [
-        create_tensor_data(parameters["dtype"], parameters["input_shape"])
+        create_tensor_data(
+            parameters["dtype"],
+            parameters["input_shape"],
+            min_value=-1.0,
+            max_value=1.0,
+        )
     ]
     if not parameters["constant_block_shape"]:
       values.append(np.array(parameters["block_shape"]))

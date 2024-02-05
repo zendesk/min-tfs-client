@@ -19,9 +19,8 @@ limitations under the License.
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <string>
 
-#include <fp16.h>
+#include "fp16.h"  // from @FP16
 
 namespace tflite {
 namespace gpu {
@@ -39,6 +38,8 @@ class alignas(2) half {
   half(const half& f) : bits(f.bits) {}
 
   explicit half(float other) { bits = fp16_ieee_from_fp32_value(other); }
+
+  half& operator=(const half& other) = default;
 
   void operator=(float f) { *this = half(f); }
 

@@ -14,11 +14,7 @@
 # ==============================================================================
 """Utilities to test TF-TensorRT integration."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from collections import namedtuple
+import collections
 import errno
 import gc
 import itertools
@@ -27,15 +23,19 @@ import re
 import shutil
 import tempfile
 import warnings
-import numpy as np
-import six
 
-from tensorflow.compiler.tf2tensorrt.wrap_py_utils import is_tensorrt_enabled
+from contextlib import contextmanager
+
+import numpy as np
+
+from tensorflow.compiler.tf2tensorrt._pywrap_py_utils import is_tensorrt_enabled
 from tensorflow.core.framework import graph_pb2
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.core.protobuf import rewriter_config_pb2
 from tensorflow.python.compiler.tensorrt import trt_convert
+from tensorflow.python.compiler.tensorrt import utils as trt_utils
 from tensorflow.python.eager import def_function
+from tensorflow.python.framework import config
 from tensorflow.python.framework import graph_io
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_spec
@@ -43,6 +43,7 @@ from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import tf_logging as logging
+from tensorflow.python.profiler import trace
 from tensorflow.python.saved_model import builder
 from tensorflow.python.saved_model import load
 from tensorflow.python.saved_model import loader
@@ -52,10 +53,12 @@ from tensorflow.python.saved_model import signature_def_utils
 from tensorflow.python.saved_model import tag_constants
 from tensorflow.python.saved_model import utils
 from tensorflow.python.tools import saved_model_utils
-from tensorflow.python.training.tracking import tracking
+from tensorflow.python.trackable import autotrackable
 from tensorflow.python.util import nest
 
-TfTrtIntegrationTestParams = namedtuple(
+logging.get_logger().propagate = False
+
+TfTrtIntegrationTestParams = collections.namedtuple(
     "TfTrtIntegrationTestParams",
     [
         # A function that creates the TF graph for testing.
@@ -72,7 +75,7 @@ TfTrtIntegrationTestParams = namedtuple(
         "expected_output_dims"
     ])
 
-RunParams = namedtuple(
+RunParams = collections.namedtuple(
     "RunParams",
     [
         # Whether to run the conversion online with RewriterConfig, or offline
@@ -84,6 +87,7 @@ RunParams = namedtuple(
         "test_name",
         # Is this test for TF 2.0?
         "is_v2",
+        "dynamic_shape",
     ])
 
 FP32 = "FP32"
@@ -100,38 +104,30 @@ def IsQuantizationWithCalibration(params):
   return IsQuantizationMode(params.precision_mode) and params.use_calibration
 
 
+def IsQuantizationWithoutCalibration(params):
+  return IsQuantizationMode(
+      params.precision_mode) and not params.use_calibration
+
+
+@contextmanager
+def disable_tensorfloat32():
+  start_value = config.tensor_float_32_execution_enabled()
+
+  config.enable_tensor_float_32_execution(False)
+
+  logging.info("TensorFloat32 Arithmetic Disabled")
+
+  try:
+    yield
+  #  Finally block always gets executed either exception is generated or not
+  finally:
+    config.enable_tensor_float_32_execution(start_value)
+
+
 class GraphState(object):
   ORIGINAL = 0
   CALIBRATE = 1
   INFERENCE = 2
-
-
-def OptimizerDisabledRewriterConfig():
-  """Returns a RewriterConfig with all default Grappler optimizers disabled."""
-  rewriter_config = rewriter_config_pb2.RewriterConfig()
-
-  # Turn off all default Grappler optimizers.
-  off = rewriter_config_pb2.RewriterConfig.OFF
-  rewriter_config.layout_optimizer = off
-  rewriter_config.constant_folding = off
-  rewriter_config.shape_optimization = off
-  rewriter_config.remapping = off
-  rewriter_config.arithmetic_optimization = off
-  rewriter_config.dependency_optimization = off
-  rewriter_config.loop_optimization = off
-  rewriter_config.function_optimization = off
-  rewriter_config.debug_stripper = off
-  rewriter_config.disable_model_pruning = True
-  rewriter_config.scoped_allocator_optimization = off
-  rewriter_config.memory_optimization = (
-      rewriter_config_pb2.RewriterConfig.NO_MEM_OPT)
-  rewriter_config.pin_to_host_optimization = off
-  rewriter_config.auto_parallel.enable = False
-
-  # Run only once for each enabled optimizer.
-  rewriter_config.meta_optimizer_iterations = (
-      rewriter_config_pb2.RewriterConfig.ONE)
-  return rewriter_config
 
 
 class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
@@ -139,7 +135,11 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
 
   @property
   def trt_incompatible_op(self):
-    return math_ops.erf
+    return math_ops.erfc
+
+  @property
+  def trt_incompatible_binary_op(self):
+    return math_ops.igamma
 
   @property
   def precision_modes(self):
@@ -147,113 +147,208 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
 
   # str is bytes in py2, but unicode in py3.
   def _ToUnicode(self, s):
-    if six.PY2:
-      if isinstance(s, unicode):
-        return s
-      return s.decode("utf-8")
-    else:
-      if isinstance(s, str):
-        return s
-      return s.decode("utf-8")
+    if isinstance(s, str):
+      return s
+    return s.decode("utf-8")
 
   def _ToBytes(self, s):
-    if six.PY2:
-      if isinstance(s, unicode):
-        return s.encode("utf-8")
-      return s
-    else:
-      if isinstance(s, str):
-        return s.encode("utf-8")
-      return s
+    if isinstance(s, str):
+      return s.encode("utf-8")
+    return s
 
   def _ToString(self, s):
-    if six.PY2:
-      if isinstance(s, unicode):
-        return s.encode("utf-8")
+    if isinstance(s, str):
       return s
-    else:
-      if isinstance(s, str):
-        return s
-      return s.decode("utf-8")
+    return s.decode("utf-8")
 
   def __init__(self, methodName="runTest"):  # pylint: disable=invalid-name
     super(TfTrtIntegrationTestBase, self).__init__(methodName)
     self._trt_test_params = None
+    self._disable_non_trt_optimizers = False
+    self._profile_strategy = "ImplicitBatchModeCompatible"
 
   def setUp(self):
     """Setup method."""
-    super(TfTrtIntegrationTestBase, self).setUp()
+    super().setUp()
     warnings.simplefilter("always")
 
-  def BuildParams(self, graph_fn, dtype, input_shapes, output_shapes):
-    """Build test parameters when not considering dynamic shapes."""
+    if not is_tensorrt_enabled():
+      self.skipTest("Test requires TensorRT")
 
-    def _Validate(shapes):
+  def tearDown(self):
+    """Making sure to clean artifact."""
+    idx = 0
+    while gc.garbage:
+      gc.collect()  # Force GC to destroy the TRT engine cache.
+      idx += 1
+      if idx >= 10:  # After 10 iterations, break to avoid infinite collect.
+        break
+
+  def _GetTensorSpec(self, shape, mask, dtype, name):
+    # Set dimension i to None if mask[i] == False
+    assert len(shape) == len(mask), (
+        f"len(shape): {len(shape)} == len(mask): {len(mask)}")
+
+    new_shape = [s if m else None for s, m in zip(shape, mask)]
+    return tensor_spec.TensorSpec(new_shape, dtype, name)
+
+  def BuildParams(self, graph_fn, dtype, input_shapes, output_shapes):
+    """Build test parameters.
+
+    The input_shapes and output_shapes arguments are known (static) shapes that
+    can be used to generate test data. To define the model, we also specify
+    corresponding input/output TensorSpecs. These are defined using the shape
+    arguments. For each input tensor we define:
+
+    input_spec = [None] + input_shape[1:]
+
+    and similarly for output shapes. This means that we leave the first (batch)
+    dimension unknown, the rest is just copied from the shapes arg.
+
+    Args:
+      graph_fn: The function to build the graph.
+      dtype: The element type.
+      input_shapes: The input shapes.
+      output_shapes: The output shapes.
+
+    Returns:
+      The test parameters.
+    """
+
+    input_mask = [[False] + [True] * (len(shape) - 1) for shape in input_shapes]
+    output_mask = [[False] + [True] * (len(shape) - 1) if shape else []
+                   for shape in output_shapes]
+
+    return self.BuildParamsWithMask(graph_fn, dtype, input_shapes,
+                                    output_shapes, input_mask, output_mask, [],
+                                    [])
+
+  def BuildParamsWithMask(self, graph_fn, dtype, input_shapes, output_shapes,
+                          input_mask, output_mask, extra_inputs, extra_outputs):
+    """Build test parameters with static or dynamic input shapes.
+
+    To define dynamic shapes give a boolean mask that describes which
+    dimensions to treat as known. The values in input_mask are interpreted the
+    following way:
+    - True: known dim (use the corresponding value from input_shapes)
+    - False: unknown dim (replace the corresponding value from input_shapes
+             with None)
+    For example, to define the first two dimension with unknown size use
+    input_shapes=[[1,2,1,8]], input_mask=[[False, False, True, True]].
+
+    Args:
+      graph_fn: The function to build the graph.
+      dtype: The element type.
+      input_shapes: The input shapes.
+      output_shapes: The output shapes.
+      input_mask: The input shape masks.
+      output_mask: the output shape masks.
+      extra_inputs: list of additional input shapes
+      extra_outputs: list of additional outputs shapes
+
+    Returns:
+      The test parameters.
+    """
+
+    def _ValidateShapes(shapes):
       # Make sure all the shapes are fully specified.
       for shape in shapes:
-        assert all(shape)
+        assert all(shape), f"Shape unspecified: {shape}"
 
-    _Validate(input_shapes)
-    _Validate(output_shapes)
+    _ValidateShapes(input_shapes)
+    _ValidateShapes(output_shapes)
+
+    assert len(input_mask) == len(input_shapes), (
+        f"Inconsistent input_mask and input_shapes: len({input_mask}) != "
+        f"len({input_shapes}).")
+    assert len(output_mask) == len(output_shapes), (
+        f"Inconsistent output_mask and output_shapes: len({output_mask}) != "
+        f"len({output_shapes}).")
+    for extra_in_shape, extra_out_shape in zip(extra_inputs, extra_outputs):
+      assert len(input_shapes) == len(extra_in_shape), (
+          f"Inconsistent input_shapes and extra_in_shape: len({input_shapes}) "
+          f"!= len({extra_in_shape}).")
+      assert len(output_shapes) == len(extra_out_shape), (
+          f"Inconsistent output_shapes and extra_out_shape: "
+          f"len({output_shapes}) != len({extra_out_shape}).")
 
     return TfTrtIntegrationTestParams(
         graph_fn=graph_fn,
-        # Unset the batch dim of the specs to make sure TRT can tolerate changes
-        # on that.
         input_specs=[
-            tensor_spec.TensorSpec([None] + shape[1:], dtype, "input_%d" % i)
-            for i, shape in enumerate(input_shapes)
+            self._GetTensorSpec(shape, mask, dtype, "input_%d" % i)
+            for i, (shape, mask) in enumerate(zip(input_shapes, input_mask))
         ],
         output_specs=[
-            tensor_spec.TensorSpec([None] + shape[1:], dtype, "output_%d" % i)
-            for i, shape in enumerate(output_shapes)
+            self._GetTensorSpec(shape, mask, dtype, "output_%d" % i)
+            for i, (shape, mask) in enumerate(zip(output_shapes, output_mask))
         ],
-        input_dims=[input_shapes],
-        expected_output_dims=[output_shapes])
+        input_dims=[input_shapes] + extra_inputs,
+        expected_output_dims=[output_shapes] + extra_outputs)
+
+  def DisableNonTrtOptimizers(self):
+    self._disable_non_trt_optimizers = True
 
   def GetParams(self):
-    """Return a TfTrtIntegrationTestParams for test, implemented by subclass."""
+    """Returns a TfTrtIntegrationTestParams for the test."""
     raise NotImplementedError()
 
   def GetConversionParams(self, run_params):
-    """Return a TrtConversionParams for test."""
-    batch_list = []
-    for dims_list in self._GetParamsCached().input_dims:
-      assert dims_list
-      # Each list of shapes should have same batch size.
-      input_batches = [dims[0] for dims in dims_list]
-      assert max(input_batches) == min(input_batches)
-      batch_list.append(input_batches[0])
+    """Returns a TrtConversionParams for test."""
     conversion_params = trt_convert.TrtConversionParams(
         # We use the minimum of all the batch sizes, so when multiple different
         # input shapes are provided it'll always create new engines in the
         # cache, and we can therefore test the cache behavior.
-        rewriter_config_template=None,
-        max_workspace_size_bytes=1 << 25,
+        max_workspace_size_bytes=(
+            trt_convert.DEFAULT_TRT_MAX_WORKSPACE_SIZE_BYTES),
         precision_mode=run_params.precision_mode,
         minimum_segment_size=2,
-        is_dynamic_op=run_params.dynamic_engine,
         maximum_cached_engines=1,
-        use_calibration=run_params.use_calibration,
-        max_batch_size=min(batch_list))
+        use_calibration=run_params.use_calibration)
     return conversion_params
+
+  def GetMaxBatchSize(self, run_params):
+    """Returns the max_batch_size that the converter should use for tests."""
+    if run_params.dynamic_engine:
+      return None
+    batch_list = []
+    for dims_list in self._GetParamsCached().input_dims:
+      assert dims_list, f"Expect non-empty `dim_list` but got: {dims_list}"
+      # Each list of shapes should have same batch size.
+      input_batches = [dims[0] for dims in dims_list]
+      assert max(input_batches) == min(input_batches), (
+          f"Inconsistent batch_size: max({input_batches}) != "
+          f"min({input_batches}).")
+      batch_list.append(input_batches[0])
+    return max(batch_list)
 
   def ShouldRunTest(self, run_params):
     """Whether to run the test."""
     # Ensure use_calibration=True in case of INT8 precision
-    return (run_params.use_calibration or
-            not IsQuantizationMode(run_params.precision_mode))
+    return (run_params.use_calibration or not IsQuantizationMode(
+        run_params.precision_mode)), "test either calibration or non-INT8"
 
   def ExpectedEnginesToBuild(self, run_params):
-    """Return the expected engines to build, implemented by subclass."""
+    """Returns the expected engines to build, implemented by subclass."""
     raise NotImplementedError()
+
+  def ExpectedConnections(self, run_params):
+    """Returns the expected edges or an empty dict to skip the check."""
+    return {}
+
+  def ExpectedMaxBatchSizes(self, run_params):
+    """Returns the expected maximum batch sizes of the build engines."""
+    return None
 
   def ExpectedAbsoluteTolerance(self, run_params):
     """The absolute tolerance to compare floating point results."""
-    return 1.e-05 if run_params.precision_mode == "FP32" else 1.e-02
+    if run_params.precision_mode == "INT8":
+      return 3e-1
+    return 1.e-05 if run_params.precision_mode == "FP32" else 2.e-02
 
   def ExpectedRelativeTolerance(self, run_params):
     """The relative tolerance to compare floating point results."""
+    if run_params.precision_mode == "INT8":
+      return 1e-1
     return 1.e-05 if run_params.precision_mode == "FP32" else 1.e-02
 
   def _GetParamsCached(self):
@@ -269,17 +364,22 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
   def _GetConfigProto(self, run_params, graph_state):
     """Get config proto based on specific settings."""
     conversion_params = self.GetConversionParams(run_params)
+    max_batch_size = self.GetMaxBatchSize(run_params)
+
     if graph_state == GraphState.INFERENCE and run_params.convert_online:
-      rewriter_cfg = trt_convert.get_tensorrt_rewriter_config(conversion_params)
-      graph_options = config_pb2.GraphOptions(rewrite_options=rewriter_cfg)
+      rewriter_cfg = trt_convert.get_tensorrt_rewriter_config(
+          conversion_params,
+          is_dynamic_op=run_params.dynamic_engine,
+          max_batch_size=max_batch_size,
+          disable_non_trt_optimizers=self._disable_non_trt_optimizers)
     else:
-      graph_options = config_pb2.GraphOptions()
-      if conversion_params.rewriter_config_template is not None:
-        graph_options.rewrite_options.CopyFrom(
-            conversion_params.rewriter_config_template)
+      rewriter_cfg = rewriter_config_pb2.RewriterConfig()
+      if self._disable_non_trt_optimizers:
+        trt_utils.disable_non_trt_optimizers_in_rewriter_config(rewriter_cfg)
 
     config = config_pb2.ConfigProto(
-        gpu_options=self._GetGPUOptions(), graph_options=graph_options)
+        gpu_options=self._GetGPUOptions(),
+        graph_options=config_pb2.GraphOptions(rewrite_options=rewriter_cfg))
     return config
 
   def _GetFeedNames(self):
@@ -337,7 +437,9 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
             for i in range(len(params.input_specs))
         }
         new_val = func(**feed_dict)
-        assert isinstance(new_val, dict)
+        assert isinstance(
+            new_val, dict), (f"Invalid type for `new_val`, expected `dict`. "
+                             f"Got: {type(new_val)}.")
         # The key of the output map is always like output_i.
         new_val = [new_val[key] for key in sorted(new_val)]
         # Each element is an eager Tensor, and accessing individual elements is
@@ -359,80 +461,140 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
                 run_params,
                 saved_model_dir,
                 inputs_data,
-                config,
                 graph_state,
                 num_runs=2):
     params = self._GetParamsCached()
     for data in inputs_data:
-      assert len(params.input_specs) == len(data)
+      assert len(params.input_specs) == len(data), (
+          f"Inconsistent params.input_specs and data: "
+          f"len({params.input_specs}) != len({data}).")
 
     if run_params.is_v2:
       results = self._RunGraphV2(saved_model_dir, inputs_data, graph_state,
                                  num_runs)
       gc.collect()  # Force GC to destroy the TRT engine cache.
       return results
+
+    # The default config for tf.session is None. Create a config with
+    # TensorRTOptimizer enabled to support convert_online for inference.
+    config = None
+    # TODO(b/170220818): use the default session config to run inferenence
+    #   graphs for the offline conversion case after fixing the bug.
+    if graph_state == GraphState.INFERENCE:
+      config = self._GetConfigProto(run_params, GraphState.INFERENCE)
     return self._RunGraphV1(saved_model_dir, inputs_data, config, num_runs)
 
-  def _CreateConverter(self, run_params, saved_model_dir, session_config,
-                       conversion_params):
-    """Return a TrtGraphConverter."""
+  def _CreateConverter(self, run_params, saved_model_dir, conversion_params):
+    """Returns a TrtGraphConverter."""
     if run_params.is_v2:
-      return trt_convert.TrtGraphConverterV2(
+      converter_v2 = trt_convert.TrtGraphConverterV2(
           input_saved_model_dir=saved_model_dir,
-          conversion_params=conversion_params)
-    return trt_convert.TrtGraphConverter(
+          use_dynamic_shape=run_params.dynamic_shape,
+          dynamic_shape_profile_strategy=self._profile_strategy,
+          **conversion_params._asdict())
+      if self._disable_non_trt_optimizers:
+        converter_v2._test_only_disable_non_trt_optimizers = True  # pylint: disable=protected-access
+      return converter_v2
+
+    converter_v1 = trt_convert.TrtGraphConverter(
         input_saved_model_dir=saved_model_dir,
-        session_config=session_config,
-        max_batch_size=conversion_params.max_batch_size,
+        max_batch_size=self.GetMaxBatchSize(run_params),
         max_workspace_size_bytes=conversion_params.max_workspace_size_bytes,
         precision_mode=conversion_params.precision_mode,
         minimum_segment_size=conversion_params.minimum_segment_size,
-        is_dynamic_op=conversion_params.is_dynamic_op,
+        is_dynamic_op=run_params.dynamic_engine,
         maximum_cached_engines=conversion_params.maximum_cached_engines,
         use_calibration=conversion_params.use_calibration)
+    if self._disable_non_trt_optimizers:
+      converter_v1._test_only_disable_non_trt_optimizers = True  # pylint: disable=protected-access
+    return converter_v1
 
   def _GetCalibratedInferGraph(self, run_params, saved_model_dir, inputs_data):
     """Return trt converted graphdef in INT8 mode."""
     conversion_params = self.GetConversionParams(run_params)
     logging.info(conversion_params)
-    assert conversion_params.precision_mode == "INT8"
-    assert conversion_params.is_dynamic_op
-    assert conversion_params.maximum_cached_engines == 1
-    assert conversion_params.use_calibration
+    assert conversion_params.precision_mode == "INT8", (
+        f"Incorrect precision mode, expected INT8 but got: "
+        f"{conversion_params.precision_mode}.")
+    assert run_params.dynamic_engine, "dynamic_engine parameter must be True."
+    assert conversion_params.maximum_cached_engines == 1, (
+        f"maximum_cached_engines: {conversion_params.maximum_cached_engines} "
+        f"== 1")
+    assert conversion_params.use_calibration, "use_calibration must be True."
 
     # We only support calibrating single engine.
     # TODO(aaroey): fix this.
-    assert len(inputs_data) == 1
-
-    session_config = self._GetConfigProto(run_params, GraphState.CALIBRATE)
-    logging.info("Running calibration graph, config:\n%s", str(session_config))
+    assert len(inputs_data) == 1, (f"len(inputs_data): {len(inputs_data)} == 1")
 
     converter = self._CreateConverter(run_params, saved_model_dir,
-                                      session_config, conversion_params)
-    int8_gdef = converter.convert()
-    self._VerifyGraphDef(run_params, saved_model_dir, int8_gdef,
-                         GraphState.CALIBRATE)
+                                      conversion_params)
+    if run_params.is_v2:
 
-    converter.calibrate(
-        fetch_names=self._GetFetchNames(),
-        num_runs=5,
-        feed_dict_fn=lambda: self._GetFeedDict(inputs_data[0]))
+      def CalibrationInputFn():
+        for data_tensors in inputs_data:
+          yield data_tensors
+
+      converter.convert(calibration_input_fn=CalibrationInputFn)
+    else:
+      int8_gdef = converter.convert()
+      self._VerifyGraphDef(run_params, saved_model_dir, int8_gdef,
+                           GraphState.CALIBRATE)
+
+      converter.calibrate(
+          fetch_names=self._GetFetchNames(),
+          num_runs=5,
+          feed_dict_fn=lambda: self._GetFeedDict(inputs_data[0]))
+
+    if run_params.dynamic_shape and self._ShouldConverterBuild(run_params):
+      logging.info("Using build mode")
+
+      def _BuildInputFn():
+        for shapes in self._GetParamsCached().input_dims:
+          yield [
+              array_ops.zeros(x, dtype=spec.dtype)
+              for (x, spec) in zip(shapes,
+                                   self._GetParamsCached().input_specs)
+          ]
+
+      converter.build(input_fn=_BuildInputFn)
+
     trt_saved_model_dir = self._GetSavedModelDir(run_params,
                                                  GraphState.CALIBRATE)
     converter.save(trt_saved_model_dir)
     return trt_saved_model_dir
+
+  def _ShouldConverterBuild(self, run_params):
+    return True
 
   def _GetInferGraph(self, run_params, saved_model_dir):
     """Return trt converted graphdef."""
     conversion_params = self.GetConversionParams(run_params)
     logging.info(conversion_params)
 
-    session_config = self._GetConfigProto(run_params, GraphState.INFERENCE)
-    logging.info("Creating TRT graph for inference, config\n%s",
-                 str(session_config))
     converter = self._CreateConverter(run_params, saved_model_dir,
-                                      session_config, conversion_params)
+                                      conversion_params)
     converter.convert()
+
+    if run_params.is_v2:
+      try:
+        line_length = max(160, os.get_terminal_size().columns)
+      except OSError:
+        line_length = 160
+      converter.summary(line_length=line_length, detailed=True)
+
+    if run_params.dynamic_shape and self._ShouldConverterBuild(run_params):
+      logging.info("Using build mode")
+
+      def _BuildInputFn():
+        for shapes in self._GetParamsCached().input_dims:
+          yield [
+              array_ops.zeros(x, dtype=spec.dtype)
+              for (x, spec) in zip(shapes,
+                                   self._GetParamsCached().input_specs)
+          ]
+
+      converter.build(input_fn=_BuildInputFn)
+
     trt_saved_model_dir = self._GetSavedModelDir(run_params,
                                                  GraphState.INFERENCE)
     converter.save(trt_saved_model_dir)
@@ -459,7 +621,53 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
     logging.info("Writing graph to %s/%s", temp_dir, graph_name)
     graph_io.write_graph(gdef, temp_dir, graph_name)
 
-  def _VerifyConnections(self, expected_engines, original_gdef, converted_gdef):
+  # Removes the prefix(s) of function name(s).
+  # The input value can be a string or a sequence of string.
+  def _Canonicalize(self, value):
+    if isinstance(value, str):
+      return self._ToString(value.split("/")[-1])
+    elif isinstance(value, collections.abc.Iterable):
+      return set(self._Canonicalize(nm) for nm in value)
+    else:
+      raise TypeError(
+          "'_Canonicalize' can only be used on strings or sequence of strings!")
+
+  # Removes the graph sequence number prefix from the name(s) only if the
+  # name(s) has a prefix TRTEngineOp_n_. When expecting_prefix is true, asserts
+  # such a prefix exists.
+  # The input value can be a string or a sequence of string.
+  def _RemoveGraphSequenceNumberImpl(self, value, expecting_prefix):
+    if isinstance(value, str):
+      match = re.search(r"TRTEngineOp_\d{3,}_", value)
+      has_prefix = match and value.startswith(match.group(0))
+      assert (not expecting_prefix) or has_prefix, (
+          f"Expect (not expecting_prefix) or has_prefix but got: "
+          f"- expecting_prefix = {expecting_prefix}\n"
+          f"- has_prefix = {has_prefix}")
+      if has_prefix:
+        parts = value.split("_", maxsplit=2)
+        assert len(parts) == 3, (
+            f"Incorrect `parts` of length == 3, but got: len({parts}).")
+        return parts[0] + "_" + parts[2]
+      return value
+    elif isinstance(value, collections.abc.Iterable):
+      return set(
+          self._RemoveGraphSequenceNumberImpl(nm, expecting_prefix)
+          for nm in value)
+    else:
+      raise TypeError(
+          "'_RemoveGraphSequenceNumberImpl' can only be used on strings "
+          "or sequence of strings!")
+
+  def _RemoveGraphSequenceNumber(self, name):
+    return self._RemoveGraphSequenceNumberImpl(name, True)
+
+  def _MayRemoveGraphSequenceNumber(self, name):
+    return self._RemoveGraphSequenceNumberImpl(name, False)
+
+  def _VerifyConnections(self, expected_engines, expected_input_map,
+                         original_gdef, converted_gdef):
+    """Checks that the converted graph contains the expected connections."""
     old_to_new_node_map = {
         self._ToString(node.name): self._ToString(node.name)
         for node in original_gdef.node
@@ -467,9 +675,6 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
     for engine_name, node_names in expected_engines.items():
       for node_name in node_names:
         old_to_new_node_map[node_name] = engine_name
-    name_to_node_map = {
-        self._ToString(node.name): node for node in original_gdef.node
-    }
 
     def _InputName(inp):
       inp = self._ToString(inp)
@@ -482,45 +687,32 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
         inp = inp[:-len(parts[-1]) - 1]
       return (prefix, inp)
 
-    # Compute the expected mapping from each node to its input nodes.
-    expected_input_map = {}
-    removed_const_nodes = set([
-        self._ToString(node.name)
-        for node in original_gdef.node
-        if node.op == "Const"
-    ])
-    for node in original_gdef.node:
-      name_str = self._ToString(node.name)
-      target_node_name = old_to_new_node_map[name_str]
-      is_engine_op = (target_node_name != name_str)
-      if target_node_name not in expected_input_map:
-        expected_input_map[target_node_name] = set()
-      input_set = expected_input_map[target_node_name]
-      for inp in node.input:
-        (prefix, inp_name) = _InputName(inp)
-        mapped_input = old_to_new_node_map[inp_name]
-        # Add the input only if it's outside the segment (note that it could be
-        # in a different engine).
-        if not is_engine_op or (mapped_input != target_node_name and
-                                name_to_node_map[inp_name].op != "Const"):
-          input_set.add(prefix + mapped_input)
-          if mapped_input in removed_const_nodes:
-            removed_const_nodes.remove(mapped_input)
-    # Remove const nodes that have no outputs.
-    expected_input_map = {
-        k: v
-        for k, v in expected_input_map.items()
-        if k not in removed_const_nodes
+    # Compute the actual mapping from each node to its input nodes. If a cast
+    # op doesn't exist in the original graph, we replace the use of the cast op
+    # with the input of the op. This allows the verification to handle the case
+    # where the TF-TRT bridge splits a cast op into a chain of two cast ops.
+    new_cast_op_name_to_node_map = {
+        node.name: node
+        for node in converted_gdef.node
+        if (node.name not in old_to_new_node_map and node.op == "Cast")
     }
-
-    # Compute the actual mapping from each node to its input nodes.
     actual_input_map = {}
     for node in converted_gdef.node:
-      name_str = self._ToString(node.name)
+      name_str = node.name
+      # Only nodes from the original graph or TRTEngineOp nodes are added as
+      # keys to the map.
+      if node.op == "TRTEngineOp":
+        name_str = self._RemoveGraphSequenceNumber(name_str)
+      elif name_str not in old_to_new_node_map:
+        continue
       actual_input_map[name_str] = set()
       input_set = actual_input_map[name_str]
       for inp in node.input:
         (prefix, node_name) = _InputName(inp)
+        node_name = self._MayRemoveGraphSequenceNumber(node_name)
+        if node_name in new_cast_op_name_to_node_map:
+          (prefix, node_name) = _InputName(
+              new_cast_op_name_to_node_map[node_name].input[0])
         input_set.add(prefix + node_name)
 
     self.assertEqual(
@@ -528,6 +720,126 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
         actual_input_map,
         msg="\nexpected:\n%s\nvs actual:\n%s" %
         (sorted(expected_input_map.items()), sorted(actual_input_map.items())))
+
+  def _VerifyMaxBatchSizeAnnotations(
+      self,
+      expected_engines,
+      original_gdef,
+      converted_gdef,
+      default_max_batch_size,
+      expected_max_batch_sizes=None,
+  ):
+    """Verifies the max batch size annotations in the original and converted GraphDef.
+
+    Args:
+      expected_engines: A sequence of engines names.
+      original_gdef: GraphDef. The graph def before TensorRT conversion.
+      converted_gdef: GraphDef. The graph def after TensorRT conversion.
+      default_max_batch_size: The default maximum batch size to use if no node
+        inside a segment is annoted with a customized max batch size. This value
+        is None when the graph is converted to TF-TRT with dynamic engines.
+      expected_max_batch_sizes: Optional. A sequence of max batch sizes for all
+        the engines. `None` if does not check enforce max batch sizes.
+    """
+    if isinstance(expected_max_batch_sizes, collections.abc.Collection):
+      self.assertEqual(len(expected_max_batch_sizes), len(expected_engines))
+    else:
+      self.assertIsNone(
+          expected_max_batch_sizes,
+          "'expected_max_batch_sizes' shall only be a sequence "
+          "of integers or `None`.")
+
+    def _ChainAllNodes(graph_def):
+      return itertools.chain(
+          graph_def.node,
+          itertools.chain(
+              *[func.node_def for func in graph_def.library.function]))
+
+    old_name_to_node_map = {
+        self._ToString(node.name): node
+        for node in _ChainAllNodes(original_gdef)
+    }
+    new_name_to_func_map = {
+        self._ToString(func.signature.name): func
+        for func in converted_gdef.library.function
+    }
+
+    def _DetectStaticBatchSize(node_def):
+      """Returns the static batch size of an operation or None.
+
+      It is incorrect to use the output shapes to find the batch size of an
+      operation, as the segmenter actually uses the input shapes. However, it is
+      a simplication and works for most of the cases for the test purposes.
+
+      Args:
+        node_def: `tf.NodeDef`. The target node for analysis.
+
+      Returns:
+        If all the outputs of the node have the same static batch size, returns
+        the int value for the batch size. Otherwise returns None.
+      """
+      shapes = node_def.attr["_output_shapes"].list.shape
+      batch_size = set(
+          list(s.dim)[0].size if len(s.dim) >= 2 else None for s in shapes)
+      if len(batch_size) == 1 and list(batch_size)[0] >= 1:
+        return list(batch_size)[0]
+      return None
+
+    name_to_engines_map = {}
+    actual_max_batch_sizes = []
+    for node in _ChainAllNodes(converted_gdef):
+      if node.op == "TRTEngineOp":
+        engine = node
+        engine_name = self._RemoveGraphSequenceNumber(
+            self._Canonicalize(self._ToString(engine.name)))
+        self.assertIn(engine_name, expected_engines)
+        name_to_engines_map[engine_name] = engine
+        # The input nodes shall not have the conflicting annotation (no
+        # annotation or the same annotation) with the maximum batch size
+        # annotation. If the engine has maximum batch size annotation as the
+        # non-default maximum batch size, then at least one input node shall
+        # have the same annotation to be the source.
+        self.assertIn("max_batch_size", node.attr)
+        engine_max_batch_size = node.attr["max_batch_size"].i
+        self.assertIsInstance(engine_max_batch_size, int)
+        actual_max_batch_sizes.append(engine_max_batch_size)
+        seg_func = node.attr["segment_func"].func
+        self.assertIsNotNone(seg_func)
+        self.assertIn(seg_func.name, new_name_to_func_map)
+        seg_func_def = new_name_to_func_map[seg_func.name]
+        logging.info("Segment function name: %s. Including %d nodes.",
+                     seg_func.name, len(seg_func_def.node_def))
+        node_max_batch_size_all_none = True
+        # Use the native segment to search for replaced nodes
+        for alternative_node in seg_func_def.node_def:
+          node_name = self._Canonicalize(self._ToString(alternative_node.name))
+          if node_name not in old_name_to_node_map:
+            continue
+          original_node = old_name_to_node_map[node_name]
+          node_max_batch_size = None
+          if "_tftrt_op_max_batch_size" in original_node.attr:
+            node_max_batch_size = original_node.attr[
+                "_tftrt_op_max_batch_size"].i
+          elif (original_node.op != "Const" and
+                alternative_node.op != "Const" and
+                "_output_shapes" in original_node.attr):
+            node_max_batch_size = _DetectStaticBatchSize(original_node)
+          logging.info(
+              "'{%s}(%s)'s max batch size annotation is %s. "
+              "'{%s}'s max batch size is %s.", node_name, original_node.op,
+              str(node_max_batch_size), engine_name, str(engine_max_batch_size))
+          node_max_batch_size_all_none &= node_max_batch_size is None
+          self.assertTrue(engine_max_batch_size == node_max_batch_size or
+                          node_max_batch_size is None)
+        logging.info("'{%s}'s max batch size is %d.", engine_name,
+                     engine_max_batch_size)
+        self.assertTrue(default_max_batch_size is None or
+                        engine_max_batch_size == default_max_batch_size or
+                        not node_max_batch_size_all_none)
+
+    self.assertCountEqual(expected_engines, tuple(name_to_engines_map.keys()))
+    if expected_max_batch_sizes is not None:
+      self.assertCountEqual(expected_max_batch_sizes, actual_max_batch_sizes)
 
   def _GetGraphDef(self, run_params, gdef_or_saved_model_dir):
     if isinstance(gdef_or_saved_model_dir, str):
@@ -546,7 +858,9 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
         return gdef
       return saved_model_utils.get_meta_graph_def(
           gdef_or_saved_model_dir, tag_constants.SERVING).graph_def
-    assert isinstance(gdef_or_saved_model_dir, graph_pb2.GraphDef)
+    assert isinstance(gdef_or_saved_model_dir, graph_pb2.GraphDef), (
+        f"Incorrect `gdef_or_saved_model_dir` type, expected "
+        f"`graph_pb2.GraphDef`, but got: {type(gdef_or_saved_model_dir)}.")
     return gdef_or_saved_model_dir
 
   def _VerifyGraphDefV1(self, run_params, original_gdef, gdef_to_verify,
@@ -563,12 +877,20 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
         is_dynamic_engine = not node.attr["static_engine"].b
         self.assertNotEmpty(segment_funcdef_name, node.name)
         self.assertIn(function_name, functions)
-        if not IsQuantizationWithCalibration and not is_dynamic_engine:
+        if (not IsQuantizationWithCalibration(run_params) and
+            not is_dynamic_engine):
           self.assertTrue(len(node.attr["serialized_segment"].s), node.name)
-        self.assertIn(node.name, expected_engines)
-        self.assertEqual(
-            self._ToBytes(run_params.precision_mode),
-            node.attr["precision_mode"].s, node.name)
+        self.assertIn(
+            self._RemoveGraphSequenceNumber(node.name), expected_engines)
+        if IsQuantizationWithoutCalibration(run_params):
+          # TODO(bixia): Refine this check by inspecting nodes in the engine.
+          if self._ToBytes("INT8") != node.attr["precision_mode"].s:
+            self.assertEqual(
+                self._ToBytes("FP16"), node.attr["precision_mode"].s, node.name)
+        else:
+          self.assertEqual(
+              self._ToBytes(run_params.precision_mode),
+              node.attr["precision_mode"].s, node.name)
 
         self.assertEqual(run_params.dynamic_engine, is_dynamic_engine,
                          node.name)
@@ -585,9 +907,16 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
       self.assertEqual(0, num_engines)
     else:
       self.assertEqual(num_engines, len(expected_engines))
-      if isinstance(expected_engines, dict):
-        self._VerifyConnections(expected_engines, original_gdef, gdef_to_verify)
-      # TODO(aaroey): consider verifying the corresponding TF function.
+      expected_connections = self.ExpectedConnections(run_params)
+      if expected_connections:
+        self._VerifyConnections(expected_engines, expected_connections,
+                                original_gdef, gdef_to_verify)
+      self._VerifyMaxBatchSizeAnnotations(
+          expected_engines=expected_engines,
+          original_gdef=original_gdef,
+          converted_gdef=gdef_to_verify,
+          expected_max_batch_sizes=self.ExpectedMaxBatchSizes(run_params),
+          default_max_batch_size=self.GetMaxBatchSize(run_params))
 
   def _VerifyGraphDefV2(self, run_params, original_gdef, gdef_to_verify,
                         graph_state):
@@ -595,21 +924,22 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
       return
     expected_engines = self.ExpectedEnginesToBuild(run_params)
     all_op_names = [node.name for node in gdef_to_verify.node]
-    trt_op_names = [
-        node.name for node in gdef_to_verify.node if node.op == "TRTEngineOp"
-    ]
+    trt_op_names = []
     for func in gdef_to_verify.library.function:
-      if not re.search(r"TRTEngineOp_\d+_native_segment", func.signature.name):
+      if not re.search(r"TRTEngineOp_\d{3,}_\d{3,}_native_segment",
+                       func.signature.name):
         for node in func.node_def:
           all_op_names.append(node.name)
           if node.op == "TRTEngineOp":
             trt_op_names.append(node.name)
-    # Remove the function name prefix.
-    def _Canonicalize(names):
-      return set([self._ToString(name.split("/")[-1]) for name in names])
+            if run_params.dynamic_shape:
+              self.assertEqual(
+                  self._ToString(node.attr["profile_strategy"].s).lower(),
+                  self._profile_strategy.lower())
 
-    all_op_names = _Canonicalize(all_op_names)
-    trt_op_names = _Canonicalize(trt_op_names)
+    all_op_names = self._Canonicalize(all_op_names)
+    trt_op_names = self._RemoveGraphSequenceNumber(
+        self._Canonicalize(trt_op_names))
 
     if isinstance(expected_engines, dict):
       # For simplicity we don't verify the connections inside the engine in
@@ -687,7 +1017,7 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
 
   def _MakeSavedModelV2(self, run_params):
     params = self._GetParamsCached()
-    root = tracking.AutoTrackable()
+    root = autotrackable.AutoTrackable()
     root.run = def_function.function(
         params.graph_fn, input_signature=params.input_specs)
     saved_model_dir = self._GetSavedModelDir(run_params, GraphState.ORIGINAL)
@@ -702,69 +1032,77 @@ class TfTrtIntegrationTestBase(test_util.TensorFlowTestCase):
     return self._MakeSavedModelV1(run_params)
 
   def RunTest(self, run_params):
-    if not self.ShouldRunTest(run_params):
-      return
 
-    saved_model_dir = self._MakeSavedModel(run_params)
+    with disable_tensorfloat32():
+      with trace.Trace(run_params.test_name):
+        should_run, reason_for_skipping = self.ShouldRunTest(run_params)
+        if not should_run:
+          return self.skipTest(reason_for_skipping)
 
-    np.random.seed(12345)  # Fix the seed so the test is deterministic.
-    inputs_data = []
-    input_specs = self._GetParamsCached().input_specs
-    for dim_list in self._GetParamsCached().input_dims:
-      assert len(input_specs) == len(dim_list)
-      current_input_data = []
-      for spec, np_shape in zip(input_specs, dim_list):
-        np_dtype = spec.dtype.as_numpy_dtype()
-        # Multiply the input by some constant to avoid all zeros input for
-        # integer types.
-        scale = 10.0 if np.issubdtype(np_dtype, np.integer) else 1.0
-        # TODO(laigd): add debug options. E.g. we can set the input data to be
-        # continuous natural numbers:
-        # seq = np.arange(np.prod(np_shape))
-        # seq.resize(np_shape)
-        # current_inputs_data.append(scale * seq.astype(np_dtype))
-        data = (scale * np.random.random_sample(np_shape)).astype(np_dtype)
-        if run_params.is_v2:
-          with ops.device("/GPU:0"):
-            data = ops.convert_to_tensor(data)
-        current_input_data.append(data)
-      inputs_data.append(current_input_data)
+        saved_model_dir = self._MakeSavedModel(run_params)
 
-    # Verify original graph.
-    self._VerifyGraphDef(run_params, saved_model_dir, saved_model_dir,
-                         GraphState.ORIGINAL)
+        np.random.seed(12345)  # Fix the seed so the test is deterministic.
+        inputs_data = []
+        input_specs = self._GetParamsCached().input_specs
+        for dim_list in self._GetParamsCached().input_dims:
+          assert len(input_specs) == len(dim_list), (
+              f"Inconsistent input_specs and dim_list: len({input_specs}) != "
+              f"len({dim_list}).")
+          current_input_data = []
+          for spec, np_shape in zip(input_specs, dim_list):
+            np_dtype = spec.dtype.as_numpy_dtype()
+            if not np.issubdtype(np_dtype, np.bool_):
+              # Multiply the input by some constant to avoid all zeros input for
+              # integer types.
+              scale = 10.0 if np.issubdtype(np_dtype, np.integer) else 1.0
+              data = (scale *
+                      np.random.random_sample(np_shape)).astype(np_dtype)
+            else:
+              data = np.random.choice(a=[False, True], size=np_shape)
 
-    # Run original graph without trt to get reference result.
-    config_no_trt = self._GetConfigProto(run_params, GraphState.ORIGINAL)
-    logging.info("Running original graph w/o trt, config:\n%s",
-                 str(config_no_trt))
-    ref_result = self._RunGraph(run_params, saved_model_dir, inputs_data,
-                                config_no_trt, GraphState.ORIGINAL)
+            if run_params.is_v2:
+              with ops.device("/GPU:0"):
+                data = ops.convert_to_tensor(data)
+            current_input_data.append(data)
+          inputs_data.append(current_input_data)
 
-    # Run calibration if necessary.
-    if IsQuantizationWithCalibration(run_params):
-      infer_saved_model_dir = self._GetCalibratedInferGraph(
-          run_params, saved_model_dir, inputs_data)
-      self._VerifyGraphDef(run_params, saved_model_dir, infer_saved_model_dir,
-                           GraphState.INFERENCE)
-    elif not run_params.convert_online:
-      infer_saved_model_dir = self._GetInferGraph(run_params, saved_model_dir)
-      self._VerifyGraphDef(run_params, saved_model_dir, infer_saved_model_dir,
-                           GraphState.INFERENCE)
-    else:
-      infer_saved_model_dir = saved_model_dir
+        # Verify the original graph.
+        self._VerifyGraphDef(run_params, saved_model_dir, saved_model_dir,
+                             GraphState.ORIGINAL)
 
-    # Run inference.
-    infer_config = self._GetConfigProto(run_params, GraphState.INFERENCE)
-    logging.info("Running final inference graph, config:\n%s",
-                 str(infer_config))
-    result = self._RunGraph(run_params, infer_saved_model_dir, inputs_data,
-                            infer_config, GraphState.INFERENCE)
-    self.assertAllClose(
-        ref_result,
-        result,
-        atol=self.ExpectedAbsoluteTolerance(run_params),
-        rtol=self.ExpectedRelativeTolerance(run_params))
+        # Run the original graph without TensorRT to get the reference result.
+        logging.info("Running original graph w/o TensorRT\n")
+        ref_result = self._RunGraph(
+            run_params,
+            saved_model_dir,
+            inputs_data,
+            GraphState.ORIGINAL,
+            num_runs=1)
+
+        # Run calibration if necessary.
+        if IsQuantizationWithCalibration(run_params):
+          infer_saved_model_dir = self._GetCalibratedInferGraph(
+              run_params, saved_model_dir, inputs_data)
+          self._VerifyGraphDef(run_params, saved_model_dir,
+                               infer_saved_model_dir, GraphState.INFERENCE)
+        elif not run_params.convert_online:
+          infer_saved_model_dir = self._GetInferGraph(run_params,
+                                                      saved_model_dir)
+          self._VerifyGraphDef(run_params, saved_model_dir,
+                               infer_saved_model_dir, GraphState.INFERENCE)
+        else:
+          infer_saved_model_dir = saved_model_dir
+
+        # Run the inference graph, either using the converted graph or the
+        # original graph with convert_online == True.
+        logging.info("Running final inference graph\n")
+        result = self._RunGraph(run_params, infer_saved_model_dir, inputs_data,
+                                GraphState.INFERENCE)
+        self.assertAllClose(
+            ref_result,
+            result,
+            atol=self.ExpectedAbsoluteTolerance(run_params),
+            rtol=self.ExpectedRelativeTolerance(run_params))
 
   def testIdempotence(self):
     # Test that applying tensorrt optimizer or offline conversion tools multiple
@@ -779,6 +1117,7 @@ def _GetTestConfigsV1():
   convert_online, convert_offline = True, False
   dynamic_engine, static_engine = True, False
   use_calibration, no_calibration = True, False
+  implicit_batch = False
 
   # Add all possible test cases and let the derived test class to decide
   # whether to run specific ones with ShouldRunTest().
@@ -786,10 +1125,12 @@ def _GetTestConfigsV1():
   # Note: INT8 without calibration behaves like FP32/FP16.
   opts = list(
       itertools.product([FP32, FP16, INT8], [convert_online, convert_offline],
-                        [dynamic_engine, static_engine], [no_calibration]))
+                        [dynamic_engine, static_engine], [no_calibration],
+                        [implicit_batch]))
   # We always run calibration with offline tool.
   # TODO(aaroey): static calibration engine is not supported yet.
-  opts.append((INT8, convert_offline, dynamic_engine, use_calibration))
+  opts.append(
+      (INT8, convert_offline, dynamic_engine, use_calibration, implicit_batch))
   return opts
 
 
@@ -800,6 +1141,7 @@ def _GetTestConfigsV2():
   dynamic_engine = True
   # TODO(laigd): add support for calibration.
   no_calibration = False
+  use_calibration = True
 
   # Add all possible test cases and let the derived test class to decide
   # whether to run specific ones with ShouldRunTest().
@@ -811,11 +1153,11 @@ def _GetTestConfigsV2():
   #   Grappler config in default eager context.
   # - INT8 without calibration behaves like FP32/FP16.
   opts = list(
-      itertools.product([FP32, FP16, INT8], [convert_offline], [dynamic_engine],
-                        [no_calibration]))
+      itertools.product([FP32, FP16], [convert_offline], [dynamic_engine],
+                        [no_calibration], [False, True]))
   # We always run calibration with offline tool.
-  # TODO(aaroey): INT8+calibration is not supported yet in V2.
-  # opts.append((INT8, convert_offline, dynamic_engine, use_calibration))
+  opts.append((INT8, convert_offline, dynamic_engine, use_calibration, False))
+  opts.append((INT8, convert_offline, dynamic_engine, use_calibration, True))
   return opts
 
 
@@ -823,11 +1165,11 @@ def _GetTest(run_params):
   """Gets a single test method based on the parameters."""
 
   def _Test(self):
-    logging.info(
-        "Running test %s with parameters: convert_online=%s, "
-        "precision_mode=%s, dynamic_engine=%s", run_params.test_name,
-        run_params.convert_online, run_params.precision_mode,
-        run_params.dynamic_engine)
+    logging.info(f"Running test `{run_params.test_name}` with parameters: "
+                 f"convert_online={run_params.convert_online}, "
+                 f"precision_mode={run_params.precision_mode}, "
+                 f"dynamic_engine={run_params.dynamic_engine}, "
+                 f"dynamic_shape={run_params.dynamic_shape}")
     self.RunTest(run_params)
 
   return _Test
@@ -836,20 +1178,23 @@ def _GetTest(run_params):
 def _AddTestsFor(test_class, is_v2):
   """Adds test methods to TfTrtIntegrationTestBase for specific TF version."""
   opts = _GetTestConfigsV2() if is_v2 else _GetTestConfigsV1()
-  for (precision_mode, convert_online, dynamic_engine, use_calibration) in opts:
+  for (precision_mode, convert_online, dynamic_engine, use_calibration,
+       dynamic_shape) in opts:
     conversion = "OnlineConversion" if convert_online else "OfflineConversion"
     engine_type = "DynamicEngine" if dynamic_engine else "StaticEngine"
     calibration_type = "UseCalibration" if use_calibration else "NoCalibration"
-    test_name = "%s_%s_%s_%s_%s" % ("testTfTrtV2" if is_v2 else "testTfTrt",
-                                    conversion, engine_type, precision_mode,
-                                    calibration_type)
+    dynamic_shape_type = "DynamicShape" if dynamic_shape else "ImplicitBatch"
+    test_name = "%s_%s_%s_%s_%s_%s" % ("testTfTrtV2" if is_v2 else "testTfTrt",
+                                       conversion, engine_type, precision_mode,
+                                       calibration_type, dynamic_shape_type)
     run_params = RunParams(
         convert_online=convert_online,
         precision_mode=precision_mode,
         dynamic_engine=dynamic_engine,
         test_name=test_name,
         use_calibration=use_calibration,
-        is_v2=is_v2)
+        is_v2=is_v2,
+        dynamic_shape=dynamic_shape)
     if is_v2:
       setattr(test_class, test_name,
               test_util.run_v2_only(_GetTest(run_params)))
@@ -865,4 +1210,5 @@ def _AddTests(test_class):
 
 
 if is_tensorrt_enabled():
+  os.environ["TF_TRT_ALLOW_ENGINE_NATIVE_SEGMENT_EXECUTION"] = "False"
   _AddTests(TfTrtIntegrationTestBase)

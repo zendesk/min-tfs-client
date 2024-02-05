@@ -57,7 +57,7 @@ struct Roll<GPUDevice, T> {
                   const int num_dims, const gtl::ArraySlice<int32> dim_size,
                   const T* input, T* output,
                   const gtl::ArraySlice<int32> threshold,
-                  const gtl::ArraySlice<int64> dim_range, const int64 isd) {
+                  const gtl::ArraySlice<int64_t> dim_range, const int64 isd) {
     if (!num_elements) return;
     const GPUDevice& d = context->eigen_device<GPUDevice>();
 
@@ -93,9 +93,9 @@ struct Roll<GPUDevice, T> {
 
 TF_CALL_int32(DEFINE_GPU_SPECS);
 TF_CALL_int64(DEFINE_GPU_SPECS);
+TF_CALL_uint32(DEFINE_GPU_SPECS);
 TF_CALL_GPU_NUMBER_TYPES(DEFINE_GPU_SPECS);
-TF_CALL_complex64(DEFINE_GPU_SPECS);
-TF_CALL_complex128(DEFINE_GPU_SPECS);
+TF_CALL_COMPLEX_TYPES(DEFINE_GPU_SPECS);
 
 #undef DEFINE_GPU_SPECS
 }  // namespace functor

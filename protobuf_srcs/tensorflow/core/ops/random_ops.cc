@@ -45,8 +45,18 @@ REGISTER_OP("RandomUniformInt")
     .Attr("T: {int32, int64}")
     .SetShapeFn([](InferenceContext* c) {
       ShapeHandle unused;
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      Status s = c->WithRank(c->input(1), 0, &unused);
+      if (!s.ok()) {
+        return errors::InvalidArgument(
+            "minval must be a scalar; got a tensor of shape ",
+            c->DebugString(c->input(1)));
+      }
+      s = c->WithRank(c->input(2), 0, &unused);
+      if (!s.ok()) {
+        return errors::InvalidArgument(
+            "maxval must be a scalar; got a tensor of shape ",
+            c->DebugString(c->input(2)));
+      }
       return shape_inference::RandomShape(c);
     });
 
@@ -118,7 +128,7 @@ REGISTER_OP("Multinomial")
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
       TF_RETURN_IF_ERROR(c->MakeDimForScalarInput(1, &num_samples));
       c->set_output(0, c->Matrix(c->Dim(logits_shape, 0), num_samples));
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("RandomGamma")
@@ -135,7 +145,7 @@ REGISTER_OP("RandomGamma")
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0, &out));
       TF_RETURN_IF_ERROR(c->Concatenate(out, c->input(1), &out));
       c->set_output(0, out);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("RandomGammaGrad")
@@ -159,7 +169,7 @@ REGISTER_OP("RandomPoisson")
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0, &out));
       TF_RETURN_IF_ERROR(c->Concatenate(out, c->input(1), &out));
       c->set_output(0, out);
-      return Status::OK();
+      return OkStatus();
     })
     .Deprecated(25, "Replaced by RandomPoissonV2");
 
@@ -178,7 +188,7 @@ REGISTER_OP("RandomPoissonV2")
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0, &out));
       TF_RETURN_IF_ERROR(c->Concatenate(out, c->input(1), &out));
       c->set_output(0, out);
-      return Status::OK();
+      return OkStatus();
     });
 
 }  // namespace tensorflow

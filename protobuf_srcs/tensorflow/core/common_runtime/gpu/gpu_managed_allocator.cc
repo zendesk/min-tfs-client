@@ -13,21 +13,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
 #include "third_party/gpus/cuda/include/cuda.h"
+#include "third_party/gpus/cuda/include/cuda_runtime.h"
+#define EIGEN_USE_GPU
+#endif
+
+#if TENSORFLOW_USE_ROCM
+#include "rocm/include/hip/hip_runtime.h"
 #define EIGEN_USE_GPU
 #endif
 
 #include "tensorflow/core/common_runtime/gpu/gpu_managed_allocator.h"
+#include "tsl/platform/logging.h"
 
 namespace tensorflow {
 
 void* GpuManagedAllocator::AllocateRaw(size_t alignment, size_t num_bytes) {
   void* ptr = nullptr;
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
   CUdeviceptr result = 0;
   CHECK_EQ(cuMemAllocManaged(&result, num_bytes, CU_MEM_ATTACH_GLOBAL),
            CUDA_SUCCESS);
+  ptr = reinterpret_cast<void*>(result);
+#elif TENSORFLOW_USE_ROCM
+  void** result = 0;
+  CHECK_EQ(hipHostMalloc(&result, num_bytes, 0), 0);
   ptr = reinterpret_cast<void*>(result);
 #endif
   CHECK(!(reinterpret_cast<uintptr_t>(ptr) & (alignment - 1)));
@@ -35,8 +46,10 @@ void* GpuManagedAllocator::AllocateRaw(size_t alignment, size_t num_bytes) {
 }
 
 void GpuManagedAllocator::DeallocateRaw(void* ptr) {
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
   CHECK_EQ(cudaFree(ptr), cudaSuccess);
+#elif TENSORFLOW_USE_ROCM
+  CHECK_EQ(hipFree(ptr), hipSuccess);
 #endif
 }
 

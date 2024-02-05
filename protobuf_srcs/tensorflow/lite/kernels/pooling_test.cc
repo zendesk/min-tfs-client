@@ -12,12 +12,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include <cstdarg>
+#include <stdint.h>
+
+#include <initializer_list>
+#include <vector>
+
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -96,6 +100,25 @@ class SymmetricQuantizedPoolingOpModel : public BasePoolingOpModel {
   }
 };
 
+class SymmetricQuantizedPoolingOpModel16 : public BasePoolingOpModel {
+ public:
+  using BasePoolingOpModel::BasePoolingOpModel;
+
+  void SetInput(std::initializer_list<float> data) {
+    QuantizeAndPopulate<int16_t>(input_, data);
+  }
+
+  void SetInput(const std::vector<float>& data) {
+    QuantizeAndPopulate<int16_t>(input_, data);
+  }
+
+  std::vector<int16_t> GetOutput() { return ExtractVector<int16_t>(output_); }
+  std::vector<float> GetDequantizedOutput() {
+    return Dequantize<int16_t>(ExtractVector<int16_t>(output_),
+                               GetScale(output_), GetZeroPoint(output_));
+  }
+};
+
 // Replicate each entry in a vector n times along depth (innermost dimension).
 // The values are incremented by delta, creating ramps offset by each input
 // value. This is used to create simple and predicatable variation.
@@ -123,7 +146,7 @@ TEST(FloatPoolingOpTest, AveragePool) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({2.75, 5.75}));
 }
 
@@ -137,7 +160,7 @@ TEST(FloatPoolingOpTest, AveragePoolActivationRelu) {
       0, -6, 2, 4,   //
       3, 2, -10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({0.0, 0.75}));
 }
 
@@ -151,14 +174,14 @@ TEST(FloatPoolingOpTest, AveragePoolActivationRelu1) {
       0, -6, 2, 4,     //
       -3, -2, -10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({-1.0, 0.75}));
 
   m.SetInput({
       0, -6, -2, -4,   //
       -3, -2, 10, -7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({-1.0, -0.75}));
 }
 
@@ -172,14 +195,14 @@ TEST(FloatPoolingOpTest, AveragePoolActivationRelu6) {
       0, -6, 12, 4,   //
       -3, -2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({0.0, 6.0}));
 
   m.SetInput({
       0, 6, 12, 4,  //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({2.75, 6.0}));
 }
 
@@ -193,7 +216,7 @@ TEST(FloatPoolingOpTest, AveragePoolPaddingSameStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               ElementsAreArray({2.75, 5.0, 5.75, 5.5, 2.5, 6.0, 8.5, 7.0}));
 }
@@ -208,7 +231,7 @@ TEST(FloatPoolingOpTest, AveragePoolPaddingValidStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({2.75, 5.0, 5.75}));
 }
 
@@ -225,7 +248,7 @@ TEST(QuantizedPoolingOpTest, AveragePool) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({2.75, 5.75})));
@@ -246,7 +269,7 @@ TEST(QuantizedPoolingOpTest, AveragePoolActivationRelu) {
       0, -6, 2, 4,   //
       3, 2, -10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0.0, 0.75})));
@@ -267,7 +290,7 @@ TEST(QuantizedPoolingOpTest, AveragePoolActivationRelu1) {
       0, -6, 2, 4,     //
       -3, -2, -10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({-1.0, 0.75})));
@@ -277,7 +300,7 @@ TEST(QuantizedPoolingOpTest, AveragePoolActivationRelu1) {
       0, -6, -2, -4,   //
       -3, -2, 10, -7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({-1.0, -0.75})));
@@ -298,7 +321,7 @@ TEST(QuantizedPoolingOpTest, AveragePoolActivationRelu6) {
       0, -6, 12, 4,   //
       -3, -2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0.0, 6.0})));
@@ -308,7 +331,7 @@ TEST(QuantizedPoolingOpTest, AveragePoolActivationRelu6) {
       0, 6, 12, 4,  //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({2.75, 6.0})));
@@ -328,7 +351,7 @@ TEST(QuantizedPoolingOpTest, AveragePoolPaddingSameStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(
@@ -350,7 +373,7 @@ TEST(QuantizedPoolingOpTest, AveragePoolPaddingValidStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({2.75, 5.0, 5.75})));
@@ -368,7 +391,7 @@ TEST(QuantizedPoolingOpTest, AveragePoolImageSize16) {
 
   std::vector<float> input(image_size * image_size, 16.f);
   m.SetInput(input);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput(), ::testing::ElementsAre(255));
   EXPECT_THAT(m.GetDequantizedOutput(), ElementsAreArray(ArrayFloatNear({16})));
@@ -391,13 +414,36 @@ TEST(QuantizedPoolingOpTest, AveragePoolLargeDepth) {
   std::vector<float> output_image_plane({2.75f, 5.75f});
 
   m.SetInput(ReplicateDepthRamp(input_image_plane, depth, 1.f / 512.f));
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear(
                   ReplicateDepthRamp(output_image_plane, depth, 1.f / 512.f),
                   1. / 32.f)));
 }
+
+// Test quantized AveragePool with int16 input and output. The input is the same
+// as the uint8 test QuantizedPoolingOpTest.AveragePool but with a scale of
+// 1/4096 rather than 1/16.
+TEST(QuantizedPoolingOpTest, SymmetricAveragePool16) {
+  const float ulp = 1.f / 4096.f;
+  SymmetricQuantizedPoolingOpModel16 m(
+      BuiltinOperator_AVERAGE_POOL_2D,
+      /*input=*/{TensorType_INT16, {1, 2, 4, 1}, 0, 16 - ulp},
+      /*filter_width=*/2, /*filter_height=*/2,
+      /*output=*/{TensorType_INT16, {}, 0, 16 - ulp});
+  m.SetInput({
+      0, 6, 2, 4,   //
+      3, 2, 10, 7,  //
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+
+  EXPECT_THAT(m.GetDequantizedOutput(),
+              ElementsAreArray(ArrayFloatNear({2.75, 5.75})));
+  EXPECT_THAT(m.GetOutput(),
+              ElementsAreArray({(44 - 128) * 256, (92 - 128) * 256}));
+}
+
 // Test quantized AveragePool with int8 input and output. The input is the same
 // as the uint8 test QuantizedPoolingOpTest.AveragePool. The float output is
 // identical to uint8 test and quantized output is identical to uint8 test with
@@ -415,7 +461,7 @@ TEST(QuantizedPoolingOpTest, SymmetricAveragePool) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({2.75, 5.75})));
@@ -439,7 +485,7 @@ TEST(QuantizedPoolingOpTest, SymmetricAveragePoolActivationRelu) {
       0, -6, 2, 4,   //
       3, 2, -10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0.0, 0.75}, 0.0030)));
@@ -460,7 +506,7 @@ TEST(QuantizedPoolingOpTest, SymmetricAveragePoolActivationRelu1) {
       0, -6, 2, 4,     //
       -3, -2, -10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({-1.0, 0.75}, 0.0040)));
@@ -470,7 +516,7 @@ TEST(QuantizedPoolingOpTest, SymmetricAveragePoolActivationRelu1) {
       0, -6, -2, -4,   //
       -3, -2, 10, -7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({-1.0, -0.75}, 0.0040)));
@@ -494,7 +540,7 @@ TEST(QuantizedPoolingOpTest, SymmetricAveragePoolActivationRelu6) {
       0, -6, 12, 4,   //
       -3, -2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0.0, 6.0}, 0.025)));
@@ -504,7 +550,7 @@ TEST(QuantizedPoolingOpTest, SymmetricAveragePoolActivationRelu6) {
       0, 6, 12, 4,  //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({2.75, 6.0}, 0.025)));
@@ -524,7 +570,7 @@ TEST(QuantizedPoolingOpTest, SymmetricAveragePoolPaddingSameStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(
@@ -547,7 +593,7 @@ TEST(QuantizedPoolingOpTest, SymmetricAveragePoolPaddingValidStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({2.75, 5.0, 5.75})));
@@ -567,7 +613,7 @@ TEST(QuantizedPoolingOpTest, AveragePoolImageSize17) {
 
   std::vector<float> input(image_size * image_size, 16.f);
   m.SetInput(input);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput(), ::testing::ElementsAre(255));
 }
@@ -581,7 +627,7 @@ TEST(FloatPoolingOpTest, MaxPool) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({6, 10}));
 }
 
@@ -595,7 +641,7 @@ TEST(FloatPoolingOpTest, MaxPoolActivationRelu) {
       -1, -6, 2, 4,     //
       -3, -2, 10.5, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({0.0, 10.5}));
 }
 
@@ -609,14 +655,14 @@ TEST(FloatPoolingOpTest, MaxPoolActivationRelu1) {
       -2.75, -6, 0.2, 0.4,  //
       -3, -2, -0.3, 0.7,    //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({-1.0, 0.7}));
 
   m.SetInput({
       -2.75, -6, -2, -4,  //
       -3, -2, 10, -7,     //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({-1.0, 1.0}));
 }
 
@@ -630,14 +676,14 @@ TEST(FloatPoolingOpTest, MaxPoolActivationRelu6) {
       -1.5, -6, 12, 4,  //
       -3, -2, 10, 7,    //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({0.0, 6.0}));
 
   m.SetInput({
       0, 4.5, 12, 4,  //
       3, 2, 10, 7,    //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({4.5, 6.0}));
 }
 
@@ -651,7 +697,7 @@ TEST(FloatPoolingOpTest, MaxPoolPaddingSameStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({6, 10, 10, 7, 3, 10, 10, 7}));
 }
 
@@ -665,7 +711,7 @@ TEST(FloatPoolingOpTest, MaxPoolPaddingValidStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({6, 10, 10}));
 }
 
@@ -682,7 +728,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPool) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({6, 10})));
@@ -703,7 +749,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPoolActivationRelu) {
       -1.5, -6, 2, 4,  //
       -3, -2, 10, 7,   //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0, 10})));
@@ -724,7 +770,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPoolActivationRelu1) {
       -1.7, -6, 2, 4,  //
       -3, -2, -10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({-1.0, 1.0})));
@@ -734,7 +780,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPoolActivationRelu1) {
       0, -6, -0.2, -0.4,    //
       -3, -2, 0.75, -0.99,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0.0, 0.75})));
@@ -755,7 +801,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPoolActivationRelu6) {
       0, -6, 12, 4,   //
       -3, -2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0.0, 6.0})));
@@ -765,7 +811,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPoolActivationRelu6) {
       0, 4.5, 12, 4,  //
       3, 2, 10, 7,    //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({4.5, 6.0})));
@@ -785,7 +831,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPoolPaddingSameStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({6, 10, 10, 7, 3, 10, 10, 7})));
@@ -806,7 +852,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPoolPaddingValidStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({6, 10, 10})));
@@ -830,7 +876,7 @@ TEST(QuantizedPoolingOpTest, MaxPoolLargeDepth) {
   std::vector<float> output_image_plane({6.f, 10.f});
 
   m.SetInput(ReplicateDepthRamp(input_image_plane, depth, 1.f / 512.f));
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear(
@@ -851,11 +897,33 @@ TEST(QuantizedInt8PoolingOpTest, MaxPool) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({6, 10})));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({96 - 128, 160 - 128}));
+}
+
+TEST(QuantizedInt8PoolingOpTest16, MaxPool) {
+  // Choose the input ranges carefully so that the dequantized output matches
+  // the results of the float model above.
+  // Input Range[0, 16-(1/4096)] --> [Scale{(1/4096)}, zero_point{-32768}]
+  const float ulp = 1.f / 4096.f;
+  SymmetricQuantizedPoolingOpModel16 m(
+      BuiltinOperator_MAX_POOL_2D,
+      /*input=*/{TensorType_INT16, {1, 2, 4, 1}, 0, 16 - ulp},
+      /*filter_width=*/2, /*filter_height=*/2,
+      /*output=*/{TensorType_INT16, {}, 0, 16 - ulp});
+  m.SetInput({
+      0, 6, 2, 4,   //
+      3, 2, 10, 7,  //
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+
+  EXPECT_THAT(m.GetDequantizedOutput(),
+              ElementsAreArray(ArrayFloatNear({6, 10})));
+  EXPECT_THAT(m.GetOutput(),
+              ElementsAreArray({(96 - 128) * 256, (160 - 128) * 256}));
 }
 
 TEST(QuantizedInt8PoolingOpTest, MaxPoolActivationRelu) {
@@ -872,7 +940,7 @@ TEST(QuantizedInt8PoolingOpTest, MaxPoolActivationRelu) {
       -1.5, -6, 2, 4,  //
       -3, -2, 10, 7,   //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0, 10}, 0.04)));
@@ -893,7 +961,7 @@ TEST(QuantizedInt8PoolingOpTest, MaxPoolActivationRelu1) {
       -1.7, -6, 2, 4,  //
       -3, -2, -10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({-1.0, 1.0}, 0.004)));
@@ -903,7 +971,7 @@ TEST(QuantizedInt8PoolingOpTest, MaxPoolActivationRelu1) {
       0, -6, -0.2, -0.4,    //
       -3, -2, 0.75, -0.99,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0.0, 0.75}, 0.004)));
@@ -924,7 +992,7 @@ TEST(QuantizedInt8PoolingOpTest, MaxPoolActivationRelu6) {
       0, -6, 12, 4,   //
       -3, -2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({0.0, 6.0}, 0.025)));
@@ -934,7 +1002,7 @@ TEST(QuantizedInt8PoolingOpTest, MaxPoolActivationRelu6) {
       0, 4.5, 12, 4,  //
       3, 2, 10, 7,    //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({4.5, 6.0}, 0.025)));
@@ -954,7 +1022,7 @@ TEST(QuantizedInt8PoolingOpTest, MaxPoolPaddingSameStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({6, 10, 10, 7, 3, 10, 10, 7})));
@@ -976,7 +1044,7 @@ TEST(QuantizedInt8PoolingOpTest, MaxPoolPaddingValidStride1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput(),
               ElementsAreArray(ArrayFloatNear({6, 10, 10})));
@@ -993,7 +1061,7 @@ TEST(FloatPoolingOpTest, L2Pool) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({3.5, 6.5}));
 }
 
@@ -1007,7 +1075,7 @@ TEST(FloatPoolingOpTest, L2PoolActivationRelu) {
       -1, -6, 2, 4,   //
       -3, -2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({3.53553, 6.5})));
 }
 
@@ -1021,7 +1089,7 @@ TEST(FloatPoolingOpTest, L2PoolActivationRelu1) {
       -0.1, -0.6, 2, 4,   //
       -0.3, -0.2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({0.353553, 1.0})));
 }
 
@@ -1035,7 +1103,7 @@ TEST(FloatPoolingOpTest, L2PoolActivationRelu6) {
       -0.1, -0.6, 2, 4,   //
       -0.3, -0.2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({0.353553, 6.0})));
 }
 
@@ -1048,7 +1116,7 @@ TEST(FloatPoolingOpTest, L2PoolPaddingSame) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({3.5, 6.5}));
 }
 
@@ -1062,7 +1130,7 @@ TEST(FloatPoolingOpTest, L2PoolPaddingSameSlide1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               ElementsAreArray(ArrayFloatNear(
                   {3.5, 6.0, 6.5, 5.70088, 2.54951, 7.2111, 8.63134, 7.0},
@@ -1079,9 +1147,22 @@ TEST(FloatPoolingOpTest, L2PoolPaddingValidSlide1) {
       0, 6, 2, 4,   //
       3, 2, 10, 7,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({3.5, 6.0, 6.5}));
 }
+
+#if GTEST_HAS_DEATH_TEST
+TEST(FloatPoolingOpTest, MaxPoolWithZeroStride) {
+  EXPECT_DEATH(
+      FloatPoolingOpModel m(BuiltinOperator_MAX_POOL_2D,
+                            /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}},
+                            /*filter_width=*/2, /*filter_height=*/2,
+                            /*output=*/{TensorType_FLOAT32, {}},
+                            /*padding=*/Padding_VALID,
+                            /*stride_w=*/0, /*stride_h=*/0),
+      "Cannot allocate tensors");
+}
+#endif
 
 }  // namespace
 }  // namespace tflite

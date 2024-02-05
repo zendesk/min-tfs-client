@@ -1,13 +1,25 @@
+load("//tensorflow:tensorflow.default.bzl", "filegroup")
 load("//tensorflow/compiler/mlir:glob_lit_test.bzl", "glob_lit_tests")
+
+# copybara:uncomment package(default_applicable_licenses = ["//tensorflow:license"])
 
 licenses(["notice"])
 
 glob_lit_tests(
+    name = "all_tests",
     data = [
         ":quant_stats_files",
         ":test_utilities",
     ],
-    driver = "@local_config_mlir//:run_lit.sh",
+    driver = "@llvm-project//mlir:run_lit.sh",
+    size_override = {
+        "quant_stats.pbtxt": "medium",
+    },
+    tags_override = {
+        "add.pbtxt": ["no_rocm"],
+        "conv_2d.pbtxt": ["no_rocm"],
+        "fake_quant_per_channel.pbtxt": ["no_rocm"],
+    },
     test_file_exts = [
         "pbtxt",
     ],
@@ -20,7 +32,8 @@ filegroup(
     data = [
         "//tensorflow/compiler/mlir/lite:flatbuffer_to_string",
         "//tensorflow/compiler/mlir/lite:tf_tfl_translate",
-        "@llvm//:FileCheck",
+        "@llvm-project//llvm:FileCheck",
+        "@llvm-project//llvm:not",
     ],
 )
 

@@ -38,6 +38,9 @@ namespace toco {
 //
 //   SpaceToBatchND -> Expand -> Conv2D -> Squeeze -> BatchToSpaceND -> BiasAdd
 //
+//   Pad -> SpaceToBatchND -> Expand -> Conv2D -> Squeeze -> BatchToSpaceND ->
+//   BiasAdd
+//
 //   SpaceToBatchND -> Expand -> Conv2D -> Squeeze -> Pad -> BatchToSpaceND ->
 //   BiasAdd
 //
@@ -83,7 +86,7 @@ bool ResolveDilatedConv(Model* model, Operator* conv_base_op, Operator* stb_op,
                            ? GetOpWithInput(*model, post_conv_op->outputs[0])
                            : GetOpWithInput(*model, conv_op->outputs[0]);
   bool has_pad_op = false;
-  if (pad_op->type == OperatorType::kPad) {
+  if (pad_op && pad_op->type == OperatorType::kPad) {
     has_pad_op = true;
     CHECK_EQ(pad_op->inputs.size(), 2);
     CHECK_EQ(pad_op->outputs.size(), 1);
@@ -118,6 +121,19 @@ bool ResolveDilatedConv(Model* model, Operator* conv_base_op, Operator* stb_op,
   }
   CHECK_EQ(bias_add_op->inputs.size(), 2);
   CHECK_EQ(bias_add_op->outputs.size(), 1);
+
+  //   If still Pad Op is not present, there might be possiblity it is added
+  //   before STB Op like below Pad -> SpaceToBatchND -> Expand -> Conv2D ->
+  //   Squeeze -> BatchToSpaceND -> BiasAdd So eliminate this Pad Op as well
+  if (!has_pad_op) {
+    auto* pre_stb_pad_op = GetOpWithOutput(*model, stb_op->inputs[0]);
+    // If it is a Pad Op then just rewire the Input of Pad Op with Input of STB
+    if (pre_stb_pad_op && pre_stb_pad_op->type == OperatorType::kPad) {
+      stb_op->inputs[0] = pre_stb_pad_op->inputs[0];
+      has_pad_op = true;
+      pad_op = pre_stb_pad_op;
+    }
+  }
 
   // 2. RE-WIRE OPERATORS
   // ***************************************************************************
@@ -161,17 +177,17 @@ bool ResolveDilatedConv(Model* model, Operator* conv_base_op, Operator* stb_op,
   // ***************************************************************************
   // SpaceToBatch Op.
   if (stb_op->type != OperatorType::kSpaceToBatchND) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   if (stb_op->inputs.size() != 3) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   CHECK_EQ(stb_op->outputs.size(), 1);
   // Extract the dilation factor from Input[1] of SpaceToBatch
   // TODO(mjmatthews): Support 2D dilation factors.
   const auto& block_shape_array = model->GetArray(stb_op->inputs[1]);
   if (!block_shape_array.buffer) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   CHECK_EQ(block_shape_array.shape().dimensions_count(), 1);
   int dilation_factor =
@@ -180,7 +196,7 @@ bool ResolveDilatedConv(Model* model, Operator* conv_base_op, Operator* stb_op,
   // Expand Op
   auto* post_stb_op = GetOpWithInput(*model, stb_op->outputs[0]);
   if (!post_stb_op) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   bool has_expand_op = false;
   if (post_stb_op->type == OperatorType::kExpandDims) {
@@ -190,7 +206,7 @@ bool ResolveDilatedConv(Model* model, Operator* conv_base_op, Operator* stb_op,
   }
 
   // Conv Op
-  const string& input_of_conv_op =
+  const std::string& input_of_conv_op =
       has_expand_op ? post_stb_op->outputs[0] : stb_op->outputs[0];
   auto* conv_base_op = GetOpWithInput(*model, input_of_conv_op);
   bool changed = false;
@@ -209,13 +225,13 @@ bool ResolveDilatedConv(Model* model, Operator* conv_base_op, Operator* stb_op,
         dilation_factor);
     if (changed) {
       LOG(INFO)
-          << "Replaced sub-netork with Dilated DepthwiseConv2D op outputting \""
-          << conv_base_op->outputs[0] << "\".";
+          << "Replaced sub-network with Dilated DepthwiseConv2D op outputting "
+          << "\"" << conv_base_op->outputs[0] << "\".";
     }
   }
 
   *modified = changed;
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

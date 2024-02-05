@@ -14,20 +14,18 @@
 # ==============================================================================
 """Input-pipeline utilities for Distribution strategies."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.data.experimental.ops import distribute
-from tensorflow.python.data.experimental.ops.distribute_options import AutoShardPolicy
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.data.ops.options import AutoShardPolicy
 from tensorflow.python.data.util import traverse
 from tensorflow.python.framework import op_def_registry
 from tensorflow.python.framework import ops
+from tensorflow.python.types import data as data_types
+from tensorflow.python.types import distribute as distribute_types
 
 
 # pylint: disable=protected-access
-def auto_shard_dataset(dataset, num_shards, index):
+def auto_shard_dataset(dataset, num_shards, index, num_replicas_in_sync=None):
   """Shard the input pipeline by sharding the underlying list of files.
 
   Args:
@@ -37,18 +35,26 @@ def auto_shard_dataset(dataset, num_shards, index):
         shards operating in parallel. Same usage as in `tf.data.Dataset.shard`.
     index: A `tf.int64` scalar `tf.Tensor`, representing the worker index.
       Same usage as in `tf.data.Dataset.shard`.
+    num_replicas_in_sync: An integer representing the total number of replicas
+      across all workers. This is used in the rewrite when sharding by data.
 
   Returns:
     A modified `Dataset` obtained by updating the pipeline sharded by the
     files. The input dataset will be returned if we cannot automatically
     determine a good way to shard the input dataset.
   """
+  if isinstance(dataset, distribute_types.DistributedDatasetInterface):
+    return dataset.auto_shard(num_shards, index)
   if (dataset.options().experimental_distribute.auto_shard_policy !=
       AutoShardPolicy.OFF):
-    if isinstance(dataset, dataset_ops.DatasetV1):
-      return distribute._AutoShardDatasetV1(dataset, num_shards, index)
+    if num_replicas_in_sync is None:
+      num_replicas_in_sync = 1
+    if isinstance(dataset, data_types.DatasetV1):
+      return distribute._AutoShardDatasetV1(dataset, num_shards, index,
+                                            num_replicas_in_sync)
     else:
-      return distribute._AutoShardDataset(dataset, num_shards, index)
+      return distribute._AutoShardDataset(dataset, num_shards, index,
+                                          num_replicas_in_sync)
   else:
     return dataset
 

@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for conv."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
@@ -60,15 +56,15 @@ def make_conv_to_depthwiseconv_with_shared_weights_tests(options):
     # Construct 2 Conv2D operations which use exactly the same input and
     # weights.
     result1 = tf.nn.conv2d(
-        input_tensor,
-        filter_tensor,
+        input=input_tensor,
+        filters=filter_tensor,
         strides=parameters["strides"],
         dilations=parameters["dilations"],
         padding=parameters["padding"],
         data_format=parameters["data_format"])
     result2 = tf.nn.conv2d(
-        input_tensor,
-        filter_tensor,
+        input=input_tensor,
+        filters=filter_tensor,
         strides=parameters["strides"],
         dilations=parameters["dilations"],
         padding=parameters["padding"],

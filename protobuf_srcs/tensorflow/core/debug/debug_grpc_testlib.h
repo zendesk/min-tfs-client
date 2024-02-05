@@ -29,7 +29,7 @@ namespace tensorflow {
 
 namespace test {
 
-class TestEventListenerImpl final : public EventListener::Service {
+class TestEventListenerImpl final : public grpc::EventListener::Service {
  public:
   TestEventListenerImpl() : stop_requested_(false), stopped_(false) {}
 
@@ -60,9 +60,9 @@ class TestEventListenerImpl final : public EventListener::Service {
   std::atomic_bool stop_requested_;
   std::atomic_bool stopped_;
 
-  std::vector<DebugNodeKey> debug_node_keys_ GUARDED_BY(states_mu_);
+  std::vector<DebugNodeKey> debug_node_keys_ TF_GUARDED_BY(states_mu_);
   std::vector<EventReply::DebugOpStateChange::State> new_states_
-      GUARDED_BY(states_mu_);
+      TF_GUARDED_BY(states_mu_);
 
   std::unordered_set<DebugNodeKey> write_enabled_debug_node_keys_;
 

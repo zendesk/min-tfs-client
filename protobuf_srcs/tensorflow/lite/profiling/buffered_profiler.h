@@ -15,6 +15,7 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_PROFILING_BUFFERED_PROFILER_H_
 #define TENSORFLOW_LITE_PROFILING_BUFFERED_PROFILER_H_
 
+#include <cstdint>
 #include <vector>
 
 #include "tensorflow/lite/core/api/profiler.h"
@@ -74,18 +75,45 @@ namespace profiling {
 //
 class BufferedProfiler : public tflite::Profiler {
  public:
+  BufferedProfiler(uint32_t max_num_initial_entries,
+                   bool allow_dynamic_buffer_increase)
+      : buffer_(max_num_initial_entries, false /*enabled*/,
+                allow_dynamic_buffer_increase),
+        supported_event_types_(
+            ~(static_cast<uint64_t>(
+                  EventType::GENERAL_RUNTIME_INSTRUMENTATION_EVENT) |
+              static_cast<uint64_t>(EventType::TELEMETRY_EVENT) |
+              static_cast<uint64_t>(EventType::TELEMETRY_REPORT_SETTINGS) |
+              static_cast<uint64_t>(EventType::TELEMETRY_DELEGATE_EVENT) |
+              static_cast<uint64_t>(
+                  EventType::TELEMETRY_DELEGATE_REPORT_SETTINGS))) {}
+
   explicit BufferedProfiler(uint32_t max_num_entries)
-      : buffer_(max_num_entries, false) {}
+      : BufferedProfiler(max_num_entries,
+                         false /*allow_dynamic_buffer_increase*/) {}
 
   uint32_t BeginEvent(const char* tag, EventType event_type,
-                      uint32_t event_metadata,
-                      uint32_t event_subgraph_index) override {
-    return buffer_.BeginEvent(tag, event_type, event_metadata,
-                              event_subgraph_index);
+                      int64_t event_metadata1,
+                      int64_t event_metadata2) override {
+    if (!ShouldAddEvent(event_type)) return kInvalidEventHandle;
+    return buffer_.BeginEvent(tag, event_type, event_metadata1,
+                              event_metadata2);
   }
 
   void EndEvent(uint32_t event_handle) override {
     buffer_.EndEvent(event_handle);
+  }
+
+  void EndEvent(uint32_t event_handle, int64_t event_metadata1,
+                int64_t event_metadata2) override {
+    buffer_.EndEvent(event_handle, &event_metadata1, &event_metadata2);
+  }
+
+  void AddEvent(const char* tag, EventType event_type, uint64_t elapsed_time,
+                int64_t event_metadata1, int64_t event_metadata2) override {
+    if (!ShouldAddEvent(event_type)) return;
+    buffer_.AddEvent(tag, event_type, elapsed_time, event_metadata1,
+                     event_metadata2);
   }
 
   void StartProfiling() { buffer_.SetEnabled(true); }
@@ -100,9 +128,15 @@ class BufferedProfiler : public tflite::Profiler {
     return profile_events;
   }
 
+ protected:
+  bool ShouldAddEvent(EventType event_type) {
+    return (static_cast<uint64_t>(event_type) & supported_event_types_) != 0;
+  }
+
  private:
   ProfileBuffer* GetProfileBuffer() { return &buffer_; }
   ProfileBuffer buffer_;
+  const uint64_t supported_event_types_;
 };
 
 }  // namespace profiling

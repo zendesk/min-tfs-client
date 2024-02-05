@@ -16,10 +16,12 @@ limitations under the License.
 #include "tensorflow/core/grappler/costs/utils.h"
 
 #include <stddef.h>
+
 #include <utility>
 
-#include "third_party/eigen3/Eigen/Core"
-
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "Eigen/Core"  // from @eigen_archive
 #include "tensorflow/core/common_runtime/gpu/gpu_id.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_id_manager.h"
 #include "tensorflow/core/framework/allocation_description.pb.h"
@@ -37,13 +39,13 @@ limitations under the License.
 #include "tensorflow/core/grappler/utils.h"
 #include "tensorflow/core/lib/core/bits.h"
 #include "tensorflow/core/lib/strings/numbers.h"
-#include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/byte_order.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/util/device_name_utils.h"
+#include "tensorflow/core/util/overflow.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -140,7 +142,7 @@ static void ExtractExtraProperties(
         }
         AttrValue attr;
         attr.set_i(stat.length);
-        string attr_key = strings::StrCat("input_", i, "_filesize");
+        string attr_key = absl::StrCat("input_", i, "_filesize");
         (*op_info->mutable_attr())[attr_key] = attr;
       }
     }
@@ -149,7 +151,7 @@ static void ExtractExtraProperties(
     // in the op itself is not sufficient to predict the op memory.
     if (op_def && i < op_def->input_arg_size() &&
         op_def->input_arg(i).name().find("handle") != string::npos) {
-      string new_key = strings::StrCat("parent_", i, "_op");
+      string new_key = absl::StrCat("parent_", i, "_op");
       AttrValue attr;
       attr.set_s(input_node->op());
       (*op_info->mutable_attr())[new_key] = attr;
@@ -196,8 +198,8 @@ std::vector<OpInfo::TensorProperties> FindInputFeatures(
   return inputs;
 }
 
-int64 CalculateTensorSize(const OpInfo::TensorProperties& prop) {
-  int64 size = DataTypeSize(BaseType(prop.dtype()));
+int64_t CalculateTensorSize(const OpInfo::TensorProperties& prop) {
+  int64_t size = DataTypeSize(BaseType(prop.dtype()));
   TensorShapeProto shape = prop.shape();
 
   // Can't infer the size if the rank is unknown. It has to be at least a
@@ -215,11 +217,17 @@ int64 CalculateTensorSize(const OpInfo::TensorProperties& prop) {
     }
   }
 
-  int64 num_elems = TensorShape(shape).num_elements();
-  return num_elems * size;
+  int64_t num_elems = TensorShape(shape).num_elements();
+  int64_t tensor_size = MultiplyWithoutOverflow(num_elems, size);
+  if (tensor_size < 0) {
+    VLOG(1) << "Overflow encountered when computing tensor size, multiplying "
+            << num_elems << " with " << size;
+    return -1;
+  }
+  return tensor_size;
 }
 
-int64 CalculateOutputSize(
+int64_t CalculateOutputSize(
     const std::vector<OpInfo::TensorProperties>& output_properties,
     const int port_num) {
   if (port_num < 0) return 4;  // 4B for control dependency.
@@ -240,14 +248,15 @@ DeviceProperties GetDeviceInfo(const string& device_str) {
   DeviceNameUtils::ParsedName parsed;
   if (DeviceNameUtils::ParseFullName(device_str, &parsed)) {
     if (parsed.type == "GPU") {
-      TfGpuId tf_gpu_id(parsed.id);
-      PlatformGpuId platform_gpu_id;
-      Status s = GpuIdManager::TfToPlatformGpuId(tf_gpu_id, &platform_gpu_id);
+      TfDeviceId tf_device_id(parsed.id);
+      PlatformDeviceId platform_device_id;
+      Status s =
+          GpuIdManager::TfToPlatformDeviceId(tf_device_id, &platform_device_id);
       if (!s.ok()) {
         // We are probably running simulation without linking cuda libraries.
-        platform_gpu_id = PlatformGpuId(parsed.id);
+        platform_device_id = PlatformDeviceId(parsed.id);
       }
-      return GetLocalGPUInfo(platform_gpu_id);
+      return GetLocalGPUInfo(platform_device_id);
     } else if (parsed.type == "CPU") {
       return GetLocalCPUInfo();
     }
@@ -353,49 +362,31 @@ void TensorSizeHistogram::Merge(const TensorSizeHistogram& src) {
 }
 
 string TensorSizeHistogram::ToString() const {
-  string r;
-  char buf[200];
-  snprintf(buf, sizeof(buf), "Count: %lld, Average: ", num_elem_);
-  r.append(buf);
-  r.append(strings::HumanReadableNumBytes(Average()));
-  r.append(", Min: ");
-  r.append(strings::HumanReadableNumBytes(min_));
-  r.append(", Max: ");
-  r.append(strings::HumanReadableNumBytes(max_));
-  r.append("\n------------------------------------------------------\n");
+  string r = absl::StrFormat(
+      "Count: %lld, Average: %s, Min: %s, Max: %s"
+      "\n------------------------------------------------------\n",
+      num_elem_, strings::HumanReadableNumBytes(Average()),
+      strings::HumanReadableNumBytes(min_),
+      strings::HumanReadableNumBytes(max_));
   const double mult = num_elem_ > 0 ? 100.0 / num_elem_ : 0.0;
   uint64 cumul_sum = 0;
 
-  const int size_string_width = 12;
   for (int i = 0; i < buckets_.size(); i++) {
     if (buckets_[i] == 0) continue;
     cumul_sum += buckets_[i];
-    r.append("[ ");
-    if (i == 0) {
-      r.append(size_string_width - 2, ' ');
-      r.append("0B");
-    } else {
-      uint64 left = 1ULL << (i - 1);
-      const auto left_string = strings::HumanReadableNumBytes(left);
-      r.append(size_string_width - left_string.size(), ' ');
-      r.append(left_string);
-    }
-    r.append(", ");
+    uint64 left = i == 0 ? 0ULL : 1ULL << (i - 1);
     uint64 right = 1ULL << i;
-    const auto right_string = strings::HumanReadableNumBytes(right);
-    r.append(size_string_width - right_string.size(), ' ');
-    r.append(right_string);
-    snprintf(buf, sizeof(buf), ") %7lld %7.3f%% %7.3f%% ",
-             buckets_[i],         // count
-             mult * buckets_[i],  // percentage
-             mult * cumul_sum);   // cum percentage
-    r.append(buf);
+    absl::StrAppendFormat(&r, "[ %12s, %12s) %7d %7.3f%% %7.3f%% ",
+                          strings::HumanReadableNumBytes(left),
+                          strings::HumanReadableNumBytes(right),
+                          buckets_[i],         // count
+                          mult * buckets_[i],  // percentage
+                          mult * cumul_sum);   // cumulative percentage
 
     // Add hash marks based on percentage; 40 marks for 100%.
     auto marks = static_cast<int>(
         (static_cast<double>(40 * buckets_[i] + (num_elem_ >> 1)) / num_elem_));
-    r.append(marks, '#');
-    r.push_back('\n');
+    absl::StrAppendFormat(&r, "%s\n", std::string(marks, '#'));
   }
   return r;
 }
@@ -422,7 +413,7 @@ string GetDeviceClassForNonChannelDevice(const string& device_name) {
   }
   if (parsed) {
     const string jobname = parsed_name.has_job ? parsed_name.job : "";
-    return strings::StrCat("/", jobname, "/", parsed_name.type);
+    return absl::StrCat("/", jobname, "/", parsed_name.type);
   } else {
     return "Unclassified";
   }
@@ -440,7 +431,7 @@ string GetDeviceClass(const string& device_name) {
     const auto src_device_full = device_name.substr(
         from_loc + from.size(), to_loc - (from_loc + from.size()));
     const auto dst_device_full = device_name.substr(to_loc + to.size());
-    return strings::StrCat(
+    return absl::StrCat(
         "Channel", ": ", GetDeviceClassForNonChannelDevice(src_device_full),
         " -> ", GetDeviceClassForNonChannelDevice(dst_device_full));
   } else {
@@ -504,5 +495,16 @@ string GetStatsStringFromRunMetadata(const RunMetadata& run_metadata,
   return output.str();
 }
 
+void CombineCostsAndUpdateExecutionTime(bool compute_memory_overlap,
+                                        Costs* costs) {
+  if (compute_memory_overlap) {
+    costs->execution_time =
+        std::max(costs->intermediate_memory_time,
+                 std::max(costs->compute_time, costs->memory_time));
+  } else {
+    costs->execution_time = costs->compute_time + costs->memory_time +
+                            costs->intermediate_memory_time;
+  }
+}
 }  // end namespace grappler
 }  // end namespace tensorflow

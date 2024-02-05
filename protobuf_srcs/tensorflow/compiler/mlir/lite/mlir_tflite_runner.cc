@@ -21,6 +21,8 @@ limitations under the License.
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 #include "absl/strings/str_cat.h"
@@ -30,24 +32,35 @@ limitations under the License.
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/SourceMgr.h"
-#include "mlir/IR/Function.h"  // TF:local_config_mlir
-#include "mlir/IR/MLIRContext.h"  // TF:local_config_mlir
-#include "mlir/IR/Module.h"  // TF:local_config_mlir
-#include "mlir/Parser.h"  // TF:local_config_mlir
-#include "tensorflow/compiler/mlir/lite/flatbuffer_translate.h"
-#include "tensorflow/compiler/mlir/lite/flatbuffer_translate_flags.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/Dialect.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/Parser/Parser.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/flatbuffer_export.h"
+#include "tensorflow/compiler/mlir/lite/flatbuffer_export_flags.h"
+#include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/lite/delegates/flex/delegate.h"
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
+#include "tensorflow/lite/optional_debug_tools.h"
 
+using llvm::cl::desc;
+using llvm::cl::init;
 using llvm::cl::opt;
 
 // NOLINTNEXTLINE
-static opt<std::string> inputFileName(llvm::cl::Positional,
-                                      llvm::cl::desc("<input file>"),
-                                      llvm::cl::init("-"));
+static opt<std::string> input_filename(llvm::cl::Positional,
+                                       desc("<input file>"), init("-"));
+
+// NOLINTNEXTLINE
+static opt<bool> dump_state("dump-interpreter-state",
+                            desc("dump interpreter state post execution"),
+                            init(false));
 
 // TODO(jpienaar): Move these functions to some debug utils.
 static std::string TfLiteTensorDimString(const TfLiteTensor& tensor) {
@@ -69,6 +82,8 @@ static std::string TfLiteTensorString(const TfLiteTensor& tensor) {
   switch (tensor.type) {
     case kTfLiteInt32:
       return TfLiteTypedTensorString<int32_t>(tensor);
+    case kTfLiteUInt32:
+      return TfLiteTypedTensorString<uint32_t>(tensor);
     case kTfLiteInt64:
       return TfLiteTypedTensorString<int64_t>(tensor);
     case kTfLiteFloat32:
@@ -82,31 +97,39 @@ int main(int argc, char** argv) {
   llvm::InitLLVM y(argc, argv);
   llvm::cl::ParseCommandLineOptions(argc, argv, "MLIR TFLite runner\n");
 
-  auto file_or_err = llvm::MemoryBuffer::getFileOrSTDIN(inputFileName.c_str());
+  auto file_or_err = llvm::MemoryBuffer::getFileOrSTDIN(input_filename.c_str());
   if (std::error_code error = file_or_err.getError()) {
-    LOG(ERROR) << argv[0] << ": could not open input file '" << inputFileName
+    LOG(ERROR) << argv[0] << ": could not open input file '" << input_filename
                << "': " << error.message() << "\n";
     return 1;
   }
 
   // Load the MLIR module.
-  mlir::MLIRContext context;
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::TF::TensorFlowDialect, mlir::TFL::TensorFlowLiteDialect,
+                  mlir::arith::ArithDialect, mlir::func::FuncDialect>();
+  mlir::MLIRContext context(registry);
+
   llvm::SourceMgr source_mgr;
   source_mgr.AddNewSourceBuffer(std::move(*file_or_err), llvm::SMLoc());
-  mlir::OwningModuleRef module(mlir::parseSourceFile(source_mgr, &context));
+  mlir::OwningOpRef<mlir::ModuleOp> module(
+      mlir::parseSourceFile<mlir::ModuleOp>(source_mgr, &context));
   if (!module) return 1;
 
   // TODO(jpienaar): Expand to support inputs.
-  mlir::FuncOp main = module->lookupSymbol<mlir::FuncOp>("main");
+  mlir::func::FuncOp main = module->lookupSymbol<mlir::func::FuncOp>("main");
   QCHECK(main) << "No 'main' function specified.";
-  if (main.getType().getNumInputs() != 0)
+  if (main.getFunctionType().getNumInputs() != 0)
     LOG(QFATAL) << "NYI: Only nullary functions supported.";
 
   // Convert to flatbuffer.
   std::string serialized_flatbuffer;
-  if (tflite::MlirToFlatBufferTranslateFunction(
-          module.get(), &serialized_flatbuffer, emit_builtin_tflite_ops,
-          emit_select_tf_ops, emit_custom_ops))
+  tflite::FlatbufferExportOptions options;
+  options.toco_flags.set_force_select_tf_ops(!emit_builtin_tflite_ops);
+  options.toco_flags.set_enable_select_tf_ops(emit_select_tf_ops);
+  options.toco_flags.set_allow_custom_ops(emit_custom_ops);
+  if (!tflite::MlirToFlatBufferTranslateFunction(module.get(), options,
+                                                 &serialized_flatbuffer))
     return 1;
 
   // Create TFLite interpreter & invoke converted program.
@@ -122,7 +145,8 @@ int main(int argc, char** argv) {
 
   // Print the resulting outputs.
   // TODO(jpienaar): Allow specifying output stream/file.
-  QCHECK(interpreter->outputs().size() == main.getType().getNumResults());
+  QCHECK(interpreter->outputs().size() ==
+         main.getFunctionType().getNumResults());
   for (int index : interpreter->outputs()) {
     const auto& out = *interpreter->tensor(index);
     // Print name if named.
@@ -132,6 +156,8 @@ int main(int argc, char** argv) {
             TfLiteTypeGetName(out.type), TfLiteTensorDimString(out).c_str(),
             TfLiteTensorString(out).c_str());
   }
+
+  if (dump_state) tflite::PrintInterpreterState(interpreter.get());
 
   return 0;
 }

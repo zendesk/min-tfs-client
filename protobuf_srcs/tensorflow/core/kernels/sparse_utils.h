@@ -44,7 +44,7 @@ Tindices FindNextDenseRowStartIndex(
 // v.front() = 0, v.back() = indices_mat.dimension(0), and for i > 0,
 // v[i] - v[i-1] is the length of the ith dense row in indices_mat.
 // *contains_empty_rows = true if and only if indices_mat contains empty rows
-// (rows without values) between its first and last row.
+// (rows without values) between row 0 and the last row.
 template <typename Tindices>
 std::vector<Tindices> GetStartIndicesOfEachDenseRow(
     const typename TTypes<Tindices>::ConstMatrix& indices_mat,
@@ -64,6 +64,23 @@ std::vector<Tindices> ParseRowStartIndices(
 // GetStartIndicesOfEachDenseRow(indices_mat, &return_value).
 template <typename Tindices>
 bool ContainsEmptyRows(const std::vector<Tindices>& row_start_indices);
+
+// Methods for validating sparse indices.
+enum class IndexValidation {
+  kNone,      // Indices are not used by the op, or are not directly accessible
+              // (e.g. on GPU).
+  kOrdered,   // Indices must be unique, in lexicographical order, and within
+              // safe bounds.
+  kUnordered  // Indices must be within safe bounds, but may repeat or appear
+              // out-of-order.
+};
+
+// Validates the three component tensors of a sparse tensor have the proper
+// shapes.  Also validates index values according to the method supplied.
+template <typename Tindices>
+Status ValidateSparseTensor(const Tensor& indices, const Tensor& values,
+                            const Tensor& shape,
+                            IndexValidation index_validation);
 
 }  // namespace sparse_utils
 }  // namespace tensorflow

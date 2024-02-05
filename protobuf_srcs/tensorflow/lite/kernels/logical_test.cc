@@ -12,11 +12,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <initializer_list>
+#include <vector>
+
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -66,7 +69,7 @@ TEST(LogicalTest, LogicalOr) {
   LogicalOpModel model({1, 1, 1, 4}, {1, 1, 1, 4}, BuiltinOperator_LOGICAL_OR);
   model.PopulateTensor<bool>(model.input1(), {true, false, false, true});
   model.PopulateTensor<bool>(model.input2(), {true, false, true, false});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(model.GetOutput(), ElementsAre(true, false, true, true));
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(1, 1, 1, 4));
@@ -76,7 +79,7 @@ TEST(LogicalTest, BroadcastLogicalOr) {
   LogicalOpModel model({1, 1, 1, 4}, {1, 1, 1, 1}, BuiltinOperator_LOGICAL_OR);
   model.PopulateTensor<bool>(model.input1(), {true, false, false, true});
   model.PopulateTensor<bool>(model.input2(), {false});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(model.GetOutput(), ElementsAre(true, false, false, true));
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(1, 1, 1, 4));
@@ -86,7 +89,7 @@ TEST(LogicalTest, LogicalAnd) {
   LogicalOpModel model({1, 1, 1, 4}, {1, 1, 1, 4}, BuiltinOperator_LOGICAL_AND);
   model.PopulateTensor<bool>(model.input1(), {true, false, false, true});
   model.PopulateTensor<bool>(model.input2(), {true, false, true, false});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(model.GetOutput(), ElementsAre(true, false, false, false));
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(1, 1, 1, 4));
@@ -96,7 +99,7 @@ TEST(LogicalTest, BroadcastLogicalAnd) {
   LogicalOpModel model({1, 1, 1, 4}, {1, 1, 1, 1}, BuiltinOperator_LOGICAL_AND);
   model.PopulateTensor<bool>(model.input1(), {true, false, false, true});
   model.PopulateTensor<bool>(model.input2(), {true});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(model.GetOutput(), ElementsAre(true, false, false, true));
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(1, 1, 1, 4));

@@ -14,12 +14,11 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/grappler/optimizers/data/function_utils.h"
-#include "tensorflow/core/grappler/optimizers/data/graph_utils.h"
 
 #include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/framework/op_def.pb.h"
+#include "tensorflow/core/grappler/optimizers/data/graph_utils.h"
 #include "tensorflow/core/lib/strings/scanner.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -125,7 +124,7 @@ NodeDef* AddNode(StringPiece name, StringPiece op,
   for (const string& input : inputs) {
     node->add_input(input);
   }
-  for (auto attr : attributes) {
+  for (const auto& attr : attributes) {
     (*node->mutable_attr())[attr.first] = attr.second;
   }
   return node;

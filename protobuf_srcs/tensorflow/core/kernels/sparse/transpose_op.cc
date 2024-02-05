@@ -19,15 +19,15 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#if GOOGLE_CUDA
-#include "tensorflow/core/kernels/cuda_sparse.h"
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#include "tensorflow/core/util/cuda_sparse.h"
 #define EIGEN_USE_GPU
 #endif
 
 #include <numeric>
 
-#include "third_party/eigen3/Eigen/SparseCore"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "Eigen/SparseCore"  // from @eigen_archive
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
@@ -53,7 +53,7 @@ template <typename T>
 Status ValidateTransposeInputs(const ConstCSRComponent<T>& input,
                                const CSRComponent<T>& output) {
   const int rank = input.dense_shape_host.size();
-  const int64 nnz = input.col_ind.size();
+  const int64_t nnz = input.col_ind.size();
   const int num_rows = input.row_ptr.size() - 1;
   const int num_cols = input.dense_shape_host(rank - 1);
 
@@ -87,7 +87,7 @@ Status ValidateTransposeInputs(const ConstCSRComponent<T>& input,
         "Input nnz should equal the output values size. Got ", nnz, " vs. ",
         output.values.size());
   }
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace
 
@@ -132,12 +132,12 @@ REGISTER_TRANSPOSE(CPU, double)
 REGISTER_TRANSPOSE(CPU, complex64)
 REGISTER_TRANSPOSE(CPU, complex128)
 
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 REGISTER_TRANSPOSE(GPU, float)
 REGISTER_TRANSPOSE(GPU, double)
 REGISTER_TRANSPOSE(GPU, complex64)
 REGISTER_TRANSPOSE(GPU, complex128)
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #undef REGISTER_TRANSPOSE
 
@@ -150,15 +150,15 @@ Status CSRSparseMatrixTranspose<Device, T>::operator()(
   const int rank = input_matrix.dims();
   Tensor output_dense_shape_t(cpu_allocator(), DT_INT64, TensorShape({rank}));
   const Tensor& input_dense_shape_t = input_matrix.dense_shape();
-  auto input_dense_shape = input_dense_shape_t.vec<int64>();
-  auto output_dense_shape = output_dense_shape_t.vec<int64>();
-  const int64 batch_size = input_matrix.batch_size();
+  auto input_dense_shape = input_dense_shape_t.vec<int64_t>();
+  auto output_dense_shape = output_dense_shape_t.vec<int64_t>();
+  const int64_t batch_size = input_matrix.batch_size();
   if (rank == 3) {
     output_dense_shape(0) = batch_size;
   }
   output_dense_shape(rank - 2) = input_dense_shape(rank - 1);
   output_dense_shape(rank - 1) = input_dense_shape(rank - 2);
-  const int64 output_rows = output_dense_shape(rank - 2);
+  const int64_t output_rows = output_dense_shape(rank - 2);
 
   // nnzs per batch do not change with matrix transposition.
   Tensor batch_ptr_t = input_matrix.batch_pointers();
@@ -205,7 +205,7 @@ Status CSRSparseMatrixTranspose<Device, T>::operator()(
     maybe_conj_inplace<Device, T>::run(d, &output_values_t);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // CPU kernel for transposing a single component of a CSR SparseMatrix.
@@ -220,11 +220,11 @@ struct CSRSparseMatrixTransposeComponent<CPUDevice, T> {
     const int rank = input.dense_shape_host.size();
     const int num_rows = input.row_ptr.size() - 1;
     const int num_cols = input.dense_shape_host(rank - 1);
-    const int64 nnz = input.col_ind.size();
+    const int64_t nnz = input.col_ind.size();
 
     // Compute the column counts; whose prefix sums make up the output row
     // pointers.
-    for (int64 i = 0; i < nnz; ++i) {
+    for (int64_t i = 0; i < nnz; ++i) {
       output->row_ptr(input.col_ind(i) + 1) += 1;
     }
     std::partial_sum(output->row_ptr.data(),
@@ -235,31 +235,31 @@ struct CSRSparseMatrixTransposeComponent<CPUDevice, T> {
     // into the target output row (based on the current column count).
     std::vector<int> current_col_count(num_cols);
     for (int row_idx = 0; row_idx < num_rows; ++row_idx) {
-      const int64 row_begin = input.row_ptr(row_idx);
-      const int64 row_end = input.row_ptr(row_idx + 1);
-      for (int64 i = row_begin; i < row_end; ++i) {
+      const int64_t row_begin = input.row_ptr(row_idx);
+      const int64_t row_end = input.row_ptr(row_idx + 1);
+      for (int64_t i = row_begin; i < row_end; ++i) {
         const int col_idx = input.col_ind(i);
-        const int64 offset =
+        const int64_t offset =
             output->row_ptr(col_idx) + current_col_count[col_idx];
         output->col_ind(offset) = row_idx;
         output->values(offset) = input.values(i);
         current_col_count[col_idx] += 1;
       }
     }
-    return Status::OK();
+    return OkStatus();
   }
 };
 
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 template <typename T>
 struct CSRSparseMatrixTransposeComponent<GPUDevice, T> {
   Status operator()(OpKernelContext* ctx, const ConstCSRComponent<T>& x,
                     CSRComponent<T>* y) {
     TF_RETURN_IF_ERROR(ValidateTransposeInputs(x, *y));
-    CudaSparse cuda_sparse(ctx);
+    GpuSparse cuda_sparse(ctx);
     TF_RETURN_IF_ERROR(cuda_sparse.Initialize());
-    const cusparseAction_t copyValues = CUSPARSE_ACTION_NUMERIC;
+    const gpusparseAction_t copyValues = GPUSPARSE(ACTION_NUMERIC);
     const int rank = x.dense_shape_host.size();
     const int m = x.row_ptr.size() - 1;
     const int n = x.dense_shape_host(rank - 1);
@@ -276,10 +276,32 @@ struct CSRSparseMatrixTransposeComponent<GPUDevice, T> {
         x.col_ind.data() /*csrColInd*/, y->values.data() /*cscVal*/,
         y->col_ind.data() /*cscRowInd*/, y->row_ptr.data() /*cscColPtr*/,
         copyValues);
-    return Status::OK();
+    return OkStatus();
   }
 };
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+#define DEFINE_TRANSPOSE(Device, T)                                \
+  template Status CSRSparseMatrixTranspose<Device, T>::operator()( \
+      OpKernelContext* ctx, bool conjugate,                        \
+      const CSRSparseMatrix& input_matrix, CSRSparseMatrix* output_matrix);
+
+DEFINE_TRANSPOSE(CPUDevice, float);
+DEFINE_TRANSPOSE(CPUDevice, double);
+DEFINE_TRANSPOSE(CPUDevice, complex64);
+DEFINE_TRANSPOSE(CPUDevice, complex128);
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+DEFINE_TRANSPOSE(GPUDevice, float);
+DEFINE_TRANSPOSE(GPUDevice, double);
+DEFINE_TRANSPOSE(GPUDevice, complex64);
+DEFINE_TRANSPOSE(GPUDevice, complex128);
+
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+#undef DEFINE_TRANSPOSE
+
 }  // namespace functor
 
 }  // namespace tensorflow

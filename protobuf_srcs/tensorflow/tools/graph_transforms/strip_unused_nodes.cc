@@ -13,14 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
-
 #include "tensorflow/core/common_runtime/constant_folding.h"
-#include "tensorflow/core/graph/graph_constructor.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/subgraph.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/public/session.h"
+#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
 #include "tensorflow/tools/graph_transforms/transform_utils.h"
 
 namespace tensorflow {
@@ -70,7 +69,7 @@ Status TypeForPlaceholder(const TransformFuncContext& context,
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeForPlaceholder(const TransformFuncContext& context,
@@ -109,7 +108,7 @@ Status ShapeForPlaceholder(const TransformFuncContext& context,
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace
 
@@ -131,6 +130,7 @@ Status StripUnusedNodes(const GraphDef& input_graph_def,
   MapNamesToNodes(input_graph_def, &node_lookup);
 
   std::vector<string> current_inputs;
+  current_inputs.reserve(context.output_names.size());
   for (const string& output_name : context.output_names) {
     current_inputs.push_back(NodeNameFromInput(output_name));
   }
@@ -186,7 +186,7 @@ Status StripUnusedNodes(const GraphDef& input_graph_def,
       *(output_graph_def->mutable_node()->Add()) = node;
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("strip_unused_nodes", StripUnusedNodes);

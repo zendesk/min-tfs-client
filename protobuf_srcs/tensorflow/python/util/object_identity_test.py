@@ -14,10 +14,6 @@
 # ==============================================================================
 """Unit tests for object_identity."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.platform import test
 from tensorflow.python.util import nest
 from tensorflow.python.util import object_identity
@@ -84,6 +80,21 @@ class ObjectIdentitySetTest(test.TestCase):
     self.assertIn(a, diff_set)
     self.assertNotIn(b, diff_set)
     self.assertNotIn(c, diff_set)
+
+  def testDiscard(self):
+    a = object()
+    b = object()
+    set1 = object_identity.ObjectIdentitySet([a, b])
+    set1.discard(a)
+    self.assertIn(b, set1)
+    self.assertNotIn(a, set1)
+
+  def testClear(self):
+    a = object()
+    b = object()
+    set1 = object_identity.ObjectIdentitySet([a, b])
+    set1.clear()
+    self.assertLen(set1, 0)
 
 
 if __name__ == '__main__':

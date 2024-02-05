@@ -16,19 +16,19 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_EIGEN_CUBOID_CONVOLUTION_H_
 #define TENSORFLOW_CORE_KERNELS_EIGEN_CUBOID_CONVOLUTION_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-#include "tensorflow/core/kernels/eigen_volume_patch.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 
 #if defined(TENSORFLOW_USE_CUSTOM_CONTRACTION_KERNEL)
-#include "tensorflow/core/kernels/eigen_contraction_kernel.h"
+#include "tsl/framework/contraction/eigen_contraction_kernel.h"
 #endif
 
-#include "tensorflow/core/kernels/eigen_convolution_helpers.h"
+#include "tsl/framework/convolution/eigen_convolution_helpers.h"
 
 namespace Eigen {
 
 namespace internal {
 
+#if !EIGEN_ALTIVEC_USE_CUSTOM_PACK
 // WARNING: Most of the code here implicitly assumes that the matrix is in
 // ColMajor layout. This is guaranteed by the tensor contraction (see
 // TensorContraction.h).
@@ -457,7 +457,7 @@ class TensorContractionInputMapper<
   // 'partial' packet, the elements corresponding to the row (specified through
   // rowOffset) are loaded and the rest of the elements are zero-filled into the
   // 'partial' packet. This function is called from
-  // loadPacketStandardFromSingleColumnTwoRows(). This code path is exercied
+  // loadPacketStandardFromSingleColumnTwoRows(). This code path is exercised
   // only when the packet type supports masked load and when the partial packet
   // load is available in the TensorEvaluator.
   EIGEN_DEVICE_FUNC
@@ -495,7 +495,7 @@ class TensorContractionInputMapper<
       // span[1]+1 : packetSize-1 - Zeross will be loaded for these indices
       const Index packetSize = internal::unpacket_traits<Packet>::size;
       EIGEN_ALIGN_MAX
-      typename internal::remove_const<Scalar>::type values[packetSize];
+      std::remove_const_t<Scalar> values[packetSize];
       for (int i = 0; i < span[0]; ++i) values[i] = Scalar(0);
       for (int i = span[0]; i < span[1] + 1; ++i)
         values[i] = loadCoeff(patchId - span[0] + i, planeIndex, rowIndex,
@@ -584,7 +584,7 @@ class TensorContractionInputMapper<
   // Load standard packet from a patch specified by the "within patch offset"
   // (patchId) and the precomputed indices of the first element of the patch.
   // This function will be called if partial packet loading is not available
-  // for the TesnorEvaluator or if the packet type does not support masked
+  // for the TensorEvaluator or if the packet type does not support masked
   // load.
   template <typename PacketT, typename TensorEvaluatorT>
   EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE typename std::enable_if<
@@ -645,7 +645,7 @@ class TensorContractionInputMapper<
   // Load standard packet from a patch specified by the "within patch offset"
   // (patchId) and the precomputed indices of the first element of the patch.
   // This function will be called if partial packet loading is available for
-  // the TesnorEvaluator and if the packet type supports masked load.
+  // the TensorEvaluator and if the packet type supports masked load.
   // The only difference between this and the other case is that if the packet
   // to load is split across two rows (but in same column), then in this case
   // instead of going to the slow (element-by-element) load, we load two packets
@@ -758,7 +758,7 @@ class TensorContractionInputMapper<
                          Index colIndex, Index otherIndex) const {
     const int packetSize = internal::unpacket_traits<Packet>::size;
     EIGEN_ALIGN_MAX
-    typename internal::remove_const<Scalar>::type values[packetSize];
+    std::remove_const_t<Scalar> values[packetSize];
     for (int i = 0; i < packetSize; ++i) {
       values[i] =
           loadCoeff(patchId + i, planeIndex, rowIndex, colIndex, otherIndex);
@@ -1625,6 +1625,7 @@ struct gemm_pack_rhs<
     }
   }
 };
+#endif
 
 #if defined(TENSORFLOW_USE_CUSTOM_CONTRACTION_KERNEL)
 // Pack a block of the right input matrix (in our case it's always a "virtual
@@ -1811,7 +1812,7 @@ struct gemm_pack_colmajor_block<
  * output.
  */
 template <typename Input, typename Kernel>
-EIGEN_ALWAYS_INLINE static const typename internal::conditional<
+EIGEN_ALWAYS_INLINE static const std::conditional_t<
     internal::traits<Input>::Layout == ColMajor,
     TensorReshapingOp<
         const DSizes<typename internal::traits<Input>::Index,
@@ -1836,7 +1837,7 @@ EIGEN_ALWAYS_INLINE static const typename internal::conditional<
                                           const Input> >,
             const TensorReshapingOp<
                 const DSizes<typename internal::traits<Input>::Index, 2>,
-                const Kernel> > > >::type
+                const Kernel> > > >
 CuboidConvolution(const Input& input, const Kernel& kernel,
                   const Index stridePlanes = 1, const Index strideRows = 1,
                   const Index strideCols = 1,

@@ -14,16 +14,13 @@
 # ==============================================================================
 """Test cases for ternary operators."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 import scipy.special as sps
 
 from tensorflow.compiler.tests import xla_test
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_math_ops
 from tensorflow.python.ops import math_ops
@@ -47,6 +44,8 @@ class TernaryOpsTest(xla_test.XLATestCase, parameterized.TestCase):
       {'start': 1, 'end': 2, 'num': 1},
       {'start': 1, 'end': 4, 'num': 3},
       {'start': 0, 'end': 41, 'num': 42})
+  @test_util.disable_mlir_bridge(
+      'TODO(b/156174708): Dynamic result types not supported')
   def testLinspace(self, start, end, num):
     expected = np.linspace(start, end, num, dtype=np.float32)
     result = self._testTernary(
@@ -99,14 +98,14 @@ class TernaryOpsTest(xla_test.XLATestCase, parameterized.TestCase):
 
       self._testTernary(
           array_ops.where,
-          np.array([0, 1, 1, 0], dtype=np.bool),
+          np.array([0, 1, 1, 0], dtype=np.bool_),
           np.array([1, 2, 3, 4], dtype=dtype),
           np.array([5, 6, 7, 8], dtype=dtype),
           expected=np.array([5, 2, 3, 8], dtype=dtype))
 
       self._testTernary(
           array_ops.where,
-          np.array([0, 1, 0], dtype=np.bool),
+          np.array([0, 1, 0], dtype=np.bool_),
           np.array([[1, 2], [3, 4], [5, 6]], dtype=dtype),
           np.array([[7, 8], [9, 10], [11, 12]], dtype=dtype),
           expected=np.array([[7, 8], [3, 4], [11, 12]], dtype=dtype))
@@ -136,7 +135,7 @@ class TernaryOpsTest(xla_test.XLATestCase, parameterized.TestCase):
 
       self._testTernary(
           array_ops.where_v2,
-          np.array([0, 1, 1, 0], dtype=np.bool),
+          np.array([0, 1, 1, 0], dtype=np.bool_),
           np.array([1, 2, 3, 4], dtype=dtype),
           np.array([5, 6, 7, 8], dtype=dtype),
           expected=np.array([5, 2, 3, 8], dtype=dtype))
@@ -144,7 +143,7 @@ class TernaryOpsTest(xla_test.XLATestCase, parameterized.TestCase):
       # Broadcast the condition
       self._testTernary(
           array_ops.where_v2,
-          np.array([0, 1], dtype=np.bool),
+          np.array([0, 1], dtype=np.bool_),
           np.array([[1, 2], [3, 4], [5, 6]], dtype=dtype),
           np.array([[7, 8], [9, 10], [11, 12]], dtype=dtype),
           expected=np.array([[7, 2], [9, 4], [11, 6]], dtype=dtype))
@@ -152,7 +151,7 @@ class TernaryOpsTest(xla_test.XLATestCase, parameterized.TestCase):
       # Broadcast the then branch to the else
       self._testTernary(
           array_ops.where_v2,
-          np.array([[0, 1], [1, 0], [1, 1]], dtype=np.bool),
+          np.array([[0, 1], [1, 0], [1, 1]], dtype=np.bool_),
           np.array([[1, 2]], dtype=dtype),
           np.array([[7, 8], [9, 10], [11, 12]], dtype=dtype),
           expected=np.array([[7, 2], [1, 10], [1, 2]], dtype=dtype))
@@ -160,7 +159,7 @@ class TernaryOpsTest(xla_test.XLATestCase, parameterized.TestCase):
       # Broadcast the else branch to the then
       self._testTernary(
           array_ops.where_v2,
-          np.array([[1, 0], [0, 1], [0, 0]], dtype=np.bool),
+          np.array([[1, 0], [0, 1], [0, 0]], dtype=np.bool_),
           np.array([[7, 8], [9, 10], [11, 12]], dtype=dtype),
           np.array([[1, 2]], dtype=dtype),
           expected=np.array([[7, 2], [1, 10], [1, 2]], dtype=dtype))
@@ -168,13 +167,13 @@ class TernaryOpsTest(xla_test.XLATestCase, parameterized.TestCase):
       # Broadcast the then/else branches to the condition
       self._testTernary(
           array_ops.where_v2,
-          np.array([[1, 0], [0, 1], [1, 1]], dtype=np.bool),
+          np.array([[1, 0], [0, 1], [1, 1]], dtype=np.bool_),
           np.array(7, dtype=dtype),
           np.array(8, dtype=dtype),
           expected=np.array([[7, 8], [8, 7], [7, 7]], dtype=dtype))
       self._testTernary(
           array_ops.where_v2,
-          np.array([[1, 0], [0, 1], [0, 0]], dtype=np.bool),
+          np.array([[1, 0], [0, 1], [0, 0]], dtype=np.bool_),
           np.array(7, dtype=dtype),
           np.array([8, 9], dtype=dtype),
           expected=np.array([[7, 9], [8, 7], [8, 9]], dtype=dtype))
@@ -230,7 +229,7 @@ class TernaryOpsTest(xla_test.XLATestCase, parameterized.TestCase):
       {
           'sigma': 1e15,
           'rtol': 1e-6,
-          'atol': 1e-6
+          'atol': 1e-4
       },
       {
           'sigma': 30,
@@ -240,7 +239,7 @@ class TernaryOpsTest(xla_test.XLATestCase, parameterized.TestCase):
       {
           'sigma': 1e-8,
           'rtol': 5e-4,
-          'atol': 3e-6
+          'atol': 3e-4
       },
       {
           'sigma': 1e-16,

@@ -17,9 +17,13 @@ limitations under the License.
 #define TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_GRAPH_OPTIMIZER_H_
 
 #include <string>
+
+#include "absl/status/status.h"
 #include "tensorflow/core/framework/graph.pb.h"
-#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -45,7 +49,7 @@ class GraphOptimizer {
 
   // Routine called to allow an algorithm to propose a rewritten graph
   // for the graph, feeds and fetches in "item" to run more efficiently
-  // on "cluster". If the returned status is Status::OK() then
+  // on "cluster". If the returned status is OkStatus() then
   // *optimized_graph contains the rewritten graph.
   // Returns an error status if it failed to generate a solution.
   //
@@ -55,11 +59,11 @@ class GraphOptimizer {
   virtual Status Optimize(Cluster* cluster, const GrapplerItem& item,
                           GraphDef* optimized_graph) = 0;
 
-  // Method invoked by the framework so that it can provide feedback
-  // on how well the "optimized_graph" (produced as *optimized_graph from a
-  // call to Optimize) performed.  Lower "result" scores are better.
-  virtual void Feedback(Cluster* cluster, const GrapplerItem& item,
-                        const GraphDef& optimized_graph, double result) = 0;
+  // Subclasses may define a version of Optimize that consumes item.
+  virtual Status Optimize(Cluster* cluster, GrapplerItem&& item,
+                          GraphDef* optimized_graph) {
+    return Optimize(cluster, item, optimized_graph);
+  }
 
   // Set deadline in microseconds since epoch. A value of zero means no
   // deadline.
@@ -75,11 +79,12 @@ class GraphOptimizer {
   uint64 deadline_usec_;
 };
 
-#define GRAPPLER_RETURN_IF_DEADLINE_EXCEEDED()                              \
-  do {                                                                      \
-    if (this->DeadlineExceeded()) {                                         \
-      return errors::DeadlineExceeded(this->name(), " exceeded deadline."); \
-    }                                                                       \
+#define GRAPPLER_RETURN_IF_DEADLINE_EXCEEDED()                \
+  do {                                                        \
+    if (this->DeadlineExceeded()) {                           \
+      return absl::DeadlineExceededError(                     \
+          absl::StrCat(this->name(), " exceeded deadline.")); \
+    }                                                         \
   } while (0)
 
 }  // end namespace grappler

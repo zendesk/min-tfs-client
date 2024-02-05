@@ -26,13 +26,13 @@ limitations under the License.
 namespace tensorflow {
 
 OpSegment::Item::~Item() {
-  for (auto kv : name_kernel) delete kv.second;
+  for (const auto& kv : name_kernel) delete kv.second;
 }
 
 OpSegment::OpSegment() {}
 
 OpSegment::~OpSegment() {
-  for (auto kv : sessions_) delete kv.second;
+  for (const auto& kv : sessions_) delete kv.second;
 }
 
 Status OpSegment::FindOrCreate(const string& session_handle,
@@ -46,7 +46,7 @@ Status OpSegment::FindOrCreate(const string& session_handle,
     }
     *kernel = gtl::FindPtrOrNull(item->name_kernel, node_name);
     if (*kernel != nullptr) {
-      return Status::OK();
+      return OkStatus();
     }
   }
   Status s = create_fn(kernel);
@@ -68,7 +68,7 @@ Status OpSegment::FindOrCreate(const string& session_handle,
       *kernel = *p_kernel;
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 void OpSegment::AddHold(const string& session_handle) {

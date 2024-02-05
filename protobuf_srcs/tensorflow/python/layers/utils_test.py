@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for tf.layers.utils."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import test_util
 from tensorflow.python.layers import utils
@@ -113,28 +109,6 @@ class ConstantValueTest(test.TestCase):
     #Error case
     with self.assertRaises(TypeError):
       utils.constant_value(5)
-
-
-class GetReachableFromInputsTest(test.TestCase):
-
-  @test_util.run_deprecated_v1
-  def testGetReachableFromInputs(self):
-
-    pl_1 = array_ops.placeholder(shape=None, dtype='float32')
-    pl_2 = array_ops.placeholder(shape=None, dtype='float32')
-    pl_3 = array_ops.placeholder(shape=None, dtype='float32')
-    x_1 = pl_1 + pl_2
-    x_2 = pl_2 * 2
-    x_3 = pl_3 + 1
-    x_4 = x_1 + x_2
-    x_5 = x_3 * pl_1
-
-    self.assertEqual({pl_1, x_1, x_4, x_5},
-                     utils.get_reachable_from_inputs([pl_1]))
-    self.assertEqual({pl_1, pl_2, x_1, x_2, x_4, x_5},
-                     utils.get_reachable_from_inputs([pl_1, pl_2]))
-    self.assertEqual({pl_3, x_3, x_5}, utils.get_reachable_from_inputs([pl_3]))
-    self.assertEqual({x_3, x_5}, utils.get_reachable_from_inputs([x_3]))
 
 
 if __name__ == '__main__':

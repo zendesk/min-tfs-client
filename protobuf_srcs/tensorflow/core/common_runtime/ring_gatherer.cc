@@ -38,7 +38,6 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 
@@ -72,9 +71,9 @@ void RingGatherer::Run(StatusCallback done) {
 
   if (VLOG_IS_ON(1)) {
     string buf;
-    for (int r = 0; r < col_params_->instance.device_names.size(); ++r) {
+    for (int r = 0; r < col_params_->group.members.size(); ++r) {
       strings::StrAppend(&buf, "dev ", r, " : ",
-                         col_params_->instance.device_names[r], "\n");
+                         col_params_->group.members[r].device.name(), "\n");
     }
     for (int sd = 0;
          sd < col_params_->instance.impl_details.subdiv_permutations.size();
@@ -138,8 +137,8 @@ bool RingGatherer::RunAsyncParts() {
       ready_queue.Enqueue(&rfv_[rf_index]);
     }
   }
-  const DeviceBase::GpuDeviceInfo* gpu_info =
-      col_ctx_->device->tensorflow_gpu_device_info();
+  const DeviceBase::AcceleratorDeviceInfo* gpu_info =
+      col_ctx_->device->tensorflow_accelerator_device_info();
   if (gpu_info) {
     // Wait for all currently queued events on the CPU compute stream to
     // complete before proceeding.  The previous InitRingField calls allocated
@@ -273,6 +272,8 @@ bool RingGatherer::RunAsyncParts() {
   return !aborted;
 }
 
+namespace {
 REGISTER_COLLECTIVE(RingGather, RingGatherer);
+}  // namespace
 
 }  // namespace tensorflow

@@ -18,55 +18,12 @@ limitations under the License.
 
 #include <stdint.h>
 
-#include "tensorflow/lite/c/c_api_internal.h"
-
-#ifdef SWIG
-#define TFL_CAPI_EXPORT
-#else
-#if defined(_WIN32)
-#ifdef TFL_COMPILE_LIBRARY
-#define TFL_CAPI_EXPORT __declspec(dllexport)
-#else
-#define TFL_CAPI_EXPORT __declspec(dllimport)
-#endif  // TFL_COMPILE_LIBRARY
-#else
-#define TFL_CAPI_EXPORT __attribute__((visibility("default")))
-#endif  // _WIN32
-#endif  // SWIG
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/delegates/gpu/delegate_options.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif  // __cplusplus
-
-// Encapsulated precision/compilation/runtime tradeoffs.
-enum TfLiteGpuInferencePreference {
-  // Delegate will be used only once, therefore, bootstrap/init time should
-  // be taken into account.
-  TFLITE_GPU_INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER = 0,
-
-  // Prefer maximizing the throughput. Same delegate will be used repeatedly on
-  // multiple inputs.
-  TFLITE_GPU_INFERENCE_PREFERENCE_SUSTAINED_SPEED = 1,
-};
-
-// IMPORTANT: Always use TfLiteGpuDelegateOptionsV2Default() method to create
-// new instance of TfLiteGpuDelegateOptionsV2, otherwise every new added option
-// may break inference.
-typedef struct {
-  // When set to zero, computations are carried out in maximal possible
-  // precision. Otherwise, the GPU may quantify tensors, downcast values,
-  // process in FP16 to increase performance. For most models precision loss is
-  // warranted.
-  int32_t is_precision_loss_allowed;
-
-  // Preference is defined in TfLiteGpuInferencePreference.
-  int32_t inference_preference;
-} TfLiteGpuDelegateOptionsV2;
-
-// Populates TfLiteGpuDelegateOptionsV2 as follows:
-//   is_precision_loss_allowed = false
-//   inference_preference = TFLITE_GPU_INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER
-TFL_CAPI_EXPORT TfLiteGpuDelegateOptionsV2 TfLiteGpuDelegateOptionsV2Default();
 
 // Creates a new delegate instance that need to be destroyed with
 // TfLiteGpuDelegateV2Delete when delegate is no longer used by TFLite.
@@ -75,8 +32,16 @@ TFL_CAPI_EXPORT TfLiteGpuDelegateOptionsV2 TfLiteGpuDelegateOptionsV2Default();
 // make use of the fastest available on a device.
 //
 // When `options` is set to `nullptr`, then default options are used.
+//
+// `TfLiteGpuDelegateV2Create` creates an instance for use with the synchronous
+// API.  `TfLiteGpuDelegateV2CreateAsync` creates an instance for use with the
+// asynchronous API.
 TFL_CAPI_EXPORT TfLiteDelegate* TfLiteGpuDelegateV2Create(
     const TfLiteGpuDelegateOptionsV2* options);
+#if defined(__ANDROID__)
+TFL_CAPI_EXPORT TfLiteDelegate* TfLiteGpuDelegateV2CreateAsync(
+    const TfLiteGpuDelegateOptionsV2* options);
+#endif
 
 // Destroys a delegate created with `TfLiteGpuDelegateV2Create` call.
 TFL_CAPI_EXPORT void TfLiteGpuDelegateV2Delete(TfLiteDelegate* delegate);

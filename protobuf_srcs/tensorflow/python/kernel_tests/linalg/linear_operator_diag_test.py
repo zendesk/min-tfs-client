@@ -13,10 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+from tensorflow.python.framework import config
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import linalg_ops
@@ -34,6 +31,21 @@ linalg = linalg_lib
 class LinearOperatorDiagTest(
     linear_operator_test_util.SquareLinearOperatorDerivedClassTest):
   """Most tests done in the base class LinearOperatorDerivedClassTest."""
+
+  def tearDown(self):
+    config.enable_tensor_float_32_execution(self.tf32_keep_)
+
+  def setUp(self):
+    self.tf32_keep_ = config.tensor_float_32_execution_enabled()
+    config.enable_tensor_float_32_execution(False)
+
+  @staticmethod
+  def optional_tests():
+    """List of optional test names to run."""
+    return [
+        "operator_matmul_with_same_type",
+        "operator_solve_with_same_type",
+    ]
 
   def operator_and_matrix(
       self, build_info, dtype, use_placeholder,
@@ -92,7 +104,7 @@ class LinearOperatorDiagTest(
       self.evaluate(linalg.LinearOperatorDiag(diag).assert_positive_definite())
 
   def test_assert_non_singular_raises_if_zero_eigenvalue(self):
-    # Singlular matrix with one positive eigenvalue and one zero eigenvalue.
+    # Singular matrix with one positive eigenvalue and one zero eigenvalue.
     with self.cached_session():
       diag = [1.0, 0.0]
       operator = linalg.LinearOperatorDiag(diag, is_self_adjoint=True)
@@ -126,7 +138,7 @@ class LinearOperatorDiagTest(
       self.evaluate(operator.assert_self_adjoint())
 
   def test_scalar_diag_raises(self):
-    with self.assertRaisesRegexp(ValueError, "must have at least 1 dimension"):
+    with self.assertRaisesRegex(ValueError, "must have at least 1 dimension"):
       linalg.LinearOperatorDiag(1.)
 
   def test_broadcast_matmul_and_solve(self):
@@ -238,6 +250,13 @@ class LinearOperatorDiagTest(
     diag = variables_module.Variable([[2.]])
     operator = linalg.LinearOperatorDiag(diag)
     self.check_tape_safe(operator)
+
+  def test_convert_variables_to_tensors(self):
+    diag = variables_module.Variable([[2.]])
+    operator = linalg.LinearOperatorDiag(diag)
+    with self.cached_session() as sess:
+      sess.run([diag.initializer])
+      self.check_convert_variables_to_tensors(operator)
 
 
 if __name__ == "__main__":

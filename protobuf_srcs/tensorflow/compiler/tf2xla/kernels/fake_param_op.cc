@@ -18,8 +18,9 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
+#include "xla/client/lib/constants.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 
 namespace tensorflow {
 
@@ -29,7 +30,8 @@ class XlaFakeParamOp : public XlaOpKernel {
  public:
   explicit XlaFakeParamOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
     DataType dtype;
-    TensorShape tensor_shape;
+    // Tensor shape can be unknown.
+    PartialTensorShape tensor_shape;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("dtype", &dtype));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("shape", &tensor_shape));
     OP_REQUIRES_OK(ctx, TensorShapeToXLAShape(dtype, tensor_shape, &shape_));
@@ -43,7 +45,8 @@ class XlaFakeParamOp : public XlaOpKernel {
  private:
   xla::Shape shape_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(XlaFakeParamOp);
+  XlaFakeParamOp(const XlaFakeParamOp&) = delete;
+  void operator=(const XlaFakeParamOp&) = delete;
 };
 
 REGISTER_XLA_OP(Name("FakeParam"), XlaFakeParamOp);

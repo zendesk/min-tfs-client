@@ -18,10 +18,18 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XRT_XRT_UTIL_H_
 #define TENSORFLOW_COMPILER_XRT_XRT_UTIL_H_
 
-#include "tensorflow/compiler/xla/service/backend.h"
-#include "tensorflow/compiler/xla/shape_util.h"
-#include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/compiler/xla/xla.pb.h"
+#include <functional>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "xla/hlo/ir/hlo_input_output_alias_config.h"
+#include "xla/service/backend.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/statusor.h"
+#include "xla/xla.pb.h"
 #include "tensorflow/compiler/xrt/xrt.pb.h"
 #include "tensorflow/compiler/xrt/xrt_memory_manager.h"
 #include "tensorflow/compiler/xrt/xrt_refptr.h"
@@ -31,12 +39,25 @@ limitations under the License.
 
 namespace tensorflow {
 
+// Factory class which creates NCCL unique IDs based on the replicas
+// participating to a given communication. This is only used for GPU backends.
+struct NcclUniqueIdFactory {
+  virtual ~NcclUniqueIdFactory() = default;
+
+  // Generates the NCCL unique ID for the given set of replica IDs.
+  virtual std::string GetUniqueId(absl::Span<const int64_t> replicas) = 0;
+};
+
+void SetNcclUniqueIdFactory(std::shared_ptr<NcclUniqueIdFactory> factory);
+
+std::shared_ptr<NcclUniqueIdFactory> GetNcclUniqueIdFactory();
+
 struct InputCoords {
-  explicit InputCoords(int64 handle) : handle(handle) {}
-  InputCoords(int64 handle, xla::ShapeIndex index)
+  explicit InputCoords(int64_t handle) : handle(handle) {}
+  InputCoords(int64_t handle, xla::ShapeIndex index)
       : handle(handle), index(std::move(index)) {}
 
-  int64 handle = 0;
+  int64_t handle = 0;
   xla::ShapeIndex index;
 };
 
@@ -51,6 +72,26 @@ xla::DebugOptions BuildXlaDebugOptions(const xla::DebugOptions& ref_options);
 // op argument.
 xla::StatusOr<std::vector<InputCoords>> GetComputationInputs(
     OpKernelContext* context, const char* input_name);
+
+bool InputShapeMatches(const xla::Shape& parameter_shape,
+                       const xla::Shape& input_shape);
+
+xla::StatusOr<std::vector<RefPtr<XRTTupleAllocation>>> GetInputTupleAllocations(
+    const std::vector<InputCoords>& input_coords,
+    XRTMemoryManager::WorkingSet* working_set, xla::Backend* backend,
+    int64_t num_input_shapes,
+    const std::function<xla::Shape(int64_t)>& shape_getter, bool release_inputs,
+    se::DeviceMemoryAllocator* allocator);
+
+Status RebuildOutputAliases(
+    const RefPtr<XRTTupleAllocation>& output_tuple,
+    absl::Span<const RefPtr<XRTTupleAllocation>> input_tuples,
+    const xla::HloInputOutputAliasConfig& input_output_alias);
+
+xla::StatusOr<std::vector<xla::ExecutionInput>> GetArgumentsBuffers(
+    const xla::HloInputOutputAliasConfig& input_output_alias,
+    absl::Span<const RefPtr<XRTTupleAllocation>> input_tuples,
+    const std::vector<bool>& input_is_dynamic, bool release_inputs);
 
 // Create the XRT execute output tensor given the computation result
 // (output_tuple). The return_exploded_tuple tells whether a tuple result should
@@ -71,7 +112,8 @@ Status ExecuteChained(OpKernelContext* context,
                       xla::Backend* backend, int device_ordinal,
                       const xrt::XRTChainedExecutePlan& plan,
                       const xrt::XRTChainedExecuteConfig& config,
-                      const ChainedExecuteFn& execute_op);
+                      const ChainedExecuteFn& execute_op,
+                      se::DeviceMemoryAllocator* allocator);
 
 }  // namespace tensorflow
 

@@ -22,77 +22,21 @@ limitations under the License.
 #include <memory>
 #include <string>
 #include <vector>
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/lib/core/stringpiece.h"
+
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/notification.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/stringpiece.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/types.h"
+#include "tsl/platform/cloud/file_block_cache.h"
 
 namespace tensorflow {
-
-/// \brief A block cache of file contents, keyed by {filename, offset}.
-///
-/// This class should be shared by read-only random access files on a remote
-/// filesystem (e.g. GCS).
-class FileBlockCache {
- public:
-  /// The callback executed when a block is not found in the cache, and needs to
-  /// be fetched from the backing filesystem. This callback is provided when the
-  /// cache is constructed. The returned Status should be OK as long as the
-  /// read from the remote filesystem succeeded (similar to the semantics of the
-  /// read(2) system call).
-  typedef std::function<Status(const string& filename, size_t offset,
-                               size_t buffer_size, char* buffer,
-                               size_t* bytes_transferred)>
-      BlockFetcher;
-
-  virtual ~FileBlockCache() {}
-
-  /// Read `n` bytes from `filename` starting at `offset` into `out`. This
-  /// method will return:
-  ///
-  /// 1) The error from the remote filesystem, if the read from the remote
-  ///    filesystem failed.
-  /// 2) PRECONDITION_FAILED if the read from the remote filesystem succeeded,
-  ///    but the read returned a partial block, and the LRU cache contained a
-  ///    block at a higher offset (indicating that the partial block should have
-  ///    been a full block).
-  /// 3) OUT_OF_RANGE if the read from the remote filesystem succeeded, but
-  ///    the file contents do not extend past `offset` and thus nothing was
-  ///    placed in `out`.
-  /// 4) OK otherwise (i.e. the read succeeded, and at least one byte was placed
-  ///    in `out`).
-  virtual Status Read(const string& filename, size_t offset, size_t n,
-                      char* buffer, size_t* bytes_transferred) = 0;
-
-  // Validate the given file signature with the existing file signature in the
-  // cache. Returns true if the signature doesn't change or the file did not
-  // exist before. If the signature changes, update the existing signature with
-  // the new one and remove the file from cache.
-  virtual bool ValidateAndUpdateFileSignature(const string& filename,
-                                              int64 file_signature) = 0;
-
-  /// Remove all cached blocks for `filename`.
-  virtual void RemoveFile(const string& filename) = 0;
-
-  /// Remove all cached data.
-  virtual void Flush() = 0;
-
-  /// Accessors for cache parameters.
-  virtual size_t block_size() const = 0;
-  virtual size_t max_bytes() const = 0;
-  virtual uint64 max_staleness() const = 0;
-
-  /// The current size (in bytes) of the cache.
-  virtual size_t CacheSize() const = 0;
-
-  // Returns true if the cache is enabled. If false, the BlockFetcher callback
-  // is always executed during Read.
-  virtual bool IsCacheEnabled() const = 0;
-};
-
+// NOLINTBEGIN(misc-unused-using-decls)
+using tsl::FileBlockCache;
+using tsl::FileBlockCacheStatsInterface;
+// NOLINTEND(misc-unused-using-decls)
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_PLATFORM_CLOUD_FILE_BLOCK_CACHE_H_

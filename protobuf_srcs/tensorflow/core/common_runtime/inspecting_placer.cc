@@ -21,11 +21,13 @@ limitations under the License.
 #include "absl/strings/str_join.h"
 #include "tensorflow/core/common_runtime/colocation_graph.h"
 #include "tensorflow/core/common_runtime/device.h"
-#include "tensorflow/core/common_runtime/function.h"
+#include "tensorflow/core/common_runtime/function_body.h"
+#include "tensorflow/core/common_runtime/function_def_utils.h"
 #include "tensorflow/core/common_runtime/placer_inspection_required_ops_utils.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/graph/graph_node_util.h"
 #include "tensorflow/core/lib/core/errors.h"
 
 namespace tensorflow {
@@ -98,7 +100,7 @@ class ColocationGraphToIOColocationGroups {
       const Member& member = colocation_graph_->members()[it.first];
       TF_RETURN_IF_ERROR(member.FillPossibleDevices(&possible_devices));
     }
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -152,7 +154,7 @@ Status InspectingPlacer::ComputeIOColocationGroups(const Node& node,
   converter.AssignGroups(fbody->arg_nodes, &groups->input_groups);
   converter.AssignGroups(fbody->ret_nodes, &groups->output_groups);
   TF_RETURN_IF_ERROR(converter.FillGroups(&groups->group_devices));
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

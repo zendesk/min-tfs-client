@@ -13,8 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "include/pybind11/pybind11.h"
-#include "include/pybind11/pytypes.h"
+#include "pybind11/pybind11.h"  // from @pybind11
+#include "pybind11/pytypes.h"  // from @pybind11
+#include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/python/lib/core/pybind11_lib.h"
 #include "tensorflow/python/util/util.h"
 
@@ -27,9 +28,13 @@ PYBIND11_MODULE(_pywrap_utils, m) {
   )pbdoc";
   m.def("RegisterType",
         [](const py::handle& type_name, const py::handle& type) {
-          return tensorflow::pyo_or_throw(
+          return tensorflow::PyoOrThrow(
               tensorflow::swig::RegisterType(type_name.ptr(), type.ptr()));
         });
+  m.def("RegisterPyObject", [](const py::handle& name, const py::handle& type) {
+    return tensorflow::PyoOrThrow(
+        tensorflow::swig::RegisterPyObject(name.ptr(), type.ptr()));
+  });
   m.def(
       "IsTensor",
       [](const py::handle& o) {
@@ -43,25 +48,18 @@ PYBIND11_MODULE(_pywrap_utils, m) {
       Check if an object is a Tensor.
     )pbdoc");
   m.def(
-      "IsSequence",
+      "IsNested",
       [](const py::handle& o) {
-        bool result = tensorflow::swig::IsSequence(o.ptr());
+        bool result = tensorflow::swig::IsNested(o.ptr());
         return result;
       },
       R"pbdoc(
-      Returns true if its input is a collections.Sequence (except strings).
-
-      Args:
-        seq: an input sequence.
-
-      Returns:
-        True if the sequence is a not a string and is a collections.Sequence or a
-        dict.
+      Refer to `tf.nest.is_nested`.
     )pbdoc");
   m.def(
-      "IsSequenceOrComposite",
+      "IsNestedOrComposite",
       [](const py::handle& o) {
-        bool result = tensorflow::swig::IsSequenceOrComposite(o.ptr());
+        bool result = tensorflow::swig::IsNestedOrComposite(o.ptr());
         if (PyErr_Occurred()) {
           throw py::error_already_set();
         }
@@ -116,7 +114,7 @@ PYBIND11_MODULE(_pywrap_utils, m) {
   m.def(
       "IsNamedtuple",
       [](const py::handle& o, bool strict) {
-        return tensorflow::pyo_or_throw(
+        return tensorflow::PyoOrThrow(
             tensorflow::swig::IsNamedtuple(o.ptr(), strict));
       },
       R"pbdoc(
@@ -139,6 +137,24 @@ PYBIND11_MODULE(_pywrap_utils, m) {
 
       Returns:
         True if `instance` is a `collections.Mapping`.
+    )pbdoc");
+  m.def(
+      "IsMutableMapping",
+      [](const py::handle& o) {
+        bool result = tensorflow::swig::IsMutableMapping(o.ptr());
+        if (PyErr_Occurred()) {
+          throw py::error_already_set();
+        }
+        return result;
+      },
+      R"pbdoc(
+      Returns True if `instance` is a `collections.MutableMapping`.
+
+      Args:
+        instance: An instance of a Python object.
+
+      Returns:
+        True if `instance` is a `collections.MutableMapping`.
     )pbdoc");
   m.def(
       "IsMappingView",
@@ -179,7 +195,7 @@ PYBIND11_MODULE(_pywrap_utils, m) {
   m.def(
       "SameNamedtuples",
       [](const py::handle& o1, const py::handle& o2) {
-        return tensorflow::pyo_or_throw(
+        return tensorflow::PyoOrThrow(
             tensorflow::swig::SameNamedtuples(o1.ptr(), o2.ptr()));
       },
       R"pbdoc(
@@ -202,52 +218,25 @@ PYBIND11_MODULE(_pywrap_utils, m) {
   m.def(
       "Flatten",
       [](const py::handle& o, bool expand_composites) {
-        return tensorflow::pyo_or_throw(
+        return tensorflow::PyoOrThrow(
             tensorflow::swig::Flatten(o.ptr(), expand_composites));
       },
       R"pbdoc(
-      Returns a flat list from a given nested structure.
-
-      If `nest` is not a sequence, tuple, or dict, then returns a single-element
-      list: `[nest]`.
-
-      In the case of dict instances, the sequence consists of the values, sorted by
-      key to ensure deterministic behavior. This is true also for `OrderedDict`
-      instances: their sequence order is ignored, the sorting order of keys is
-      used instead. The same convention is followed in `pack_sequence_as`. This
-      correctly repacks dicts and `OrderedDict`s after they have been flattened,
-      and also allows flattening an `OrderedDict` and then repacking it back using
-      a corresponding plain dict, or vice-versa.
-      Dictionaries with non-sortable keys cannot be flattened.
-
-      Users must not modify any collections used in `nest` while this function is
-      running.
-
-      Args:
-        nest: an arbitrarily nested structure or a scalar object. Note, numpy
-            arrays are considered scalars.
-        expand_composites: If true, then composite tensors such as `tf.SparseTensor`
-            and `tf.RaggedTensor` are expanded into their component tensors.
-
-      Returns:
-        A Python list, the flattened version of the input.
-
-      Raises:
-        TypeError: The nest is or contains a dict with non-sortable keys.
+      Refer to `tf.nest.flatten`.
     )pbdoc");
   m.def(
-      "IsSequenceForData",
+      "IsNestedForData",
       [](const py::handle& o) {
-        bool result = tensorflow::swig::IsSequenceForData(o.ptr());
+        bool result = tensorflow::swig::IsNestedForData(o.ptr());
         if (PyErr_Occurred()) {
           throw py::error_already_set();
         }
         return result;
       },
       R"pbdoc(
-      Returns a true if `seq` is a Sequence or dict (except strings/lists).
+      Returns a true if `seq` is a nested structure for tf.data.
 
-      NOTE(mrry): This differs from `tensorflow.python.util.nest.is_sequence()`,
+      NOTE(mrry): This differs from `tensorflow.python.util.nest.is_nested()`,
       which *does* treat a Python list as a sequence. For ergonomic
       reasons, `tf.data` users would prefer to treat lists as
       implicit `tf.Tensor` objects, and dicts as (nested) sequences.
@@ -262,7 +251,7 @@ PYBIND11_MODULE(_pywrap_utils, m) {
   m.def(
       "FlattenForData",
       [](const py::handle& o) {
-        return tensorflow::pyo_or_throw(
+        return tensorflow::PyoOrThrow(
             tensorflow::swig::FlattenForData(o.ptr()));
       },
       R"pbdoc(
@@ -325,5 +314,24 @@ PYBIND11_MODULE(_pywrap_utils, m) {
 
       Returns:
         True if `instance` is a `Variable`.
+    )pbdoc");
+  m.def(
+      "IsBF16SupportedByOneDNNOnThisCPU",
+      []() {
+        bool result = tensorflow::port::TestCPUFeature(
+            tensorflow::port::CPUFeature::AVX512F);
+        if (PyErr_Occurred()) {
+          throw py::error_already_set();
+        }
+        return result;
+      },
+      R"pbdoc(
+      Returns 1 if CPU has avx512f feature.
+
+      Args:
+       None
+
+      Returns:
+        True if CPU has avx512f feature.
     )pbdoc");
 }

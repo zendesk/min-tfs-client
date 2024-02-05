@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_GPU_GL_CONVERTERS_BHWC_TO_PHWC4_H_
 #define TENSORFLOW_LITE_DELEGATES_GPU_GL_CONVERTERS_BHWC_TO_PHWC4_H_
 
+#include <utility>
+
 #include "tensorflow/lite/delegates/gpu/common/shape.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
@@ -32,11 +34,11 @@ class ConverterBhwcToPhwc4 {
   // Creates invalid object.
   ConverterBhwcToPhwc4() : program_(), workgroup_size_() {}
 
-  static Status Create(ConverterBhwcToPhwc4* converter);
+  static absl::Status Create(ConverterBhwcToPhwc4* converter);
 
-  Status Convert(const BHWC& shape, const GlBuffer& source,
-                 CommandQueue* command_queue /* optional */,
-                 GlBuffer* destination);
+  absl::Status Convert(const BHWC& shape, const GlBuffer& source,
+                       CommandQueue* command_queue /* optional */,
+                       GlBuffer* destination);
 
  private:
   explicit ConverterBhwcToPhwc4(GlProgram program, const uint3& workgroup_size)

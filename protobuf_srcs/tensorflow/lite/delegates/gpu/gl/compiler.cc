@@ -16,11 +16,15 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/gl/compiler.h"
 
 #include <algorithm>
+#include <any>
+#include <memory>
 #include <string>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/types/any.h"
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
@@ -36,49 +40,53 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/gl/compiler/shader_codegen.h"
 #include "tensorflow/lite/delegates/gpu/gl/float16_conversions.h"
 
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif  // __ANDROID__
+
 namespace tflite {
 namespace gpu {
 namespace gl {
 namespace {
 
 struct ExceedSizeChecker {
-  bool operator()(uint32_t v) const { return v > max_size; }
+  bool operator()(uint32_t v) const { return v > max_size.x; }
 
   bool operator()(const uint2& v) const {
-    return v.x > max_size || v.y > max_size;
+    return v.x > max_size.x || v.y > max_size.y;
   }
 
   bool operator()(const uint3& v) const {
-    return v.x > max_size || v.y > max_size || v.z > max_z_size;
+    return v.x > max_size.x || v.y > max_size.y || v.z > max_z_size;
   }
 
-  int max_size;
+  int2 max_size;
   int max_z_size;
 };
 
 // Returns true if any size variable exceeds the given limit
 bool ExceedsMaxSize(const Object& object, const GpuInfo& gpu_info) {
-  return absl::visit(ExceedSizeChecker{gpu_info.max_texture_size,
-                                       gpu_info.max_array_texture_layers},
-                     object.size);
+  ExceedSizeChecker size_checker;
+  size_checker.max_size =
+      int2(gpu_info.GetMaxImage2DWidth(), gpu_info.GetMaxImage2DHeight());
+  size_checker.max_z_size = gpu_info.GetMaxImage2DArrayLayers();
+  return std::visit(size_checker, object.size);
 }
 
 ObjectType ChooseFastestObjectType(const GpuInfo& gpu_info) {
-  return gpu_info.type == GpuType::ADRENO ? ObjectType::TEXTURE
-                                          : ObjectType::BUFFER;
+  return gpu_info.IsAdreno() ? ObjectType::TEXTURE : ObjectType::BUFFER;
 }
 
 ObjectType ChooseFastestRefObjectType(const GpuInfo& gpu_info,
                                       const CompilationOptions& options) {
-  if (gpu_info.type != GpuType::ADRENO) {
+  if (!gpu_info.IsAdreno()) {
     return ObjectType::BUFFER;
   }
-  switch (gpu_info.gpu_model) {
-    case GpuModel::ADRENO630:
-      return ObjectType::TEXTURE;
-    default:
-      return options.allow_precision_loss ? ObjectType::TEXTURE
-                                          : ObjectType::BUFFER;
+  if (gpu_info.adreno_info.adreno_gpu == AdrenoGpu::kAdreno630) {
+    return ObjectType::TEXTURE;
+  } else {
+    return options.allow_precision_loss ? ObjectType::TEXTURE
+                                        : ObjectType::BUFFER;
   }
 }
 
@@ -100,11 +108,21 @@ class CompilerImpl : public Compiler {
     if (options_.ref_obj_type == ObjectType::UNKNOWN) {
       options_.ref_obj_type = ChooseFastestRefObjectType(*gpu_info, options);
     }
+#ifdef __ANDROID__
+    // Circumvent FP16 bug with Adreno 660 on Android SDK 30.
+    if (gpu_info_.IsAdreno() &&
+        gpu_info_.adreno_info.adreno_gpu == AdrenoGpu::kAdreno660) {
+      char sdk_version[PROP_VALUE_MAX];
+      __system_property_get("ro.build.version.sdk", sdk_version);
+      if (!strcmp(sdk_version, "30")) options_.allow_precision_loss = false;
+    }
+#endif  // __ANDROID__
   }
 
-  Status Compile(const GraphFloat32& graph,
-                 const std::unordered_set<int>& tflite_graph_io,
-                 const ShaderCodeCallback& callback) final {
+  absl::Status Compile(
+      const GraphFloat32& graph,
+      const std::unordered_set<int>& tflite_graph_io,  // NOLINT
+      const ShaderCodeCallback& callback) final {
     // It is important to have ids in a compiled graph identical to the given
     // graph.
     RETURN_IF_ERROR(graph.MakeExactCopy(&compiled_graph_));
@@ -120,35 +138,45 @@ class CompilerImpl : public Compiler {
     for (auto node : compiled_graph_.nodes()) {
       CompiledNodeAttributes attr;
       attr.node_indices.push_back(node->id);
-      RETURN_IF_ERROR(node_shader_.GenerateCode(
-          {&compiled_graph_, &gpu_info_, node, options_}, &attr.code));
+      NodeShader::GenerationContext ctx = {&gpu_info_, options_,
+                                           node->operation.type,
+                                           node->operation.attributes};
+      for (const auto& tensor : graph.FindInputs(node->id)) {
+        const auto& shape = tensor->tensor.shape;
+        ctx.input_shapes.push_back({shape.b, shape.h, shape.w, shape.c});
+      }
+      for (const auto& tensor : graph.FindOutputs(node->id)) {
+        const auto& shape = tensor->tensor.shape;
+        ctx.output_shapes.push_back({shape.b, shape.h, shape.w, shape.c});
+      }
+      RETURN_IF_ERROR(node_shader_.GenerateCode(ctx, &attr.code));
       node->operation.attributes = std::move(attr);
     }
 
-    ModelTransformer transformer(&compiled_graph_, nullptr);
+    ModelTransformer transformer(&compiled_graph_);
     if (options_.fuse_operations) {
       FuseAutoOutputWithInline fuse_inline;
       if (!transformer.Apply("fuse_auto_with_inline", &fuse_inline)) {
-        return InternalError("fuse_auto_with_inline failed");
+        return absl::InternalError("fuse_auto_with_inline failed");
       }
       FuseInplaceUpdate fuse_inplace;
       if (!transformer.Apply("fuse_inplace_update", &fuse_inplace)) {
-        return InternalError("fuse_inplace failed");
+        return absl::InternalError("fuse_inplace failed");
       }
       if (options_.auto_input_fusion) {
         FuseAutoInput fuse_auto_input;
         if (!transformer.Apply("fuse_auto_input", &fuse_auto_input)) {
-          return InternalError("fuse_auto_input failed");
+          return absl::InternalError("fuse_auto_input failed");
         }
       }
     }
     RemoveUnusedInplaceUpdates remove_inplace_updates;
     if (!transformer.Apply("remove_inplace_updates", &remove_inplace_updates)) {
-      return InternalError("remove_inplace_updates failed");
+      return absl::InternalError("remove_inplace_updates failed");
     }
 
     // Prepare internal objects.
-    std::unordered_map<ValueId, Object> objects;
+    absl::flat_hash_map<ValueId, Object> objects;
     for (auto value : compiled_graph_.values()) {
       Object object = MakePHWC4Ref(value->id, value->tensor.shape);
       object.data_type = value->tensor.type;
@@ -168,7 +196,7 @@ class CompilerImpl : public Compiler {
     // Prepare readonly objects and check whether object types are supported.
     for (auto node : compiled_graph_.nodes()) {
       auto& attr =
-          absl::any_cast<CompiledNodeAttributes&>(node->operation.attributes);
+          std::any_cast<CompiledNodeAttributes&>(node->operation.attributes);
 
       // Set workload explicitly.
       if (attr.code.workload == uint3()) {
@@ -176,12 +204,11 @@ class CompilerImpl : public Compiler {
         auto shape = outputs[0]->tensor.shape;
         for (auto output : outputs) {
           if (shape != output->tensor.shape) {
-            return FailedPreconditionError(
+            return absl::FailedPreconditionError(
                 "Workload uint3() requires all output sizes to match");
           }
         }
-        attr.code.workload =
-            uint3(shape.w, shape.h, IntegralDivideRoundUp(shape.c, 4));
+        attr.code.workload = uint3(shape.w, shape.h, DivideRoundUp(shape.c, 4));
       }
 
       int num_textures = 0;
@@ -192,7 +219,7 @@ class CompilerImpl : public Compiler {
           return;
         }
         bool is_ref = IsRef(*object);
-        if (num_textures < gpu_info_.max_image_units &&
+        if (num_textures < gpu_info_.GetMaxImageArguments() &&
             !ExceedsMaxSize(*object, gpu_info_) &&
             (object->object_type == ObjectType::TEXTURE ||
              (is_ref && options_.ref_obj_type == ObjectType::TEXTURE) ||
@@ -224,7 +251,7 @@ class CompilerImpl : public Compiler {
     ShaderCodegen codegen(options_, gpu_info_);
     for (auto node : compiled_graph_.nodes()) {
       auto& attr =
-          absl::any_cast<CompiledNodeAttributes&>(node->operation.attributes);
+          std::any_cast<CompiledNodeAttributes&>(node->operation.attributes);
       if (attr.code.source_code.empty()) {
         // noop. Skip this node.
         continue;
@@ -242,8 +269,7 @@ class CompilerImpl : public Compiler {
         attr.outputs.push_back(object);
       }
 
-      // Allocate bindings. Textures must be bound first. max_image_units also
-      // defines max binding number for a texture.
+      // Allocate bindings. Textures must be bound first.
       uint32_t binding = 0;
       auto set_binding = [&](ObjectType type, Object& object) {
         if (object.object_type == type) {
@@ -274,7 +300,7 @@ class CompilerImpl : public Compiler {
       RETURN_IF_ERROR(codegen.Build(std::move(attr), &shader_code));
       RETURN_IF_ERROR(callback(std::move(shader_code)));
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -289,7 +315,7 @@ class CompilerImpl : public Compiler {
 std::unique_ptr<Compiler> NewCompiler(const NodeShader* node_shader,
                                       const GpuInfo* gpu_info,
                                       const CompilationOptions& options) {
-  return absl::make_unique<CompilerImpl>(node_shader, gpu_info, options);
+  return std::make_unique<CompilerImpl>(node_shader, gpu_info, options);
 }
 
 }  // namespace gl

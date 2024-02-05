@@ -15,17 +15,19 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/optimizers/data/meta_optimizer.h"
 
+#include <array>
+
+#include "absl/status/status.h"
 #include "absl/strings/str_split.h"
+#include "tensorflow/core/framework/dataset.h"
+#include "tensorflow/core/framework/function.h"
+#include "tensorflow/core/framework/metrics.h"
+#include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/grappler/clusters/cluster.h"
 #include "tensorflow/core/grappler/grappler_item.h"
-#include "tensorflow/core/grappler/optimizers/arithmetic_optimizer.h"
 #include "tensorflow/core/grappler/optimizers/custom_graph_optimizer_registry.h"
-#include "tensorflow/core/grappler/optimizers/dependency_optimizer.h"
-#include "tensorflow/core/grappler/optimizers/function_optimizer.h"
-#include "tensorflow/core/grappler/optimizers/model_pruner.h"
-#include "tensorflow/core/grappler/optimizers/shape_optimizer.h"
+#include "tensorflow/core/grappler/utils/functions.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -36,27 +38,28 @@ using ConfigMap =
     std::map<string, tensorflow::RewriterConfig_CustomGraphOptimizer>;
 
 // tf.data optimizations, in the order we want to perform them.
-constexpr std::array<const char*, 16> kTFDataOptimizations = {
-    "make_stateless",
+constexpr std::array<const char*, 21> kTFDataOptimizations = {
     "noop_elimination",
+    "disable_intra_op_parallelism",
+    "use_private_thread_pool",
     "shuffle_and_repeat_fusion",
     "map_fusion",
     "filter_fusion",
-    "filter_with_random_uniform_fusion",
     "map_and_filter_fusion",
-    "hoist_random_uniform",
     "map_parallelization",
     "map_and_batch_fusion",
-    "map_vectorization",
-    "latency_all_edges",
+    "batch_parallelization",
+    "filter_parallelization",
     "make_sloppy",
     "parallel_batch",
     "slack",
-    "inject_prefetch"};
-
-// Standard grappler optimizations, in the order we want to perform them.
-constexpr std::array<const char*, 5> kGrapplerOptimizations = {
-    "pruning", "function", "shape", "arithmetic", "dependency"};
+    "autotune_buffer_sizes",
+    "inject_prefetch",
+    "inject_io_prefetch_eligible",
+    "inject_io_prefetch",
+    "disable_prefetch_legacy_autotune",
+    "enable_gradient_descent",
+    "make_deterministic"};
 
 // Parses a list of string optimizer configurations into a map from
 // optimizer name -> rewriter config for that optimizer.
@@ -64,7 +67,7 @@ Status ToConfigMap(
     const tensorflow::RewriterConfig_CustomGraphOptimizer* config,
     ConfigMap* result) {
   auto found = gtl::FindOrNull(config->parameter_map(), "optimizer_configs");
-  if (!found) return Status::OK();
+  if (!found) return OkStatus();
 
   auto& options = found->list().s();
   for (const auto& option_string : options) {
@@ -92,7 +95,7 @@ Status ToConfigMap(
         config_value);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -104,18 +107,60 @@ Status TFDataMetaOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
 
   // Perform optimizations in a meaningful order.
   for (const auto& optimization : kTFDataOptimizations) {
-    TF_RETURN_IF_ERROR(
-        ApplyOptimization(optimization, cluster, &optimized_item));
-  }
-
-  for (const auto& optimization : kGrapplerOptimizations) {
-    TF_RETURN_IF_ERROR(
-        ApplyOptimization(optimization, cluster, &optimized_item));
+    tensorflow::metrics::ScopedCounter<2> timings(
+        tensorflow::metrics::GetGraphOptimizationCounter(),
+        {"TFData", optimization});
+    Status status = ApplyOptimization(optimization, cluster, &optimized_item);
+    timings.ReportAndStop();
+    if (!status.ok()) return status;
   }
 
   // Store the final result of all the optimizations in `output`.
   output->Swap(&optimized_item.graph);
-  return Status::OK();
+
+  // Optimize tf.data user-defined functions.
+  FunctionLibraryDefinition flib =
+      FunctionLibraryDefinition(OpRegistry::Global(), output->library())
+          .ReachableDefinitions(*output);
+  const auto producer = output->versions().producer();
+  bool optimized_functions = false;
+  for (const auto& name : flib.ListFunctionNames()) {
+    auto* func = flib.Find(name);
+    // Skip non tf.data functions.
+    if (!data::IsTFDataFunction(*func)) continue;
+    VLOG(3) << "Optimize function: function=" << func->signature().name();
+    optimized_functions = true;
+
+    // Make a GrapplerItem from a FunctionDef.
+    GrapplerFunctionItem func_item;
+    TF_RETURN_IF_ERROR(
+        MakeGrapplerFunctionItem(*func, flib, producer, &func_item));
+
+    GraphDef optimized_func_graph;
+    TF_RETURN_IF_ERROR(Optimize(cluster, func_item, &optimized_func_graph));
+
+    // Function body optimization might have created new functions. Add them to
+    // the library.
+    for (const FunctionDef& func_def :
+         optimized_func_graph.library().function()) {
+      if (flib.Find(func_def.signature().name()) == nullptr) {
+        TF_RETURN_IF_ERROR(flib.AddFunctionDef(func_def));
+      }
+    }
+
+    // Convert optimized graph back to FunctionDef.
+    FunctionDef optimized_func;
+    func_item.SwapFunctionBody(std::move(optimized_func_graph));
+    TF_RETURN_IF_ERROR(MakeFunctionDef(func_item, flib, &optimized_func));
+
+    // Replace optimized function with a new FunctionDef.
+    TF_RETURN_IF_ERROR(
+        flib.ReplaceFunction(func->signature().name(), optimized_func));
+  }
+  if (optimized_functions) {
+    *output->mutable_library() = flib.ToProto();
+  }
+  return OkStatus();
 }
 
 Status TFDataMetaOptimizer::ApplyOptimization(const string& name,
@@ -125,7 +170,7 @@ Status TFDataMetaOptimizer::ApplyOptimization(const string& name,
 
   const auto* optimizer = gtl::FindOrNull(enabled_optimizers_, name);
   if (!optimizer) {
-    return Status::OK();
+    return OkStatus();
   }
 
   GraphDef result;
@@ -134,11 +179,11 @@ Status TFDataMetaOptimizer::ApplyOptimization(const string& name,
   if (status.ok()) {
     // The optimizer succeeded and wrote the optimized graph to result.
     item->graph.Swap(&result);
-  } else if (errors::IsAborted(status)) {
+  } else if (absl::IsAborted(status)) {
     // A status of errors::Aborted just means that the optimizer was a no-op and
     // did not populate result. Swallow the error status and leave the original
     // graph in item.
-    status = Status::OK();
+    status = OkStatus();
   }
 
   return status;
@@ -146,7 +191,7 @@ Status TFDataMetaOptimizer::ApplyOptimization(const string& name,
 
 Status TFDataMetaOptimizer::Init(
     const tensorflow::RewriterConfig_CustomGraphOptimizer* config) {
-  if (!config) return Status::OK();
+  if (!config) return OkStatus();
 
   // Initialize custom tf.data optimizers based on config.
   auto& optimizers = config->parameter_map().at("optimizers").list().s();
@@ -162,28 +207,13 @@ Status TFDataMetaOptimizer::Init(
 
       enabled_optimizers_[optimizer_name] = std::move(optimizer);
     } else {
-      // This should never happen.
       return errors::Internal(
           "Tried to register a dataset optimizer that doesn't exist: ",
           optimizer_name);
     }
   }
 
-  // Initialize standard grappler optimizers.
-  enabled_optimizers_["pruning"] = MakeUnique<ModelPruner>();
-  enabled_optimizers_["function"] = MakeUnique<FunctionOptimizer>(
-      RewriterConfig::ON, /*lower_control_flow=*/true);
-  enabled_optimizers_["shape"] = MakeUnique<ShapeOptimizer>();
-  enabled_optimizers_["arithmetic"] = MakeUnique<ArithmeticOptimizer>();
-  enabled_optimizers_["dependency"] = MakeUnique<DependencyOptimizer>();
-
-  return Status::OK();
-}
-
-void TFDataMetaOptimizer::Feedback(Cluster* cluster, const GrapplerItem& item,
-                                   const GraphDef& optimize_output,
-                                   double result) {
-  // no-op
+  return OkStatus();
 }
 
 REGISTER_GRAPH_OPTIMIZER_AS(TFDataMetaOptimizer, "tf_data_meta_optimizer");

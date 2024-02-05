@@ -14,10 +14,6 @@
 # ==============================================================================
 """Test conversion of graphs involving INT32 tensors and operations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.compiler.tensorrt.test import tf_trt_integration_test_base as trt_test
@@ -46,16 +42,17 @@ class ExcludeUnsupportedInt32Test(trt_test.TfTrtIntegrationTestBase):
   def GetParams(self):
     return self.BuildParams(self.GraphFn, dtypes.int32, [[100, 4]], [[100, 10]])
 
-  def GetConversionParams(self, run_params):
-    """Return a ConversionParams for test."""
-    conversion_params = super(ExcludeUnsupportedInt32Test,
-                              self).GetConversionParams(run_params)
-    return conversion_params._replace(
-        max_batch_size=100,
-        maximum_cached_engines=1,
-        # Disable layout optimizer, since it will convert BiasAdd with NHWC
-        # format to NCHW format under four dimentional input.
-        rewriter_config_template=trt_test.OptimizerDisabledRewriterConfig())
+  def setUp(self):
+    super().setUp()
+    # Disable layout optimizer, since it will convert BiasAdd with NHWC
+    # format to NCHW format under four dimentional input.
+    self.DisableNonTrtOptimizers()
+
+  def GetMaxBatchSize(self, run_params):
+    """Returns the max_batch_size that the converter should use for tests."""
+    if run_params.dynamic_engine:
+      return None
+    return 100
 
   def ExpectedEnginesToBuild(self, run_params):
     """Return the expected engines to build."""
@@ -78,10 +75,11 @@ class CalibrationInt32Support(trt_test.TfTrtIntegrationTestBase):
     # Although test passes with all configurations but only
     # execute INT8 with use_calibration=True because
     # that is the purpose of the test.
-    return trt_test.IsQuantizationWithCalibration(run_params)
+    return trt_test.IsQuantizationWithCalibration(
+        run_params), 'test calibration and INT8'
 
   def ExpectedEnginesToBuild(self, run_params):
-    return ['TRTEngineOp_0']
+    return ['TRTEngineOp_000']
 
 
 if __name__ == '__main__':

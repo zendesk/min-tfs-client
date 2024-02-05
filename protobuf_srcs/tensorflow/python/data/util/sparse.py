@@ -12,15 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Python dataset sparse tensor utility functitons."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+"""Python dataset sparse tensor utility functions."""
 from tensorflow.python.data.util import nest
 from tensorflow.python.framework import dtypes
-from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import sparse_ops
 
@@ -47,7 +43,7 @@ def as_dense_shapes(shapes, classes):
   Returns:
     a structure matching the nested structure of `shapes`, containing
     `tensor_shape.unknown_shape()` at positions where `classes` contains
-    `tf.SparseTensor` and matching contents of `shapes` otherwise
+    `tf.sparse.SparseTensor` and matching contents of `shapes` otherwise
   """
   ret = nest.pack_sequence_as(shapes, [
       tensor_shape.unknown_shape() if c is sparse_tensor.SparseTensor else shape
@@ -65,8 +61,8 @@ def as_dense_types(types, classes):
 
   Returns:
     a structure matching the nested structure of `types`, containing
-    `dtypes.variant` at positions where `classes` contains `tf.SparseTensor` and
-    matching contents of `types` otherwise
+    `dtypes.variant` at positions where `classes` contains
+    `tf.sparse.SparseTensor` and matching contents of `types` otherwise
   """
   ret = nest.pack_sequence_as(types, [
       dtypes.variant if c is sparse_tensor.SparseTensor else ty
@@ -106,12 +102,12 @@ def get_classes(tensors):
 
   Returns:
     a structure matching the nested structure of `tensors`, containing
-    `tf.SparseTensor` at positions where `tensors` contains a sparse tensor and
-    `tf.Tensor` otherwise
+    `tf.sparse.SparseTensor` at positions where `tensors` contains a sparse
+    tensor and `tf.Tensor` otherwise.
   """
   return nest.pack_sequence_as(tensors, [
       sparse_tensor.SparseTensor
-      if isinstance(tensor, sparse_tensor.SparseTensor) else ops.Tensor
+      if isinstance(tensor, sparse_tensor.SparseTensor) else tensor_lib.Tensor
       for tensor in nest.flatten(tensors)
   ])
 

@@ -17,9 +17,8 @@ limitations under the License.
 
 #define EIGEN_USE_GPU
 
-#include "tensorflow/core/kernels/reverse_op.h"
-
 #include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/kernels/reverse_op.h"
 
 namespace tensorflow {
 
@@ -40,12 +39,7 @@ typedef Eigen::GpuDevice GPUDevice;
 
 TF_CALL_uint8(DEFINE_REVERSE_ALL_DIMS);
 TF_CALL_int8(DEFINE_REVERSE_ALL_DIMS);
-TF_CALL_bool(DEFINE_REVERSE_ALL_DIMS);
-TF_CALL_half(DEFINE_REVERSE_ALL_DIMS);
-TF_CALL_float(DEFINE_REVERSE_ALL_DIMS);
-TF_CALL_double(DEFINE_REVERSE_ALL_DIMS);
-TF_CALL_complex64(DEFINE_REVERSE_ALL_DIMS);
-TF_CALL_complex128(DEFINE_REVERSE_ALL_DIMS);
+TF_CALL_GPU_ALL_TYPES(DEFINE_REVERSE_ALL_DIMS);
 #undef DEFINE_REVERSE
 #undef DEFINE_REVERSE_ALL_DIMS
 

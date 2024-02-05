@@ -13,12 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/lite/examples/label_image/label_image.h"
+
+#include <string>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-
 #include "tensorflow/lite/examples/label_image/bitmap_helpers.h"
 #include "tensorflow/lite/examples/label_image/get_top_n.h"
-#include "tensorflow/lite/examples/label_image/label_image.h"
 
 namespace tflite {
 namespace label_image {
@@ -29,6 +31,7 @@ TEST(LabelImageTest, GraceHopper) {
       "grace_hopper.bmp";
   int height, width, channels;
   Settings s;
+  s.input_type = kTfLiteUInt8;
   std::vector<uint8_t> input =
       read_bmp(lena_file, &width, &height, &channels, &s);
   ASSERT_EQ(height, 606);
@@ -45,15 +48,10 @@ TEST(LabelImageTest, GetTopN) {
   uint8_t in[] = {1, 1, 2, 2, 4, 4, 16, 32, 128, 64};
 
   std::vector<std::pair<float, int>> top_results;
-  get_top_n<uint8_t>(in, 10, 5, 0.025, &top_results, false);
+  get_top_n<uint8_t>(in, 10, 5, 0.025, &top_results, kTfLiteUInt8);
   ASSERT_EQ(top_results.size(), 4);
   ASSERT_EQ(top_results[0].second, 8);
 }
 
 }  // namespace label_image
 }  // namespace tflite
-
-int main(int argc, char **argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

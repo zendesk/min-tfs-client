@@ -5,6 +5,8 @@ package tensorflow.tfprof;
 import "tensorflow/core/framework/attr_value.proto";
 import "tensorflow/core/framework/step_stats.proto";
 
+option go_package = "github.com/tensorflow/tensorflow/tensorflow/go/core/profiler/protos_all_go_proto";
+
 // It specifies the Python callstack that creates an op.
 message CodeDef {
   repeated Trace traces = 1;

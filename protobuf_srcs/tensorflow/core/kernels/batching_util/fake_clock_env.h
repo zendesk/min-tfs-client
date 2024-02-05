@@ -53,20 +53,21 @@ class FakeClockEnv : public EnvWrapper {
 
   // Methods that this class implements.
   uint64 NowMicros() const override;
-  void SleepForMicroseconds(int64 micros) override;
+  void SleepForMicroseconds(int64_t micros) override;
 
  private:
   mutable mutex mu_;
 
-  uint64 current_time_ GUARDED_BY(mu_) = 0;
+  uint64 current_time_ TF_GUARDED_BY(mu_) = 0;
 
   struct SleepingThread {
     uint64 wake_time;
     Notification* wake_notification;
   };
-  std::vector<SleepingThread> sleeping_threads_ GUARDED_BY(mu_);
+  std::vector<SleepingThread> sleeping_threads_ TF_GUARDED_BY(mu_);
 
-  TF_DISALLOW_COPY_AND_ASSIGN(FakeClockEnv);
+  FakeClockEnv(const FakeClockEnv&) = delete;
+  void operator=(const FakeClockEnv&) = delete;
 };
 
 }  // namespace test_util

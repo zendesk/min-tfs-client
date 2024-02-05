@@ -20,28 +20,15 @@ limitations under the License.
 
 #define EIGEN_USE_GPU
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-#if GOOGLE_CUDA
-#include "third_party/cub/device/device_reduce.cuh"
-#include "third_party/cub/device/device_select.cuh"
-#include "third_party/cub/iterator/counting_input_iterator.cuh"
-#include "third_party/cub/iterator/transform_input_iterator.cuh"
-#elif TENSORFLOW_USE_ROCM
-#include "rocm/include/hipcub/hipcub.hpp"
-#endif
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor_types.h"
+#include "tensorflow/core/kernels/gpu_prim.h"
 #include "tensorflow/core/kernels/where_op.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/gpu_kernel_helper.h"
-
-#if GOOGLE_CUDA
-namespace gpuprim = ::cub;
-#elif TENSORFLOW_USE_ROCM
-namespace gpuprim = ::hipcub;
-#endif
 
 namespace tensorflow {
 
@@ -149,7 +136,7 @@ struct NumTrue<GPUDevice, T, TIndex> {
   EIGEN_ALWAYS_INLINE static Status Compute(
       OpKernelContext* ctx, const GPUDevice& d,
       typename TTypes<T>::ConstFlat input,
-      typename TTypes<TIndex>::Scalar num_true) {
+      typename TTypes<TIndex>::UnalignedScalar num_true) {
     const auto& cu_stream = GetGpuStream(ctx);
 
     std::size_t temp_storage_bytes = 0;
@@ -174,7 +161,7 @@ struct NumTrue<GPUDevice, T, TIndex> {
 
     Tensor temp_storage;
     TF_RETURN_IF_ERROR(ctx->allocate_temp(
-        DT_INT8, TensorShape({static_cast<int64>(temp_storage_bytes)}),
+        DT_INT8, TensorShape({static_cast<int64_t>(temp_storage_bytes)}),
         &temp_storage));
 
     auto second_success = reducer(
@@ -191,7 +178,7 @@ struct NumTrue<GPUDevice, T, TIndex> {
           temp_storage_bytes, ", status: ", GpuGetErrorString(second_success));
     }
 
-    return Status::OK();
+    return OkStatus();
   }
 };
 
@@ -271,10 +258,10 @@ struct Where<GPUDevice, NDIM, T, TIndex> {
   EIGEN_ALWAYS_INLINE static Status Compute(
       OpKernelContext* ctx, const GPUDevice& d,
       typename TTypes<T, NDIM>::ConstTensor input,
-      typename TTypes<int64>::Matrix output, TIndex* found_true_host) {
+      typename TTypes<int64_t>::Matrix output, TIndex* found_true_host) {
     if (output.dimension(0) == 0) {
       // Nothing to do.
-      return Status::OK();
+      return OkStatus();
     }
 
     const auto& cu_stream = GetGpuStream(ctx);
@@ -311,7 +298,7 @@ struct Where<GPUDevice, NDIM, T, TIndex> {
 
     Tensor temp_storage;
     TF_RETURN_IF_ERROR(ctx->allocate_temp(
-        DT_INT8, TensorShape({static_cast<int64>(temp_storage_bytes)}),
+        DT_INT8, TensorShape({static_cast<int64_t>(temp_storage_bytes)}),
         &temp_storage));
 
     auto second_success = counter(
@@ -341,7 +328,7 @@ struct Where<GPUDevice, NDIM, T, TIndex> {
                                 d.stream(), output_rows, strides,
                                 output.data()));
 
-    return Status::OK();
+    return OkStatus();
   }
 };
 

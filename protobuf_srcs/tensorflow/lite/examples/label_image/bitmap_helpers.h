@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_EXAMPLES_LABEL_IMAGE_BITMAP_HELPERS_H_
 #define TENSORFLOW_LITE_EXAMPLES_LABEL_IMAGE_BITMAP_HELPERS_H_
 
+#include <string>
+
 #include "tensorflow/lite/examples/label_image/bitmap_helpers_impl.h"
 #include "tensorflow/lite/examples/label_image/label_image.h"
 
@@ -31,10 +33,12 @@ void resize(T* out, uint8_t* in, int image_height, int image_width,
             int wanted_channels, Settings* s);
 
 // explicit instantiation
-template void resize<uint8_t>(uint8_t*, unsigned char*, int, int, int, int, int,
-                              int, Settings*);
 template void resize<float>(float*, unsigned char*, int, int, int, int, int,
                             int, Settings*);
+template void resize<int8_t>(int8_t*, unsigned char*, int, int, int, int, int,
+                             int, Settings*);
+template void resize<uint8_t>(uint8_t*, unsigned char*, int, int, int, int, int,
+                              int, Settings*);
 
 }  // namespace label_image
 }  // namespace tflite

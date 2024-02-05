@@ -33,6 +33,7 @@ limitations under the License.
 
 namespace tensorflow {
 namespace grappler {
+namespace {
 
 bool IsTrivialIdentity(const NodeDef& node, const GraphView& graph_view) {
   for (const auto input :
@@ -103,7 +104,9 @@ bool IsOutputPortRefValue(const NodeDef& node, int port_id,
 bool CanRemoveNode(const NodeDef& node, const GraphView& graph_view,
                    const absl::flat_hash_set<string>& function_names,
                    const OpRegistryInterface& op_registry) {
-  if (IsNoOp(node) && node.input().empty()) {
+  if (IsNoOp(node) &&
+      (node.input().empty() ||
+       graph_view.NumFanouts(node, /*include_controlled_nodes=*/true) == 0)) {
     return true;
   }
   if (IsConstant(node) && node.input().empty() &&
@@ -207,12 +210,12 @@ absl::flat_hash_map<string, absl::flat_hash_set<int>> IdentityNTerminalPorts(
   // get pruned later on.
   absl::flat_hash_set<string> visited(terminal_nodes.begin(),
                                       terminal_nodes.end());
-  for (string terminal_node : terminal_nodes) {
+  for (const string& terminal_node : terminal_nodes) {
     NodeDef* node = node_map.GetNode(terminal_node);
     if (node == nullptr) {
       continue;
     }
-    for (string input : node->input()) {
+    for (const string& input : node->input()) {
       to_visit.push_back(input);
     }
   }
@@ -299,7 +302,7 @@ Status RewriteIdentityNAndInputsOutputs(
   // Rewrite IdentityN node and associated inputs and outputs. For inputs and
   // outputs that don't lead to a terminal node, a new Identity node is created
   // and those inputs and outputs are rewritten to use the new Identity node as
-  // their outputs and inputs respectively. For the remaining nodes, the ouputs
+  // their outputs and inputs respectively. For the remaining nodes, the outputs
   // have their inputs updated with the adjusted port, from the IdentityN node
   // having less inputs.
   struct NodeOutputUpdate {
@@ -353,7 +356,7 @@ Status RewriteIdentityNAndInputsOutputs(
     }
   }
 
-  for (NodeOutputUpdate update : updates) {
+  for (const NodeOutputUpdate& update : updates) {
     node_map->AddOutput(update.input, update.output);
   }
 
@@ -378,7 +381,7 @@ Status RewriteIdentityNAndInputsOutputs(
   }
   mutable_inputs->DeleteSubrange(curr_pos, num_inputs - curr_pos);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status SplitIdentityNInputs(GraphDef* graph,
@@ -398,9 +401,10 @@ Status SplitIdentityNInputs(GraphDef* graph,
     }
 
     const int num_non_control_inputs = NumNonControlInputs(*node);
+    const int terminal_second_size = terminal.second.size();
     if (node->attr().count("T") == 0 ||
         node->attr().at("T").list().type_size() != num_non_control_inputs ||
-        terminal.second.size() >= num_non_control_inputs) {
+        terminal_second_size >= num_non_control_inputs) {
       continue;
     }
 
@@ -409,8 +413,10 @@ Status SplitIdentityNInputs(GraphDef* graph,
     *updated_graph = true;
   }
 
-  return Status::OK();
+  return OkStatus();
 }
+
+}  // namespace
 
 Status ModelPruner::Optimize(Cluster* cluster, const GrapplerItem& item,
                              GraphDef* optimized_graph) {
@@ -453,13 +459,18 @@ Status ModelPruner::Optimize(Cluster* cluster, const GrapplerItem& item,
 
   // Check if we can further prune the graph, by removing the trivial ops.
   absl::flat_hash_set<const NodeDef*> nodes_to_delete;
-  for (const auto& node : pruned_graph->node()) {
-    if (!IsTrivialOp(node, graph_view)) {
+  for (int i = 0; i < pruned_graph->node_size(); ++i) {
+    NodeDef* node = pruned_graph->mutable_node(i);
+    // Remove redundant control inputs, since they may prevent pruning below.
+    DedupControlInputs(node);
+
+    if (!IsTrivialOp(*node, graph_view)) {
+      VLOG(3) << node->name() << " is not trivial.";
       continue;
     }
 
     // Don't remove nodes that must be preserved.
-    if (nodes_to_preserve.find(node.name()) != nodes_to_preserve.end()) {
+    if (nodes_to_preserve.find(node->name()) != nodes_to_preserve.end()) {
       continue;
     }
 
@@ -477,8 +488,10 @@ Status ModelPruner::Optimize(Cluster* cluster, const GrapplerItem& item,
     //   converting references to non-references. It is important to preserve
     //   these non-references since the partitioner will avoid sending
     //   non-references across partitions more than once.
-    if (CanRemoveNode(node, graph_view, function_names, *op_registry)) {
-      nodes_to_delete.insert(&node);
+    if (CanRemoveNode(*node, graph_view, function_names, *op_registry)) {
+      nodes_to_delete.insert(node);
+    } else {
+      VLOG(3) << node->name() << " cannot be removed";
     }
   }
 
@@ -491,7 +504,7 @@ Status ModelPruner::Optimize(Cluster* cluster, const GrapplerItem& item,
   *optimized_graph->mutable_versions() = item.graph.versions();
   if (nodes_to_delete.empty()) {
     optimized_graph->mutable_node()->Swap(pruned_graph->mutable_node());
-    return Status::OK();
+    return OkStatus();
   }
 
   const bool fetches_are_known = !item.fetch.empty();
@@ -513,12 +526,7 @@ Status ModelPruner::Optimize(Cluster* cluster, const GrapplerItem& item,
   if (optimized_graph->node_size() > item.graph.node_size()) {
     return errors::Internal("Pruning increased graph size.");
   }
-  return Status::OK();
-}
-
-void ModelPruner::Feedback(Cluster* cluster, const GrapplerItem& item,
-                           const GraphDef& optimized_graph, double result) {
-  // Nothing to do for ModelPruner.
+  return OkStatus();
 }
 
 }  // end namespace grappler

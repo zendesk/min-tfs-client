@@ -12,15 +12,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include <string.h>
 
+#include <cstdint>
+#include <cstring>
 #include <memory>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/array.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
-#include "tensorflow/lite/kernels/op_macros.h"
 
 namespace tflite {
 namespace ops {
@@ -31,35 +32,60 @@ constexpr int kInputTensor = 0;
 constexpr int kShapeTensor = 1;
 constexpr int kOutputTensor = 0;
 
+struct OpData {
+  // Store the output pointer here if the output was written during 'Prepare'.
+  // This is to prevent incorrect results when mischievous users overwrite
+  // output pointers with their own.
+  const void* output_ptr;
+};
+
 TfLiteIntArray* GetOutputShape(TfLiteContext*, TfLiteNode*);
 
 TfLiteStatus ResizeOutput(TfLiteContext* context, TfLiteNode* node) {
   TfLiteIntArray* output_shape = GetOutputShape(context, node);
-  std::unique_ptr<TfLiteIntArray, void (*)(TfLiteIntArray*)>
-      scoped_output_shape(output_shape, TfLiteIntArrayFree);
+  IntArrayUniquePtr scoped_output_shape(output_shape);
 
-  const TfLiteTensor* input = GetInput(context, node, kInputTensor);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kInputTensor, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
 
   // Tensorflow's Reshape allows one of the shape components to have the
   // special -1 value, meaning it will be calculated automatically based on the
   // input. Here we calculate what that dimension should be so that the number
-  // of output elements in the same as the number of input elements.
-  int num_input_elements = NumElements(input);
+  // of output elements is the same as the number of input elements.
+  int64_t non_zero_num_input_elements = 1, num_input_elements = 1;
+  const RuntimeShape& input_shape = GetTensorShape(input);
+  for (int i = 0; i < input_shape.DimensionsCount(); ++i) {
+    const int value = input_shape.Dims(i);
+    num_input_elements *= value;
+    if (value != 0) {
+      non_zero_num_input_elements *= value;
+    }
+  }
 
-  int num_output_elements = 1;
+  int64_t non_zero_num_output_elements = 1, num_output_elements = 1;
   int stretch_dim = -1;
   for (int i = 0; i < output_shape->size; ++i) {
-    int value = output_shape->data[i];
+    const int value = output_shape->data[i];
     if (value == -1) {
       TF_LITE_ENSURE_EQ(context, stretch_dim, -1);
       stretch_dim = i;
-    } else {
-      num_output_elements *= value;
+      continue;
+    } else if (value != 0) {
+      non_zero_num_output_elements *= value;
     }
+    num_output_elements *= value;
   }
+
   if (stretch_dim != -1) {
-    output_shape->data[stretch_dim] = num_input_elements / num_output_elements;
+    if (num_input_elements == 0 && num_output_elements != 0) {
+      output_shape->data[stretch_dim] = 0;
+    } else {
+      output_shape->data[stretch_dim] =
+          non_zero_num_input_elements / non_zero_num_output_elements;
+    }
     num_output_elements *= output_shape->data[stretch_dim];
   }
 
@@ -70,6 +96,7 @@ TfLiteStatus ResizeOutput(TfLiteContext* context, TfLiteNode* node) {
 inline TfLiteIntArray* GetOutputShapeFromTensor(TfLiteContext* context,
                                                 TfLiteNode* node) {
   const TfLiteTensor* shape = GetInput(context, node, kShapeTensor);
+  if (shape == nullptr) return nullptr;
 
   TfLiteIntArray* output_shape = TfLiteIntArrayCreate(shape->dims->data[0]);
   for (int i = 0; i < output_shape->size; ++i) {
@@ -103,7 +130,8 @@ inline TfLiteIntArray* GetOutputShapeFromParam(TfLiteContext* context,
 // Check if the shape tensor is valid. Shapes should be int32 vectors.
 inline bool ShapeIsVector(TfLiteContext* context, TfLiteNode* node) {
   const TfLiteTensor* shape = GetInput(context, node, kShapeTensor);
-  return (shape->dims->size == 1 && shape->type == kTfLiteInt32);
+  return (shape != nullptr && shape->dims->size == 1 &&
+          shape->type == kTfLiteInt32);
 }
 
 TfLiteIntArray* GetOutputShape(TfLiteContext* context, TfLiteNode* node) {
@@ -117,16 +145,29 @@ TfLiteIntArray* GetOutputShape(TfLiteContext* context, TfLiteNode* node) {
 TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE(context, NumInputs(node) == 1 || NumInputs(node) == 2);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+  OpData* op_data = reinterpret_cast<OpData*>(node->user_data);
+  op_data->output_ptr = nullptr;
 
   // Always postpone sizing string tensors, even if we could in principle
   // calculate their shapes now. String tensors don't benefit from having their
   // shapes precalculated because the actual memory can only be allocated after
   // we know all the content.
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
   if (output->type != kTfLiteString) {
-    if (NumInputs(node) == 1 ||
-        IsConstantTensor(GetInput(context, node, kShapeTensor))) {
-      TF_LITE_ENSURE_OK(context, ResizeOutput(context, node));
+    const TfLiteTensor* input = GetInput(context, node, kInputTensor);
+    const TfLiteTensor* shape = GetInput(context, node, kShapeTensor);
+    if (NumInputs(node) == 1 || IsConstantOrPersistentTensor(shape)) {
+      if (IsConstantOrPersistentTensor(input)) {
+        SetTensorToPersistentRo(output);
+        TF_LITE_ENSURE_OK(context, ResizeOutput(context, node));
+        op_data->output_ptr = output->data.data;
+        memcpy(output->data.data, input->data.data, input->bytes);
+        return kTfLiteOk;
+      } else {
+        TF_LITE_ENSURE_OK(context, ResizeOutput(context, node));
+      }
     } else {
       SetTensorToDynamic(output);
     }
@@ -135,8 +176,12 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
 }
 
 TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* input = GetInput(context, node, kInputTensor);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  OpData* op_data = reinterpret_cast<OpData*>(node->user_data);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kInputTensor, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
 
   // There are two ways in which the 'output' can be made dynamic: it could be
   // a string tensor, or its shape cannot be calculated during Prepare(). In
@@ -157,16 +202,40 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
     output->bytes = bytes_required;
   }
 
-  memcpy(output->data.raw, input->data.raw, input->bytes);
+  if (op_data->output_ptr == output->data.data) {
+    return kTfLiteOk;
+  }
+  // Only copy data if input and output do not share a buffer.
+  if (output->data.data != input->data.data) {
+    memcpy(output->data.data, input->data.data, input->bytes);
+  }
 
   return kTfLiteOk;
+}
+
+void* Init(TfLiteContext* context, const char* buffer, size_t length) {
+  return new OpData;
+}
+
+void Free(TfLiteContext* context, void* buffer) {
+  delete reinterpret_cast<OpData*>(buffer);
 }
 
 }  // namespace reshape
 
 TfLiteRegistration* Register_RESHAPE() {
-  static TfLiteRegistration r = {nullptr, nullptr, reshape::Prepare,
-                                 reshape::Eval};
+  static TfLiteRegistration r = {
+      reshape::Init,
+      reshape::Free,
+      reshape::Prepare,
+      reshape::Eval,
+      /*profiling_string=*/nullptr,
+      /*builtin_code=*/0,
+      /*custom_name=*/nullptr,
+      /*version=*/0,
+      /*registration_external=*/nullptr,
+      /*async_kernel=*/nullptr,
+      kTfLiteInplaceOpInput0Shared | kTfLiteInplaceOpDataUnmodified};
   return &r;
 }
 

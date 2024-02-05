@@ -43,12 +43,12 @@ void SetDataTypeForAllOutputs(Model* model, Operator* op,
   for (const auto& input : op->inputs) {
     if (!model->IsOptionalArray(input) &&
         model->GetArray(input).data_type == ArrayDataType::kNone) {
-      return ::tensorflow::Status::OK();
+      return ::tensorflow::OkStatus();
     }
   }
   // Record data types of output before processing, so we can see at the
   // end if we changed anything, and return the correct boolean value.
-  std::unordered_map<string, ArrayDataType> old_output_data_types;
+  std::unordered_map<std::string, ArrayDataType> old_output_data_types;
   for (const auto& output : op->outputs) {
     old_output_data_types[output] = model->GetArray(output).data_type;
   }
@@ -146,7 +146,7 @@ void SetDataTypeForAllOutputs(Model* model, Operator* op,
       auto* rand_op = static_cast<RandomUniformOperator*>(op);
       // The output type of RandomUniform is specified with an attribute
       if (rand_op->dtype == ArrayDataType::kNone) {
-        return ::tensorflow::Status::OK();
+        return ::tensorflow::OkStatus();
       }
       CHECK_EQ(op->outputs.size(), 1);
       SetDataTypeForAllOutputs(model, op, rand_op->dtype);
@@ -168,10 +168,10 @@ void SetDataTypeForAllOutputs(Model* model, Operator* op,
       // This can make unsupported_op->output_data_types have more elements than
       // op->outputs.
       if (unsupported_op->output_data_types.size() < op->outputs.size()) {
-        return ::tensorflow::Status::OK();
+        return ::tensorflow::OkStatus();
       }
-      for (int i = 0; i < op->outputs.size(); ++i) {
-        const string& output = op->outputs[i];
+      for (size_t i = 0; i < op->outputs.size(); ++i) {
+        const std::string& output = op->outputs[i];
         const ArrayDataType data_type = unsupported_op->output_data_types[i];
         model->GetArray(output).data_type = data_type;
       }
@@ -179,7 +179,7 @@ void SetDataTypeForAllOutputs(Model* model, Operator* op,
     }
     case OperatorType::kExpandDims: {
       // Yield on ExpandDim until it is converted to Reshape
-      return ::tensorflow::Status::OK();
+      return ::tensorflow::OkStatus();
     }
     case OperatorType::kSelect: {
       // Select produces outputs with the same type as their 2nd input
@@ -253,13 +253,13 @@ void SetDataTypeForAllOutputs(Model* model, Operator* op,
     }
     case OperatorType::kUnidirectionalSequenceLstm: {
       const ArrayDataType data_type = model->GetArray(op->inputs[0]).data_type;
-      if (data_type != ArrayDataType::kFloat) return ::tensorflow::Status::OK();
+      if (data_type != ArrayDataType::kFloat) return ::tensorflow::OkStatus();
       SetDataTypeForAllOutputs(model, op, data_type);
       break;
     }
     case OperatorType::kUnidirectionalSequenceRnn: {
       const ArrayDataType data_type = model->GetArray(op->inputs[0]).data_type;
-      if (data_type != ArrayDataType::kFloat) return ::tensorflow::Status::OK();
+      if (data_type != ArrayDataType::kFloat) return ::tensorflow::OkStatus();
       SetDataTypeForAllOutputs(model, op, data_type);
       break;
     }
@@ -273,13 +273,13 @@ void SetDataTypeForAllOutputs(Model* model, Operator* op,
     }
     case OperatorType::kBidirectionalSequenceLstm: {
       const ArrayDataType data_type = model->GetArray(op->inputs[0]).data_type;
-      if (data_type != ArrayDataType::kFloat) return ::tensorflow::Status::OK();
+      if (data_type != ArrayDataType::kFloat) return ::tensorflow::OkStatus();
       SetDataTypeForAllOutputs(model, op, data_type);
       break;
     }
     case OperatorType::kBidirectionalSequenceRnn: {
       const ArrayDataType data_type = model->GetArray(op->inputs[0]).data_type;
-      if (data_type != ArrayDataType::kFloat) return ::tensorflow::Status::OK();
+      if (data_type != ArrayDataType::kFloat) return ::tensorflow::OkStatus();
       SetDataTypeForAllOutputs(model, op, data_type);
       break;
     }
@@ -318,10 +318,10 @@ void SetDataTypeForAllOutputs(Model* model, Operator* op,
   for (const auto& output : op->outputs) {
     if (old_output_data_types[output] != model->GetArray(output).data_type) {
       *modified = true;
-      return ::tensorflow::Status::OK();
+      return ::tensorflow::OkStatus();
     }
   }
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

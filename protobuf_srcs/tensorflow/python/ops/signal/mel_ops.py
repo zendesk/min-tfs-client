@@ -14,16 +14,14 @@
 # ==============================================================================
 """mel conversion ops."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops.signal import shape_ops
+from tensorflow.python.util import dispatch
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -78,7 +76,7 @@ def _validate_arguments(num_mel_bins, sample_rate,
   if lower_edge_hertz >= upper_edge_hertz:
     raise ValueError('lower_edge_hertz %.1f >= upper_edge_hertz %.1f' %
                      (lower_edge_hertz, upper_edge_hertz))
-  if not isinstance(sample_rate, ops.Tensor):
+  if not isinstance(sample_rate, tensor.Tensor):
     if sample_rate <= 0.0:
       raise ValueError('sample_rate must be positive. Got: %s' % sample_rate)
     if upper_edge_hertz > sample_rate / 2:
@@ -90,6 +88,7 @@ def _validate_arguments(num_mel_bins, sample_rate,
 
 
 @tf_export('signal.linear_to_mel_weight_matrix')
+@dispatch.add_dispatch_support
 def linear_to_mel_weight_matrix(num_mel_bins=20,
                                 num_spectrogram_bins=129,
                                 sample_rate=8000,
@@ -97,12 +96,21 @@ def linear_to_mel_weight_matrix(num_mel_bins=20,
                                 upper_edge_hertz=3800.0,
                                 dtype=dtypes.float32,
                                 name=None):
-  """Returns a matrix to warp linear scale spectrograms to the [mel scale][mel].
+  r"""Returns a matrix to warp linear scale spectrograms to the [mel scale][mel].
 
   Returns a weight matrix that can be used to re-weight a `Tensor` containing
   `num_spectrogram_bins` linearly sampled frequency information from
   `[0, sample_rate / 2]` into `num_mel_bins` frequency information from
   `[lower_edge_hertz, upper_edge_hertz]` on the [mel scale][mel].
+
+  This function follows the [Hidden Markov Model Toolkit
+  (HTK)](http://htk.eng.cam.ac.uk/) convention, defining the mel scale in
+  terms of a frequency in hertz according to the following formula:
+
+      $$\textrm{mel}(f) = 2595 * \textrm{log}_{10}(1 + \frac{f}{700})$$
+
+  In the returned matrix, all the triangles (filterbanks) have a peak value
+  of 1.0.
 
   For example, the returned matrix `A` can be used to right-multiply a
   spectrogram `S` of shape `[frames, num_spectrogram_bins]` of linear
@@ -119,8 +127,6 @@ def linear_to_mel_weight_matrix(num_mel_bins=20,
       # S has shape [..., num_spectrogram_bins].
       # M has shape [..., num_mel_bins].
       M = tf.tensordot(S, A, 1)
-      # tf.tensordot does not support shape inference for this case yet.
-      M.set_shape(S.shape[:-1].concatenate(A.shape[-1:]))
 
   Args:
     num_mel_bins: Python int. How many bands in the resulting mel spectrum.
@@ -151,7 +157,7 @@ def linear_to_mel_weight_matrix(num_mel_bins=20,
   """
   with ops.name_scope(name, 'linear_to_mel_weight_matrix') as name:
     # Convert Tensor `sample_rate` to float, if possible.
-    if isinstance(sample_rate, ops.Tensor):
+    if isinstance(sample_rate, tensor.Tensor):
       maybe_const_val = tensor_util.constant_value(sample_rate)
       if maybe_const_val is not None:
         sample_rate = maybe_const_val

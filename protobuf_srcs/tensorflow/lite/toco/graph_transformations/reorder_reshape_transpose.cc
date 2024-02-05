@@ -18,10 +18,10 @@ limitations under the License.
 #include <unordered_set>
 #include <vector>
 
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/lite/toco/graph_transformations/graph_transformations.h"
 #include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/tooling_util.h"
-#include "tensorflow/core/platform/logging.h"
 
 namespace toco {
 
@@ -60,7 +60,7 @@ std::vector<int> ComputeNewPerm(std::vector<int> input_dims,
                                 std::vector<int> perm) {
   // These are the major axis of the input.
   std::vector<int> input_indices;
-  for (int i = 0; i < input_dims.size(); i++) {
+  for (size_t i = 0; i < input_dims.size(); i++) {
     if (input_dims[i] != 1) {
       input_indices.push_back(i);
     }
@@ -69,7 +69,7 @@ std::vector<int> ComputeNewPerm(std::vector<int> input_dims,
   // This maps which indices of the input produced the intermediate indices for
   // non-unary dimensions.
   std::unordered_map<int, int> intermediate_to_input_indices_map;
-  for (int i = 0; i < intermediate_dims.size(); i++) {
+  for (size_t i = 0; i < intermediate_dims.size(); i++) {
     if (intermediate_dims[i] != 1) {
       intermediate_to_input_indices_map[i] =
           input_indices[intermediate_to_input_indices_map.size()];
@@ -80,14 +80,14 @@ std::vector<int> ComputeNewPerm(std::vector<int> input_dims,
   // major indices.
   std::vector<int> new_perm;
   new_perm.reserve(input_dims.size());
-  for (int i = 0; i < perm.size(); i++) {
+  for (size_t i = 0; i < perm.size(); i++) {
     if (intermediate_dims[perm[i]] == 1) continue;
 
     new_perm.push_back(intermediate_to_input_indices_map[perm[i]]);
   }
 
   // Fill the rest of the transpose in with the ones.
-  for (int index = 0; index < input_dims.size(); index++) {
+  for (size_t index = 0; index < input_dims.size(); index++) {
     if (input_dims[index] == 1) {
       new_perm.push_back(index);
     }
@@ -111,41 +111,41 @@ std::vector<int> ComputeNewPerm(std::vector<int> input_dims,
       transpose_it->get(), OperatorType::kTranspose);
 
   if (transpose_op == nullptr) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   if (!OperatorReady(*model, transpose_op) || transpose_op->perm.empty()) {
     // Wait for values to propagate.
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   // Find the operator that produces the transpose op.
   auto reshape_it = FindOpWithOutput(*model, transpose_op->inputs[0]);
   if (reshape_it == model->operators.end()) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   TensorFlowReshapeOperator* reshape_op =
       ConvertOperator<TensorFlowReshapeOperator*>(reshape_it->get(),
                                                   OperatorType::kReshape);
   if (reshape_op == nullptr) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   // Ignore if the reshape is uninitialized.
   if (!OperatorReady(*model, reshape_op) || reshape_op->shape.empty()) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   // Need to copy to keep static if permutated.
-  const string input_name = reshape_op->inputs[0];
-  const string intermediate_name = reshape_op->outputs[0];
-  const string output_name = transpose_op->outputs[0];
+  const std::string input_name = reshape_op->inputs[0];
+  const std::string intermediate_name = reshape_op->outputs[0];
+  const std::string output_name = transpose_op->outputs[0];
 
   // Intermediate should not be consumed by any other operators.
   if (CountOpsWithInput(*model, intermediate_name) != 1) {
     AddMessageF("Input %s used elsewhere", intermediate_name);
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   // Check that the intermediate is not an output array.
@@ -154,7 +154,7 @@ std::vector<int> ComputeNewPerm(std::vector<int> input_dims,
         "Cannot reorder reshape-transpose as it would invalidate %s which is "
         "an output array.",
         intermediate_name);
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   // Get the arrays.
@@ -176,7 +176,7 @@ std::vector<int> ComputeNewPerm(std::vector<int> input_dims,
   // dimensions then it can be moved between the transpose.
   if (!ReshapeIsEquivalentToTranspose(*model, reshape_op,
                                       true /*allow_extra_unary_dims*/)) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   if (!IsDiscardableArray(*model, output_name)) {
@@ -193,9 +193,9 @@ std::vector<int> ComputeNewPerm(std::vector<int> input_dims,
     DeleteArrayIfUnused(intermediate_name, model);
   } else {
     // The intermediate array is now the output array.
-    for (int i = 0; i < model->operators.size(); i++) {
+    for (size_t i = 0; i < model->operators.size(); i++) {
       Operator* consumer = model->operators[i].get();
-      for (int j = 0; j < consumer->inputs.size(); j++) {
+      for (size_t j = 0; j < consumer->inputs.size(); j++) {
         if (consumer->inputs[j] == output_name) {
           consumer->inputs[j] = intermediate_name;
         }
@@ -247,7 +247,7 @@ std::vector<int> ComputeNewPerm(std::vector<int> input_dims,
   transpose_it->swap(*reshape_it);
 
   *modified = true;
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

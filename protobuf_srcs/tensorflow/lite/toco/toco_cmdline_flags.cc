@@ -13,6 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/lite/toco/toco_cmdline_flags.h"
+
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,15 +24,14 @@ limitations under the License.
 #include "absl/strings/str_split.h"
 #include "absl/strings/strip.h"
 #include "absl/types/optional.h"
-#include "tensorflow/lite/toco/toco_cmdline_flags.h"
-#include "tensorflow/lite/toco/toco_port.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/util/command_line_flags.h"
+#include "tensorflow/lite/toco/toco_port.h"
 
 namespace toco {
 
 bool ParseTocoFlagsFromCommandLineFlags(
-    int* argc, char* argv[], string* msg,
+    int* argc, char* argv[], std::string* msg,
     ParsedTocoFlags* parsed_toco_flags_ptr) {
   using tensorflow::Flag;
   ParsedTocoFlags& parsed_flags = *parsed_toco_flags_ptr;
@@ -124,6 +126,10 @@ bool ParseTocoFlagsFromCommandLineFlags(
            parsed_flags.allow_custom_ops.default_value(),
            "If true, allow TOCO to create TF Lite Custom operators for all the "
            "unsupported TensorFlow ops."),
+      Flag("custom_opdefs", parsed_flags.custom_opdefs.bind(),
+           parsed_flags.custom_opdefs.default_value(),
+           "List of strings representing custom ops OpDefs that are included "
+           "in the GraphDef."),
       Flag("allow_dynamic_tensors", parsed_flags.allow_dynamic_tensors.bind(),
            parsed_flags.allow_dynamic_tensors.default_value(),
            "Boolean flag indicating whether the converter should allow models "
@@ -167,7 +173,7 @@ bool ParseTocoFlagsFromCommandLineFlags(
            "Ignored if the output format is not TFLite."),
       Flag("quantize_to_float16", parsed_flags.quantize_to_float16.bind(),
            parsed_flags.quantize_to_float16.default_value(),
-           "Used in conjuction with post_training_quantize. Specifies that "
+           "Used in conjunction with post_training_quantize. Specifies that "
            "the weights should be quantized to fp16 instead of the default "
            "(int8)"),
       Flag("quantize_weights", parsed_flags.quantize_weights.bind(),
@@ -184,7 +190,18 @@ bool ParseTocoFlagsFromCommandLineFlags(
            parsed_flags.enable_select_tf_ops.default_value(), ""),
       // WARNING: Experimental interface, subject to change
       Flag("force_select_tf_ops", parsed_flags.force_select_tf_ops.bind(),
-           parsed_flags.force_select_tf_ops.default_value(), "")};
+           parsed_flags.force_select_tf_ops.default_value(), ""),
+      // WARNING: Experimental interface, subject to change
+      Flag("unfold_batchmatmul", parsed_flags.unfold_batchmatmul.bind(),
+           parsed_flags.unfold_batchmatmul.default_value(), ""),
+      // WARNING: Experimental interface, subject to change
+      Flag("accumulation_type", parsed_flags.accumulation_type.bind(),
+           parsed_flags.accumulation_type.default_value(),
+           "Accumulation type to use with quantize_to_float16"),
+      // WARNING: Experimental interface, subject to change
+      Flag("allow_bfloat16", parsed_flags.allow_bfloat16.bind(),
+           parsed_flags.allow_bfloat16.default_value(), "")};
+
   bool asked_for_help =
       *argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-help"));
   if (asked_for_help) {
@@ -208,7 +225,7 @@ enum class FlagRequirement {
 
 // Enforces the FlagRequirements are met for a given flag.
 template <typename T>
-void EnforceFlagRequirement(const T& flag, const string& flag_name,
+void EnforceFlagRequirement(const T& flag, const std::string& flag_name,
                             FlagRequirement requirement) {
   if (requirement == FlagRequirement::kMustBeSpecified) {
     QCHECK(flag.specified()) << "Missing required flag " << flag_name;
@@ -223,11 +240,10 @@ void EnforceFlagRequirement(const T& flag, const string& flag_name,
 // Gets the value from the flag if specified. Returns default if the
 // FlagRequirement is kUseDefault.
 template <typename T>
-absl::optional<T> GetFlagValue(const Arg<T>& flag,
-                               FlagRequirement requirement) {
+std::optional<T> GetFlagValue(const Arg<T>& flag, FlagRequirement requirement) {
   if (flag.specified()) return flag.value();
   if (requirement == FlagRequirement::kUseDefault) return flag.default_value();
-  return absl::optional<T>();
+  return std::optional<T>();
 }
 
 }  // namespace
@@ -282,11 +298,12 @@ void ReadTocoFlagsFromCommandLineFlags(const ParsedTocoFlags& parsed_toco_flags,
   READ_TOCO_FLAG(post_training_quantize, FlagRequirement::kNone);
   READ_TOCO_FLAG(enable_select_tf_ops, FlagRequirement::kNone);
   READ_TOCO_FLAG(force_select_tf_ops, FlagRequirement::kNone);
+  READ_TOCO_FLAG(unfold_batchmatmul, FlagRequirement::kNone);
+  PARSE_TOCO_FLAG(IODataType, accumulation_type, FlagRequirement::kNone);
+  READ_TOCO_FLAG(allow_bfloat16, FlagRequirement::kNone);
 
   if (parsed_toco_flags.force_select_tf_ops.value() &&
       !parsed_toco_flags.enable_select_tf_ops.value()) {
-    // TODO(ycling): Consider to enforce `enable_select_tf_ops` when
-    // `force_select_tf_ops` is true.
     LOG(WARNING) << "--force_select_tf_ops should always be used with "
                     "--enable_select_tf_ops.";
   }
@@ -313,10 +330,10 @@ void ReadTocoFlagsFromCommandLineFlags(const ParsedTocoFlags& parsed_toco_flags,
            "type of input arrays, use --input_data_type. If you are trying to "
            "control the quantization/dequantization of real-numbers input "
            "arrays in the output file, use --inference_input_type.";
-    std::vector<string> input_types =
+    std::vector<std::string> input_types =
         absl::StrSplit(parsed_toco_flags.input_types.value(), ',');
     QCHECK(!input_types.empty());
-    for (int i = 1; i < input_types.size(); i++) {
+    for (size_t i = 1; i < input_types.size(); i++) {
       QCHECK_EQ(input_types[i], input_types[0]);
     }
     toco::IODataType input_type;

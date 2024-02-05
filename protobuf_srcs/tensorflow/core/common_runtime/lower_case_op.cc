@@ -15,8 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/lower_case_op.h"
 
-#include "tensorflow/core/common_runtime/function.h"
-#include "tensorflow/core/common_runtime/lower_functional_ops.h"
+#include "tensorflow/core/common_runtime/inline_function_utils.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/graph/node_builder.h"
@@ -29,7 +28,7 @@ namespace {
 using NodeOut = NodeBuilder::NodeOut;
 
 constexpr const char* const kLowerAsMultiDeviceFunctionAttr =
-    LowerFunctionalOpsPass::kLowerAsMultiDeviceFunctionAttr;
+    LowerFunctionalOpsConstants::kLowerAsMultiDeviceFunctionAttr;
 
 // Convenience builder to make it easy to construct a case with a single
 // function call in each branch. This first converts the Case node
@@ -137,7 +136,7 @@ Status CaseBuilder::CreatePivotNodes() {
                            .Device(case_op_->requested_device())
                            .Finalize(graph_, &pivots_[b]));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 string CaseBuilder::NewName(const string& infix) {
@@ -167,7 +166,7 @@ Status CaseBuilder::AddInput(Node* src, int src_output) {
   for (int b = 0; b < num_branches_; b++) {
     branch_call_builders_[b].Input(input, b);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status CaseBuilder::AddInputs() {
@@ -185,7 +184,7 @@ Status CaseBuilder::AddInputs() {
       graph_->AddControlEdge(e->src(), control_predecessor_);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status CaseBuilder::AddOutputs() {
@@ -248,7 +247,7 @@ Status CaseBuilder::AddOutputs() {
       graph_->AddEdge(merges[e->src_output()], 0, e->dst(), e->dst_input());
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status CaseBuilder::BuildLoweredCaseOutput() {
@@ -288,7 +287,7 @@ Status RewriteCaseNode(Node* n, Graph* g, bool keep_node_fetchable) {
   TF_RETURN_IF_ERROR(cb.AddOutputs());
   g->RemoveNode(n);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

@@ -14,22 +14,20 @@
 # ==============================================================================
 """Utilities for forward-mode automatic differentiation."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import functools
 import threading
 
-from tensorflow.python import pywrap_tensorflow
+from tensorflow.core.function.polymorphism import function_cache
+from tensorflow.python import pywrap_tfe
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import backprop_util
-from tensorflow.python.eager import def_function
 from tensorflow.python.eager import execute
 from tensorflow.python.eager import forwardprop_util
-
+from tensorflow.python.eager.polymorphic_function import tracing_compilation
 from tensorflow.python.framework import ops
-
+from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops.parallel_for import control_flow_ops
 from tensorflow.python.ops.unconnected_gradients import UnconnectedGradients
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util import nest
@@ -140,37 +138,96 @@ def _jvp_helper(op_name, attr_tuple, inputs, outputs, tangents):
     return output_tangents
 
 
-# TODO(allenl): experimental_relax_shapes for gradients which rely on static
+def _jvp_helper_wrapper(op_name, attr_tuple, inputs, outputs, tangents,
+                        use_batch):
+  """Computes a batch of Jacobian-vector product for an op.
+
+  Args:
+    op_name: A string, the type of operation being executed.
+    attr_tuple: Attributes of the operation.
+    inputs: A flat list of input Tensors to the operation.
+    outputs: A flat list of output Tensors from the operation.
+    tangents: A flat list of Tensors, compatible with shape `[None] +
+      input_shape`.
+    use_batch: A bool, True to vetorize over batch of tangents of shape `[None]
+      + input_shape`.
+
+  Returns:
+    A flat list of tangents compatible with `outputs`
+    or `[None] + output_shape`.
+
+  Raises:
+    ValueError: if tangent shapes are not compatible with input shapes.
+  """
+  if use_batch:
+    for primal, tangent in zip(inputs, tangents):
+      if not tangent.shape.is_compatible_with([None] + primal.shape):
+        raise ValueError("Tangent {} was expected to be of shape "
+                         "{} but is instead of shape {}".format(
+                             tangent, [None] + primal.shape, tangent.shape))
+
+    return control_flow_ops.vectorized_map(
+        functools.partial(_jvp_helper, op_name, attr_tuple, inputs, outputs),
+        tangents,
+    )
+  return _jvp_helper(op_name, attr_tuple, inputs, outputs, tangents)
+
+
+# TODO(allenl): reduce_retracing for gradients which rely on static
 # shape information are underspecialized. We may want hand-written forward
 # implementations, or a more satisfying story about how we re-specialize
 # gradients which were traced with relaxed shapes (e.g. use conds instead of
 # trace-time Python logic).
-_jvp_relaxed_shapes = def_function.function(
-    _jvp_helper, experimental_relax_shapes=True)
-_jvp_exact_shapes = def_function.function(
-    _jvp_helper, experimental_relax_shapes=False)
+#
+# Using function.defun rather than def_function.function avoids
+# tf.config.run_functions_eagerly(True). `_jvp_helper` doesn't successfully run
+# eagerly (infinite recursion), and even if it did it would use extra memory and
+# run unnecessary computation. The function does not create variables, so the
+# two symbols are otherwise equivalent.
+_jvp_function_cache = function_cache.FunctionCache()
+_jvp_relaxed_config = tracing_compilation.TracingOptions(
+    _jvp_helper_wrapper,
+    name="_jvp_relaxed_shapes",
+    reduce_retracing=True,
+    function_cache=_jvp_function_cache,
+)
+
+_jvp_exact_config = tracing_compilation.TracingOptions(
+    _jvp_helper_wrapper,
+    name="_jvp_exact_shapes",
+    reduce_retracing=False,
+    function_cache=_jvp_function_cache,
+)
 
 # The maximum number of exact-shape traces to perform for a single op before
 # switching to shape relaxation.
 _TRACE_COUNT_LIMIT = 32
 
 
-def _jvp_dispatch(op_name, attr_tuple, inputs, outputs, tangents):
+def _jvp_dispatch(op_name,
+                  attr_tuple,
+                  inputs,
+                  outputs,
+                  tangents,
+                  use_batch=False):
   """Determine which forwardprop function to call."""
   # Note that this _TRACE_COUNT read races with writes. That's fine, it just
   # means we may trace a few more exact shapes before moving on to relaxation.
   if _TRACE_COUNT.get(op_name, 0) < _TRACE_COUNT_LIMIT:
-    return _jvp_exact_shapes(
-        op_name, attr_tuple, inputs, outputs, tangents)
+    config = _jvp_exact_config
   else:
-    return _jvp_relaxed_shapes(
-        op_name, attr_tuple, inputs, outputs, tangents)
+    config = _jvp_relaxed_config
+  return tracing_compilation.call_function(
+      (op_name, attr_tuple, inputs, outputs, tangents, use_batch),
+      tracing_options=config,
+  )
 
-pywrap_tensorflow.TFE_Py_RegisterJVPFunction(_jvp_dispatch)
+
+pywrap_tfe.TFE_Py_RegisterJVPFunction(_jvp_dispatch)
 
 
 @tf_export("autodiff.ForwardAccumulator", v1=[])
-class ForwardAccumulator(object):
+class ForwardAccumulator():
   """Computes Jacobian-vector products ("JVP"s) using forward-mode autodiff.
 
   Compare to `tf.GradientTape` which computes vector-Jacobian products ("VJP"s)
@@ -184,12 +241,13 @@ class ForwardAccumulator(object):
   Consider a simple linear regression:
 
   >>> x = tf.constant([[2.0, 3.0], [1.0, 4.0]])
+  >>> targets = tf.constant([[1.], [-1.]])
   >>> dense = tf.keras.layers.Dense(1)
-  >>> dense.build([2])
+  >>> dense.build([None, 2])
   >>> with tf.autodiff.ForwardAccumulator(
   ...    primals=dense.kernel,
   ...    tangents=tf.constant([[1.], [0.]])) as acc:
-  ...   loss = tf.reduce_sum((dense(x) - tf.constant([1., -1.])) ** 2.)
+  ...   loss = tf.reduce_sum((dense(x) - targets) ** 2.)
   >>> acc.jvp(loss)
   <tf.Tensor: shape=(), dtype=float32, numpy=...>
 
@@ -208,9 +266,10 @@ class ForwardAccumulator(object):
   invocations:
 
   >>> x = tf.constant([[2.0, 3.0], [1.0, 4.0]])
+  >>> targets = tf.constant([[1.], [-1.]])
   >>> dense = tf.keras.layers.Dense(1)
-  >>> dense.build([2])
-  >>> loss_fn = lambda: tf.reduce_sum((dense(x) - tf.constant([1., -1.])) ** 2.)
+  >>> dense.build([None, 2])
+  >>> loss_fn = lambda: tf.reduce_sum((dense(x) - targets) ** 2.)
   >>> kernel_fprop = []
   >>> with tf.autodiff.ForwardAccumulator(
   ...     dense.kernel, tf.constant([[1.], [0.]])) as acc:
@@ -250,9 +309,9 @@ class ForwardAccumulator(object):
   ...     primal_out = primal ** tf.constant(3.5)
   >>> inner_jvp = inner.jvp(primal_out)
   >>> inner_jvp  # 3.5 * 1.1 ** 2.5
-  <tf.Tensor: shape=(), dtype=float32, numpy=4.441...>
+  <tf.Tensor: shape=(), dtype=float32, numpy=4.4417057>
   >>> outer.jvp(inner_jvp)  # 3.5 * 2.5 * 1.1 ** 1.5
-  <tf.Tensor: shape=(), dtype=float32, numpy=10.094...>
+  <tf.Tensor: shape=(), dtype=float32, numpy=10.094786>
 
   Reversing the collection in the last line to instead retrieve
   `inner.jvp(outer.jvp(primal_out))` will not work.
@@ -300,7 +359,7 @@ class ForwardAccumulator(object):
       ValueError: If the same tensor or variable is specified multiple times in
         `primals`.
     """
-    self._accumulator = pywrap_tensorflow.TFE_Py_ForwardAccumulatorNew()
+    self._accumulator = pywrap_tfe.TFE_Py_ForwardAccumulatorNew(False)
     self._recording = False
     primal_ids = set()
     for primal in nest.flatten(primals):
@@ -323,13 +382,13 @@ class ForwardAccumulator(object):
   def _push_accumulator(self):
     if self._recording:
       raise ValueError("Accumulator is already recording.")
-    pywrap_tensorflow.TFE_Py_ForwardAccumulatorSetAdd(self._accumulator)
+    pywrap_tfe.TFE_Py_ForwardAccumulatorSetAdd(self._accumulator)
     self._recording = True
 
   def _pop_accumulator(self):
     if not self._recording:
       raise ValueError("Accumulator is not recording.")
-    pywrap_tensorflow.TFE_Py_ForwardAccumulatorSetRemove(self._accumulator)
+    pywrap_tfe.TFE_Py_ForwardAccumulatorSetRemove(self._accumulator)
     self._recording = False
 
   def _watch(self, primals, tangents):
@@ -347,18 +406,21 @@ class ForwardAccumulator(object):
       primals: A Tensor or list of Tensors.
       tangents: A Tensor or list of Tensors matching `primals`.
     """
-    nest.assert_same_structure(primals, tangents)
-    for t, g in zip(nest.flatten(primals), nest.flatten(tangents)):
-      if not t.dtype.is_floating:
+
+    def _watch(primal, tangent):
+      if not primal.dtype.is_floating:
         logging.log_first_n(
             logging.WARN, "The dtype of the watched primal must be "
-            "floating (e.g. tf.float32), got %r", 5, t.dtype)
-      g = ops.convert_to_tensor(g, dtype=t.dtype)
-      if hasattr(t, "handle"):
+            "floating (e.g. tf.float32), got %r", 5, primal.dtype)
+      tangent = ops.convert_to_tensor(tangent, dtype=primal.dtype)
+      if hasattr(primal, "handle"):
         # Run convert_to_tensor to get the captured handle from whichever
         # function we're running if necessary.
-        t = ops.convert_to_tensor(t.handle)
-      pywrap_tensorflow.TFE_Py_ForwardAccumulatorWatch(self._accumulator, t, g)
+        primal = ops.convert_to_tensor(primal.handle)
+      pywrap_tfe.TFE_Py_ForwardAccumulatorWatch(self._accumulator, primal,
+                                                tangent)
+
+    nest.map_structure(_watch, primals, tangents)
 
   def jvp(self, primals, unconnected_gradients=UnconnectedGradients.NONE):
     """Fetches the Jacobian-vector product computed for `primals`.
@@ -381,12 +443,45 @@ class ForwardAccumulator(object):
     unconnected_gradients = UnconnectedGradients(unconnected_gradients)
     if self._accumulator is None:
       raise ValueError("Called jvp() without first tracing anything.")
+
     def _fetch_jvp(tensor):
       if hasattr(tensor, "handle"):
-        tensor = ops.convert_to_tensor(tensor.handle)
-      result = pywrap_tensorflow.TFE_Py_ForwardAccumulatorJVP(
-          self._accumulator, tensor)
+        unwrapped_tensor = ops.convert_to_tensor(tensor.handle)
+      else:
+        unwrapped_tensor = tensor
+      result = pywrap_tfe.TFE_Py_ForwardAccumulatorJVP(self._accumulator,
+                                                       unwrapped_tensor)
       if result is None and unconnected_gradients == UnconnectedGradients.ZERO:
-        return array_ops.zeros_like(tensor)
+        result = array_ops.zeros_like(tensor)
       return result
+
     return nest.map_structure(_fetch_jvp, primals)
+
+  @classmethod
+  def _batch_accumulator(cls, primals, tangents):
+    """Factory constructor to test accumulator on batches of tangents.
+
+    Args:
+      primals: A tensor or nested structure of tensors to watch.
+      tangents: A tensor or nested structure of tensors, with the same nesting
+        structure as `primals`, with each element being a vector with compatible
+        shape `[None] + primal.shape` of the corresponding primal element.
+
+    Returns:
+      A batch accumulator object.
+    """
+    acc = super(ForwardAccumulator, cls).__new__(cls, primals, tangents)
+    acc._recording = False
+    acc._accumulator = pywrap_tfe.TFE_Py_ForwardAccumulatorNew(True)
+    primal_ids = set()
+    for primal, tangent in zip(nest.flatten(primals), nest.flatten(tangents)):
+      tangent.shape.assert_is_compatible_with(
+          tensor_shape.TensorShape([None]) + primal.shape)
+      if id(primal) in primal_ids:
+        raise ValueError(
+            "Tensor {} was specified as a primal multiple times. This may "
+            "indicate an error. If it was intended, please sum the "
+            "corresponding tangents.")
+      primal_ids.add(id(primal))
+    acc._watch(primals, tangents)
+    return acc

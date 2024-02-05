@@ -17,10 +17,6 @@
 To avoid circular dependencies, some math_ops should go here.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import functools
 import re
@@ -28,41 +24,48 @@ import string
 
 import numpy as np
 import opt_einsum
-import six
 
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
 from tensorflow.compiler.tf2xla.ops import gen_xla_ops
-from tensorflow.python.compat import compat as fwd_compat
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import gen_linalg_ops
+from tensorflow.python.ops import gen_special_math_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util import deprecation
+from tensorflow.python.util import dispatch
 from tensorflow.python.util.tf_export import tf_export
 
 
 # TODO(b/27419586) Change docstring for required dtype of x once int allowed
 @tf_export('math.lbeta', v1=['math.lbeta', 'lbeta'])
+@dispatch.add_dispatch_support
 @deprecation.deprecated_endpoints('lbeta')
 def lbeta(x, name=None):
   r"""Computes \\(ln(|Beta(x)|)\\), reducing along the last dimension.
 
-  Given one-dimensional `z = [z_0,...,z_{K-1}]`, we define
+  Given one-dimensional $z = [z_1,...,z_K]$, we define
 
-  $$Beta(z) = \prod_j Gamma(z_j) / Gamma(\sum_j z_j)$$
+  $$Beta(z) = \frac{\prod_j \Gamma(z_j)}{\Gamma(\sum_j z_j)},$$
 
-  And for `n + 1` dimensional `x` with shape `[N1, ..., Nn, K]`, we define
-  $$lbeta(x)[i1, ..., in] = Log(|Beta(x[i1, ..., in, :])|)$$.
+  where $\Gamma$ is the gamma function.
 
-  In other words, the last dimension is treated as the `z` vector.
+  And for $n + 1$ dimensional $x$ with shape $[N_1, ..., N_n, K]$, we define
 
-  Note that if `z = [u, v]`, then
-  \\(Beta(z) = int_0^1 t^{u-1} (1 - t)^{v-1} dt\\), which defines the
-  traditional bivariate beta function.
+  $$lbeta(x)[i_1, ..., i_n] = \log{|Beta(x[i_1, ..., i_n, :])|}.$$
+
+  In other words, the last dimension is treated as the $z$ vector.
+
+  Note that if $z = [u, v]$, then
+
+  $$Beta(z) = \frac{\Gamma(u)\Gamma(v)}{\Gamma(u + v)}
+    = \int_0^1 t^{u-1} (1 - t)^{v-1} \mathrm{d}t,$$
+
+  which defines the traditional bivariate beta function.
 
   If the last dimension is empty, we follow the convention that the sum over
   the empty set is zero, and the product is one.
@@ -95,13 +98,170 @@ def lbeta(x, name=None):
     return result
 
 
-@tf_export('math.bessel_i0')
+@tf_export('math.special.dawsn')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def dawsn(x, name=None):
+  """Computes Dawson's integral of `x` element-wise.
+
+  Dawson's integral is defined as `exp(-x**2)` times the integral of
+  `exp(t**2)` from `0` to `x`, with the domain of definition all real numbers.
+
+  Dawson's function is odd.
+  >>> tf.math.special.dawsn([-1., -0.5, 0.5, 1.]).numpy()
+  array([-0.5380795, -0.4244364, 0.4244364,  0.5380795], dtype=float32)
+
+  This implementation is based off of the Cephes math library.
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types:
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.dawsn
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'dawsn', [x]):
+    return gen_special_math_ops.dawsn(x)
+
+
+@tf_export('math.special.expint')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def expint(x, name=None):
+  """Computes the Exponential integral of `x` element-wise.
+
+  The Exponential integral is defined as the integral of `exp(t) / t` from
+  `-inf` to `x`, with the domain of definition all positive real numbers.
+
+  >>> tf.math.special.expint([1., 1.1, 2.1, 4.1]).numpy()
+  array([ 1.8951179,  2.1673784,  5.3332353, 21.048464], dtype=float32)
+
+  This implementation is based off of the Cephes math library.
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types:
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.expi
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'expint', [x]):
+    return gen_special_math_ops.expint(x)
+
+
+@tf_export('math.special.fresnel_cos')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def fresnel_cos(x, name=None):
+  """Computes Fresnel's cosine integral of `x` element-wise.
+
+  The Fresnel cosine integral is defined as the integral of `cos(t^2)` from
+  `0` to `x`, with the domain of definition all real numbers.
+
+  The Fresnel cosine integral is odd.
+  >>> tf.math.special.fresnel_cos([-1., -0.1, 0.1, 1.]).numpy()
+  array([-0.7798934 , -0.09999753,  0.09999753,  0.7798934 ], dtype=float32)
+
+  This implementation is based off of the Cephes math library.
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types:
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.fresnel second output.
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'fresnel_cos', [x]):
+    return gen_special_math_ops.fresnel_cos(x)
+
+
+@tf_export('math.special.fresnel_sin')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def fresnel_sin(x, name=None):
+  """Computes Fresnel's sine integral of `x` element-wise.
+
+  The Fresnel sine integral is defined as the integral of `sin(t^2)` from
+  `0` to `x`, with the domain of definition all real numbers.
+
+  >>> tf.math.special.fresnel_sin([-1., -0.1, 0.1, 1.]).numpy()
+  array([-0.43825912, -0.00052359,  0.00052359,  0.43825912], dtype=float32)
+
+  This implementation is based off of the Cephes math library.
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types:
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.fresnel first output.
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'fresnel_sin', [x]):
+    return gen_special_math_ops.fresnel_sin(x)
+
+
+@tf_export('math.special.spence')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def spence(x, name=None):
+  """Computes Spence's integral of `x` element-wise.
+
+  Spence's integral is defined as the integral of `log(t) / (1 - t)` from
+  `1` to `x`, with the domain of definition all non-negative real numbers.
+
+  >>> tf.math.special.spence([0.5, 1., 2., 3.]).numpy()
+  array([ 0.58224034,  0.        , -0.82246685, -1.4367464], dtype=float32)
+
+  This implementation is based off of the Cephes math library.
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types:
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.spence
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'spence', [x]):
+    return gen_special_math_ops.spence(x)
+
+
+@tf_export('math.bessel_i0', 'math.special.bessel_i0')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
 def bessel_i0(x, name=None):
   """Computes the Bessel i0 function of `x` element-wise.
 
   Modified Bessel function of order 0.
 
   It is preferable to use the numerically stabler function `i0e(x)` instead.
+
+  >>> tf.math.special.bessel_i0([-1., -0.5, 0.5, 1.]).numpy()
+  array([1.26606588, 1.06348337, 1.06348337, 1.26606588], dtype=float32)
 
   Args:
     x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
@@ -116,16 +276,48 @@ def bessel_i0(x, name=None):
   @end_compatibility
   """
   with ops.name_scope(name, 'bessel_i0', [x]):
-    return math_ops.exp(math_ops.abs(x)) * math_ops.bessel_i0e(x)
+    return gen_special_math_ops.bessel_i0(x)
 
 
-@tf_export('math.bessel_i1')
+@tf_export('math.bessel_i0e', 'math.special.bessel_i0e')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_i0e(x, name=None):
+  """Computes the Bessel i0e function of `x` element-wise.
+
+  Modified Bessel function of order 0.
+
+  >>> tf.math.special.bessel_i0e([-1., -0.5, 0.5, 1.]).numpy()
+  array([0.46575961, 0.64503527, 0.64503527, 0.46575961], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.i0e
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_i0e', [x]):
+    return gen_special_math_ops.bessel_i0e(x)
+
+
+@tf_export('math.bessel_i1', 'math.special.bessel_i1')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
 def bessel_i1(x, name=None):
   """Computes the Bessel i1 function of `x` element-wise.
 
   Modified Bessel function of order 1.
 
   It is preferable to use the numerically stabler function `i1e(x)` instead.
+
+  >>> tf.math.special.bessel_i1([-1., -0.5, 0.5, 1.]).numpy()
+  array([-0.5651591 , -0.25789431,  0.25789431,  0.5651591 ], dtype=float32)
 
   Args:
     x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
@@ -140,7 +332,254 @@ def bessel_i1(x, name=None):
   @end_compatibility
   """
   with ops.name_scope(name, 'bessel_i1', [x]):
-    return math_ops.exp(math_ops.abs(x)) * math_ops.bessel_i1e(x)
+    return gen_special_math_ops.bessel_i1(x)
+
+
+@tf_export('math.bessel_i1e', 'math.special.bessel_i1e')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_i1e(x, name=None):
+  """Computes the Bessel i1e function of `x` element-wise.
+
+  Modified Bessel function of order 1.
+
+  >>> tf.math.special.bessel_i1e([-1., -0.5, 0.5, 1.]).numpy()
+  array([-0.20791042, -0.15642083,  0.15642083,  0.20791042], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.i1e
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_i1e', [x]):
+    return gen_special_math_ops.bessel_i1e(x)
+
+
+@tf_export('math.special.bessel_k0')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_k0(x, name=None):
+  """Computes the Bessel k0 function of `x` element-wise.
+
+  Modified Bessel function of order 0.
+
+  It is preferable to use the numerically stabler function `k0e(x)` instead.
+
+  >>> tf.math.special.bessel_k0([0.5, 1., 2., 4.]).numpy()
+  array([0.92441907, 0.42102444, 0.11389387, 0.01115968], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.k0
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_k0', [x]):
+    return gen_special_math_ops.bessel_k0(x)
+
+
+@tf_export('math.special.bessel_k0e')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_k0e(x, name=None):
+  """Computes the Bessel k0e function of `x` element-wise.
+
+  Modified Bessel function of order 0.
+
+  >>> tf.math.special.bessel_k0e([0.5, 1., 2., 4.]).numpy()
+  array([1.52410939, 1.14446308, 0.84156822, 0.60929767], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.k0e
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_k0e', [x]):
+    return gen_special_math_ops.bessel_k0e(x)
+
+
+@tf_export('math.special.bessel_k1')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_k1(x, name=None):
+  """Computes the Bessel k1 function of `x` element-wise.
+
+  Modified Bessel function of order 1.
+
+  It is preferable to use the numerically stabler function `k1e(x)` instead.
+
+  >>> tf.math.special.bessel_k1([0.5, 1., 2., 4.]).numpy()
+  array([1.65644112, 0.60190723, 0.13986588, 0.0124835 ], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.k1
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_k1', [x]):
+    return gen_special_math_ops.bessel_k1(x)
+
+
+@tf_export('math.special.bessel_k1e')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_k1e(x, name=None):
+  """Computes the Bessel k1e function of `x` element-wise.
+
+  Modified Bessel function of order 1.
+
+  >>> tf.math.special.bessel_k1e([0.5, 1., 2., 4.]).numpy()
+  array([2.73100971, 1.63615349, 1.03347685, 0.68157595], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.k1e
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_k1e', [x]):
+    return gen_special_math_ops.bessel_k1e(x)
+
+
+@tf_export('math.special.bessel_j0')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_j0(x, name=None):
+  """Computes the Bessel j0 function of `x` element-wise.
+
+  Modified Bessel function of order 0.
+
+  >>> tf.math.special.bessel_j0([0.5, 1., 2., 4.]).numpy()
+  array([ 0.93846981,  0.76519769,  0.22389078, -0.39714981], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.j0
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_j0', [x]):
+    return gen_special_math_ops.bessel_j0(x)
+
+
+@tf_export('math.special.bessel_j1')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_j1(x, name=None):
+  """Computes the Bessel j1 function of `x` element-wise.
+
+  Modified Bessel function of order 1.
+
+  >>> tf.math.special.bessel_j1([0.5, 1., 2., 4.]).numpy()
+  array([ 0.24226846,  0.44005059,  0.57672481, -0.06604333], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.j1
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_j1', [x]):
+    return gen_special_math_ops.bessel_j1(x)
+
+
+@tf_export('math.special.bessel_y0')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_y0(x, name=None):
+  """Computes the Bessel y0 function of `x` element-wise.
+
+  Modified Bessel function of order 0.
+
+  >>> tf.math.special.bessel_y0([0.5, 1., 2., 4.]).numpy()
+  array([-0.44451873,  0.08825696,  0.51037567, -0.01694074], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.y0
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_y0', [x]):
+    return gen_special_math_ops.bessel_y0(x)
+
+
+@tf_export('math.special.bessel_y1')
+@dispatch.register_unary_elementwise_api
+@dispatch.add_dispatch_support
+def bessel_y1(x, name=None):
+  """Computes the Bessel y1 function of `x` element-wise.
+
+  Modified Bessel function of order 1.
+
+  >>> tf.math.special.bessel_y1([0.5, 1., 2., 4.]).numpy()
+  array([-1.47147239, -0.78121282, -0.10703243,  0.39792571], dtype=float32)
+
+  Args:
+    x: A `Tensor` or `SparseTensor`. Must be one of the following types: `half`,
+      `float32`, `float64`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` or `SparseTensor`, respectively. Has the same type as `x`.
+
+  @compatibility(scipy)
+  Equivalent to scipy.special.y1
+  @end_compatibility
+  """
+  with ops.name_scope(name, 'bessel_y1', [x]):
+    return gen_special_math_ops.bessel_y1(x)
 
 
 @ops.RegisterGradient('XlaEinsum')
@@ -177,60 +616,130 @@ def _enclosing_tpu_context():
 
 
 @tf_export('einsum', 'linalg.einsum')
+@dispatch.add_dispatch_support
 def einsum(equation, *inputs, **kwargs):
-  """Tensor contraction over specified indices and outer product.
+  r"""Tensor contraction over specified indices and outer product.
 
-  This function returns a tensor whose elements are defined by `equation`,
-  which is written in a shorthand form inspired by the Einstein summation
-  convention.  As an example, consider multiplying two matrices
-  A and B to form a matrix C.  The elements of C are given by:
+  Einsum allows defining Tensors by defining their element-wise computation.
+  This computation is defined by `equation`, a shorthand form based on Einstein
+  summation. As an example, consider multiplying two matrices A and B to form a
+  matrix C.  The elements of C are given by:
 
-  ```
-    C[i,k] = sum_j A[i,j] * B[j,k]
-  ```
+  $$ C_{i,k} = \sum_j A_{i,j} B_{j,k} $$
 
-  The corresponding `equation` is:
+  or
 
   ```
-    ij,jk->ik
+  C[i,k] = sum_j A[i,j] * B[j,k]
   ```
 
-  In general, the `equation` is obtained from the more familiar element-wise
-  equation by
-    1. removing variable names, brackets, and commas,
-    2. replacing "*" with ",",
-    3. dropping summation signs, and
-    4. moving the output to the right, and replacing "=" with "->".
+  The corresponding einsum `equation` is:
+
+  ```
+  ij,jk->ik
+  ```
+
+  In general, to convert the element-wise equation into the `equation` string,
+  use the following procedure (intermediate strings for matrix multiplication
+  example provided in parentheses):
+
+  1. remove variable names, brackets, and commas, (`ik = sum_j ij * jk`)
+  2. replace "*" with ",", (`ik = sum_j ij , jk`)
+  3. drop summation signs, and (`ik = ij, jk`)
+  4. move the output to the right, while replacing "=" with "->". (`ij,jk->ik`)
+
+  Note: If the output indices are not specified repeated indices are summed.
+  So `ij,jk->ik` can be simplified to `ij,jk`.
 
   Many common operations can be expressed in this way.  For example:
 
-  ```python
-  # Matrix multiplication
-  einsum('ij,jk->ik', m0, m1)  # output[i,k] = sum_j m0[i,j] * m1[j, k]
+  **Matrix multiplication**
 
-  # Dot product
-  einsum('i,i->', u, v)  # output = sum_i u[i]*v[i]
+  >>> m0 = tf.random.normal(shape=[2, 3])
+  >>> m1 = tf.random.normal(shape=[3, 5])
+  >>> e = tf.einsum('ij,jk->ik', m0, m1)
+  >>> # output[i,k] = sum_j m0[i,j] * m1[j, k]
+  >>> print(e.shape)
+  (2, 5)
 
-  # Outer product
-  einsum('i,j->ij', u, v)  # output[i,j] = u[i]*v[j]
+  Repeated indices are summed if the output indices are not specified.
 
-  # Transpose
-  einsum('ij->ji', m)  # output[j,i] = m[i,j]
+  >>> e = tf.einsum('ij,jk', m0, m1)  # output[i,k] = sum_j m0[i,j] * m1[j, k]
+  >>> print(e.shape)
+  (2, 5)
 
-  # Trace
-  einsum('ii', m)  # output[j,i] = trace(m) = sum_i m[i, i]
 
-  # Batch matrix multiplication
-  einsum('aij,ajk->aik', s, t)  # out[a,i,k] = sum_j s[a,i,j] * t[a, j, k]
-  ```
+  **Dot product**
 
-  To enable and control broadcasting, use an ellipsis.  For example, to perform
-  batch matrix multiplication with NumPy-style broadcasting across the batch
-  dimensions, use:
+  >>> u = tf.random.normal(shape=[5])
+  >>> v = tf.random.normal(shape=[5])
+  >>> e = tf.einsum('i,i->', u, v)  # output = sum_i u[i]*v[i]
+  >>> print(e.shape)
+  ()
 
-  ```python
-  einsum('...ij,...jk->...ik', u, v)
-  ```
+  **Outer product**
+
+  >>> u = tf.random.normal(shape=[3])
+  >>> v = tf.random.normal(shape=[5])
+  >>> e = tf.einsum('i,j->ij', u, v)  # output[i,j] = u[i]*v[j]
+  >>> print(e.shape)
+  (3, 5)
+
+  **Transpose**
+
+  >>> m = tf.ones(2,3)
+  >>> e = tf.einsum('ij->ji', m0)  # output[j,i] = m0[i,j]
+  >>> print(e.shape)
+  (3, 2)
+
+  **Diag**
+
+  >>> m = tf.reshape(tf.range(9), [3,3])
+  >>> diag = tf.einsum('ii->i', m)
+  >>> print(diag.shape)
+  (3,)
+
+  **Trace**
+
+  >>> # Repeated indices are summed.
+  >>> trace = tf.einsum('ii', m)  # output[j,i] = trace(m) = sum_i m[i, i]
+  >>> assert trace == sum(diag)
+  >>> print(trace.shape)
+  ()
+
+  **Batch matrix multiplication**
+
+  >>> s = tf.random.normal(shape=[7,5,3])
+  >>> t = tf.random.normal(shape=[7,3,2])
+  >>> e = tf.einsum('bij,bjk->bik', s, t)
+  >>> # output[a,i,k] = sum_j s[a,i,j] * t[a, j, k]
+  >>> print(e.shape)
+  (7, 5, 2)
+
+  This method does not support broadcasting on named-axes. All axes with
+  matching labels should have the same length. If you have length-1 axes,
+  use `tf.squeeze` or `tf.reshape` to eliminate them.
+
+  To write code that is agnostic to the number of indices in the input
+  use an ellipsis. The ellipsis is a placeholder for "whatever other indices
+  fit here".
+
+  For example, to perform a NumPy-style broadcasting-batch-matrix multiplication
+  where the matrix multiply acts on the last two axes of the input, use:
+
+  >>> s = tf.random.normal(shape=[11, 7, 5, 3])
+  >>> t = tf.random.normal(shape=[11, 7, 3, 2])
+  >>> e =  tf.einsum('...ij,...jk->...ik', s, t)
+  >>> print(e.shape)
+  (11, 7, 5, 2)
+
+  Einsum **will** broadcast over axes covered by the ellipsis.
+
+  >>> s = tf.random.normal(shape=[11, 1, 5, 3])
+  >>> t = tf.random.normal(shape=[1, 7, 3, 2])
+  >>> e =  tf.einsum('...ij,...jk->...ik', s, t)
+  >>> print(e.shape)
+  (11, 7, 5, 2)
 
   Args:
     equation: a `str` describing the contraction, in the same format as
@@ -251,18 +760,17 @@ def einsum(equation, *inputs, **kwargs):
       - the format of `equation` is incorrect,
       - number of inputs or their shapes are inconsistent with `equation`.
   """
-  if fwd_compat.forward_compatible(2019, 10, 18):
-    return _einsum_v2(equation, *inputs, **kwargs)
-  else:
-    return _einsum_v1(equation, *inputs, **kwargs)
+  return _einsum_v2(equation, *inputs, **kwargs)
 
 
 def _einsum_v1(equation, *inputs, **kwargs):
   """Legacy implementation of einsum without using EinsumOp."""
   name = kwargs.pop('name', None)
   if kwargs:
-    raise TypeError('invalid keyword arguments for this function: ' + ', '.join(
-        [format(key) for key in sorted(list(kwargs.keys()))]))
+    raise TypeError(
+        f'Invalid keyword arguments for this function: '
+        f'{", ".join([format(key) for key in sorted(list(kwargs.keys()))])}.'
+        f' Expected: name.')
   with ops.name_scope(name, 'einsum', [equation, inputs]) as name:
     inputs = list(inputs)
     input_shapes = [x.shape for x in inputs]
@@ -278,14 +786,14 @@ def _einsum_v1(equation, *inputs, **kwargs):
           return math_ops.trace(inputs[0])
         if input_labels.count(a) > 1:
           raise ValueError(
-              'Subscript not supported: an axis appears more than once: %s' %
-              input_labels)
+              f'Subscript not supported: the axis {a} appears more than once'
+              f' in {input_labels}.')
     for a in axis_labels:
       input_count = sum(1 for s in input_axis_labels if a in s)
       if input_count > 2 and a not in output_axis_labels:
         logging.warn(
-            'Falling back to exponential-space implementation of einsum()'
-            ' because index "%s" is summed over more than two inputs.', a)
+            f'Falling back to exponential-space implementation of einsum()'
+            f' because index {a} is summed over more than two inputs.')
         return _exponential_space_einsum_v1(equation, *inputs)
 
     # Use xla_einsum if executing on TPU and if the operation is a 2 input
@@ -296,7 +804,7 @@ def _einsum_v1(equation, *inputs, **kwargs):
           input_axis_labels[1] + '->' + output_axis_labels)
     temp = inputs[0]
     temp_axis_labels = input_axis_labels[0]
-    for i in xrange(len(inputs) - 1):
+    for i in range(len(inputs) - 1):
       axes_to_sum = (
           set(temp_axis_labels) &
           set(input_axis_labels[i + 1]) - set(output_axis_labels))
@@ -315,7 +823,9 @@ def _einsum_v1(equation, *inputs, **kwargs):
       temp_axis_labels = ''.join(
           a for a in temp_axis_labels if a in output_axis_labels)
     if sorted(temp_axis_labels) != sorted(output_axis_labels):
-      raise ValueError('Invalid equation: %s' % equation)
+      raise ValueError(
+          f'Invalid equation: {equation}. The computed and specified output '
+          f'labels do not match: {temp_axis_labels} vs {output_axis_labels}.')
 
     perm = [temp_axis_labels.index(a) for a in output_axis_labels]
     return _transpose_if_necessary(temp, perm)
@@ -343,14 +853,15 @@ def _einsum_v1_parse_and_resolve_equation(equation, input_shapes):
   equation = equation.replace(' ', '')
   match = re.match('^([a-zA-Z,.]+)(->[a-zA-Z.]*)?$', equation)
   if not match:
-    raise ValueError('Indices have incorrect format: %s' % equation)
+    raise ValueError(f'Indices have incorrect format. Received: {equation}.')
 
   input_axis_labels = match.group(1).split(',')
   output_axis_labels = match.group(2)[2:] if match.group(2) else None
 
   if len(input_shapes) != len(input_axis_labels):
-    raise ValueError('Got %d arguments for equation "%s", expecting %d' %
-                     (len(input_shapes), equation, len(input_axis_labels)))
+    raise ValueError(
+        f'Got {len(input_shapes)} arguments for equation "{equation}", '
+        f'expecting {len(input_axis_labels)}.')
 
   # Resolve Ellipsis
   # Assign axes labels for unspecified dimensions in inputs. Labels taken
@@ -358,15 +869,17 @@ def _einsum_v1_parse_and_resolve_equation(equation, input_shapes):
   # tensors of different length and unlabeled output.
   ellipsis_axes = ''
   if '...' in equation:
-    unused = ''.join([c for c in string.ascii_letters
-                      if c not in ''.join(input_axis_labels)])
+    unused = ''.join(
+        c for c in string.ascii_letters if c not in ''.join(input_axis_labels))
     for i, ax in enumerate(input_axis_labels):
       if '...' in ax:
         parts = ax.split('...')
         if len(parts) != 2:
-          raise ValueError('Unable to resolve ellipsis. Excess number found.')
+          raise ValueError(f'Unable to resolve ellipsis. '
+                           f'Excess number found: {len(parts)-1} vs 1.')
         if input_shapes[i].ndims is None:
-          raise ValueError('Unable to statically infer ellipsis axes.')
+          raise ValueError('Unable to statically infer ellipsis axes. The '
+                           'input shapes has a dynamic dimensionality.')
         n = input_shapes[i].ndims - len(''.join(parts))
         if n < 0:
           raise ValueError('Ellipses lengths do not match.')
@@ -379,13 +892,15 @@ def _einsum_v1_parse_and_resolve_equation(equation, input_shapes):
         if len(replace_axes) > len(ellipsis_axes):
           ellipsis_axes = replace_axes
 
-    if any(['.' in ax for ax in input_axis_labels]):
-      raise ValueError('period "." found outside of ellipsis')
+    if any('.' in ax for ax in input_axis_labels):
+      raise ValueError(
+          f'Period "." found outside of ellipsis in input {input_axis_labels}.')
 
     if output_axis_labels is not None:
       output_axis_labels = output_axis_labels.replace('...', ellipsis_axes)
       if '.' in output_axis_labels:
-        raise ValueError('period "." found outside of ellipsis')
+        raise ValueError(f'Period "." found outside of ellipsis in output '
+                         f'{output_axis_labels}.')
 
   if output_axis_labels is None:
     # infer the output subscripts if not given, assume alphabetical order,
@@ -432,12 +947,12 @@ def _einsum_v1_reduction(t0, t0_axis_labels, t1, t1_axis_labels, axes_to_sum):
   """
   if len(t0_axis_labels) != len(t0.shape):
     raise ValueError(
-        'Tensor t0 of rank %d does not match einsum reduction of length %d' %
-        (len(t0.shape), len(t0_axis_labels)))
+        f'Tensor `t0` of rank {len(t0.shape)} does not match einsum reduction '
+        f'of length {len(t0_axis_labels)}.')
   if len(t1_axis_labels) != len(t1.shape):
     raise ValueError(
-        'Tensor t1 of rank %d does not match einsum reduction of length %d' %
-        (len(t1.shape), len(t1_axis_labels)))
+        f'Tensor `t1` of rank {len(t1.shape)} does not match einsum reduction '
+        f'of length {len(t1_axis_labels)}')
 
   # This function computes the result of a two-argument einsum() using batch
   # matrix multiplication.  This involves
@@ -546,7 +1061,7 @@ def _reshape_if_necessary(tensor, new_shape):
   new_shape = tuple(-1 if x is None else x for x in new_shape)
   cur_shape = tuple(x.value for x in tensor.shape.dims)
   if (len(new_shape) == len(cur_shape) and
-      all(not isinstance(d1, ops.Tensor) and (d0 == d1 or d1 == -1)
+      all(not isinstance(d1, tensor_lib.Tensor) and (d0 == d1 or d1 == -1)
           for d0, d1 in zip(cur_shape, new_shape))):
     return tensor
   else:
@@ -591,7 +1106,7 @@ def _exponential_space_einsum_v1(equation, *inputs):
 
   missing_idx = set(idx_out).difference(idx_all)
   if missing_idx:
-    raise ValueError('Unknown output axes: %s' % missing_idx)
+    raise ValueError(f'Unknown output axes: {missing_idx}.')
 
   axis_order = {}
   for ax in indices:
@@ -604,17 +1119,14 @@ def _exponential_space_einsum_v1(equation, *inputs):
   for i, (input_, axes_) in enumerate(zip(inputs, idx_in)):
     if input_.shape.ndims != len(axes_):
       raise ValueError(
-          'Input %d with axes %s has incorrect' \
-          ' number of dimensions (expected %d, got %d)' % (
-              i, axes_, len(axes_), input_.shape.ndims
-          )
-      )
+          f'Input {i} with axes {axes_} has incorrect number of dimensions '
+          f'(expected {len(axes_)}, got {input_.shape.ndims}).')
 
     sorted_idx = sorted(axes_, key=axis_order.get)
 
     if len(set(axes_)) != len(axes_):
       raise ValueError(
-          'Subscript not supported: an axis appears more than once: %s' % axes_)
+          f'Subscript not supported: an axis appears more than once: {axes_}.')
 
     if list(axes_) != sorted_idx:
       permuted = [axes_.find(ax) for ax in sorted_idx]
@@ -638,7 +1150,8 @@ def _exponential_space_einsum_v1(equation, *inputs):
           dims.append(dim)
 
     if len(set(dims)) > 1:
-      raise ValueError('Dimension mismatch on axis: %s' % ax)
+      raise ValueError(f'Dimension mismatch on axis: {ax}. '
+                       f'Found {len(set(dims))}, expected 1.')
 
     if ax not in idx_out:
       reduction_idx.append(j)
@@ -660,8 +1173,9 @@ def _einsum_v2(equation, *inputs, **kwargs):
   name = kwargs.pop('name', None)
   optimize = kwargs.pop('optimize', 'greedy')
   if kwargs:
-    msg = 'Invalid keyword arguments for einsum: {}'
-    raise TypeError(msg.format(', '.join(kwargs)))
+    raise TypeError(
+        f'Invalid keyword arguments for einsum: {", ".join(kwargs)}. '
+        f'Valid arguments: name, optimize, greedy.')
 
   with ops.name_scope(name, 'einsum', [equation, inputs]) as name:
     inputs = list(inputs)
@@ -723,10 +1237,9 @@ def _get_opt_einsum_contract_path(equation, shaped_inputs_tuple, optimize):
 
 
 # Cache the possibly expensive opt_einsum.contract_path call using lru_cache
-# from the Python3 standard library.
-if six.PY3:
-  _get_opt_einsum_contract_path = functools.lru_cache(maxsize=128)(
-      _get_opt_einsum_contract_path)
+# from the Python3+ standard library.
+_get_opt_einsum_contract_path = functools.lru_cache(maxsize=128)(
+    _get_opt_einsum_contract_path)
 
 
 def _einsum_v2_parse_and_resolve_equation(equation, input_shapes):
@@ -739,7 +1252,8 @@ def _einsum_v2_parse_and_resolve_equation(equation, input_shapes):
     # support broadcasting.
     ellipsis_label = '0'
     if ellipsis_label in resolved_equation:
-      raise ValueError('Invalid character "0" in equation: {}'.format(equation))
+      raise ValueError(
+          f'Invalid character "{ellipsis_label}" in equation: {equation}.')
     resolved_equation = resolved_equation.replace('...', ellipsis_label)
 
   # Ensure there are no non-alphanumeric characters in the equation, including
@@ -798,7 +1312,8 @@ def _einsum_v2_parse_and_resolve_equation(equation, input_shapes):
     ellipsis_start = labels.find(ellipsis_label) if ellipsis_label else -1
     if ellipsis_start != -1:  # This input contains an ellipsis.
       if ellipsis_start != labels.rfind(ellipsis_label):
-        raise ValueError('Too many ellipsis')
+        raise ValueError(f'Too many ellipses in input label '
+                         f'{labels.replace(ellipsis_label, "...")}.')
       if len(labels) > len(shape) + 1:
         raise ValueError('Too many named labels in {}th subscript string of'
                          ' equation {} for input shape {} '.format(

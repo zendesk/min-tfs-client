@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for add_n."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
 from tensorflow.lite.testing.zip_test_utils import make_zip_of_tests
@@ -32,16 +28,25 @@ def make_add_n_tests(options):
           "dtype": [tf.float32, tf.int32],
           "input_shape": [[2, 5, 3, 1]],
           "num_inputs": [2, 3, 4, 5],
+          "dynamic_range_quantize": [False],
       },
       {
           "dtype": [tf.float32, tf.int32],
           "input_shape": [[5]],
           "num_inputs": [2, 3, 4, 5],
+          "dynamic_range_quantize": [False],
       },
       {
           "dtype": [tf.float32, tf.int32],
           "input_shape": [[]],
           "num_inputs": [2, 3, 4, 5],
+          "dynamic_range_quantize": [False],
+      },
+      {
+          "dtype": [tf.float32],
+          "input_shape": [[]],
+          "num_inputs": [2, 3, 4, 5],
+          "dynamic_range_quantize": [True],
       },
   ]
 

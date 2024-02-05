@@ -16,16 +16,15 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2TENSORRT_UTILS_PY_UTILS_H_
 #define TENSORFLOW_COMPILER_TF2TENSORRT_UTILS_PY_UTILS_H_
 
+#include <string>
+#include <vector>
+
 namespace tensorflow {
 namespace tensorrt {
 
 bool IsGoogleTensorRTEnabled();
 
-// Return compile time TensorRT library version information {Maj, Min, Patch}.
-void GetLinkedTensorRTVersion(int* major, int* minor, int* patch);
-
-// Return runtime time TensorRT library version information {Maj, Min, Patch}.
-void GetLoadedTensorRTVersion(int* major, int* minor, int* patch);
+std::vector<std::string> GetRegisteredOpConverters();
 
 }  // namespace tensorrt
 }  // namespace tensorflow

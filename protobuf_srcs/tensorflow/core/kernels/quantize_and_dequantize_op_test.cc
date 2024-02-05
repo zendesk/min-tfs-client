@@ -30,11 +30,15 @@ limitations under the License.
 #include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/strings/str_util.h"
+#include "tensorflow/core/platform/status_matchers.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 
 namespace tensorflow {
 namespace {
+
+using ::tensorflow::testing::StatusIs;
+using ::testing::MatchesRegex;
 
 class QuantizeAndDequantizeTest : public OpsTestBase {};
 
@@ -97,10 +101,10 @@ TEST_F(QuantizeAndDequantizeTest, Convert_scalar_tensor_V3) {
 // Creates a tensor with the specified dims, using values chosen from data,
 // multiplied by (1 + index) along the axis dimension.
 template <typename T>
-std::vector<T> ScalePerSliceAlongAxis(std::vector<int64> dims, int axis,
+std::vector<T> ScalePerSliceAlongAxis(std::vector<int64_t> dims, int axis,
                                       const std::vector<T>& data) {
   uint32 seed = 123;
-  int64 out_size = 1;
+  int64_t out_size = 1;
   for (int dim : dims) {
     out_size *= dim;
   }
@@ -132,7 +136,7 @@ TEST_P(ParameterizedQuantizeAndDequantizeTest, Convert_4D_tensor_with_int8) {
           .Attr("axis", axis)
           .Finalize(node_def()));
   TF_ASSERT_OK(InitOp());
-  const std::vector<int64> dims = {2, 3, 4, 5};
+  const std::vector<int64_t> dims = {2, 3, 4, 5};
   // Each slice contains the same 7 values multiplied by (slice_idx + 1).
   AddInputFromArray<float>(
       TensorShape(dims),
@@ -183,7 +187,7 @@ TEST_P(ParameterizedQuantizeAndDequantizeTest,
           .Attr("axis", axis)
           .Finalize(node_def()));
   TF_ASSERT_OK(InitOp());
-  const std::vector<int64> dims = {5, 7, 11, 13};
+  const std::vector<int64_t> dims = {5, 7, 11, 13};
   // Each slice contains the same 7 values multiplied by (slice_idx + 1).
   AddInputFromArray<float>(
       TensorShape(dims),
@@ -237,7 +241,7 @@ TEST_P(ParameterizedQuantizeAndDequantizeTest,
           .Attr("axis", axis)
           .Finalize(node_def()));
   TF_ASSERT_OK(InitOp());
-  const std::vector<int64> dims = {2, 3, 4, 5};
+  const std::vector<int64_t> dims = {2, 3, 4, 5};
   // Each slice contains the same 7 values multiplied by (slice_idx + 1).
   AddInputFromArray<float>(
       TensorShape(dims),
@@ -320,7 +324,7 @@ TEST_P(ParameterizedQuantizeAndDequantizeTest,
           .Attr("axis", axis)
           .Finalize(node_def()));
   TF_ASSERT_OK(InitOp());
-  const std::vector<int64> dims = {2, 3, 4, 5};
+  const std::vector<int64_t> dims = {2, 3, 4, 5};
   // Each slice contains the same 7 values multiplied by (slice_idx + 1).
   AddInputFromArray<float>(
       TensorShape(dims),
@@ -341,7 +345,7 @@ TEST_P(ParameterizedQuantizeAndDequantizeTest,
   // Then it is dequantized to:
   //   (slice_idx + 1) * {-1, -63.0/127, 0, 38.0/127, 102.0/127, 70/127, 64/127}
 
-  // With int8, each slice of the the tensor is quantized to
+  // With int8, each slice of the tensor is quantized to
   // {-127, -64, 0, 38, 102, 70, 64}.
   // Scale is: (slice_idx + 1) / 127
   // Then it is dequantized to:
@@ -360,6 +364,54 @@ TEST_P(ParameterizedQuantizeAndDequantizeTest,
     EXPECT_EQ(inputs_[1]->flat<float>()(slice_idx), 0.0);
     EXPECT_EQ(inputs_[2]->flat<float>()(slice_idx), 0.0);
   }
+}
+
+// Verifies the Gradient.
+TEST_P(ParameterizedQuantizeAndDequantizeTest, GradientV4_op) {
+  const int axis = GetParam();
+  TF_ASSERT_OK(NodeDefBuilder("qdq_v4_grad_op", "QuantizeAndDequantizeV4Grad")
+                   .Input(FakeInput(DT_FLOAT))
+                   .Input(FakeInput(DT_FLOAT))
+                   .Input(FakeInput(DT_FLOAT))
+                   .Input(FakeInput(DT_FLOAT))
+                   .Attr("axis", axis)
+                   .Finalize(node_def()));
+  TF_ASSERT_OK(InitOp());
+  const std::vector<int64_t> dims = {2, 3, 4, 5};
+  // Input gradient. (repeating 11 values multiplied by (slice_idx + 1))
+  auto gradients = ScalePerSliceAlongAxis<float>(
+      dims, axis, {1, -2, -3, 4, 5, 6, -7, -8, -9, -10, 11});
+  AddInputFromArray<float>(TensorShape(dims), gradients);
+  // Forward op inputs. (repeating 7 values multiplied by (slice_idx + 1)).
+  auto inputs = ScalePerSliceAlongAxis<float>(
+      dims, axis, {-1, -0.5, 0, 0.3, 0.8, 0.55, 0.6});
+  AddInputFromArray<float>(TensorShape(dims), inputs);
+  const int num_slices = (axis == -1) ? 1 : dims[axis];
+  const TensorShape range_shape =
+      (axis == -1) ? TensorShape({}) : TensorShape({num_slices});
+  std::vector<float> input_min_values(num_slices), input_max_values(num_slices);
+  for (int i = 0; i < num_slices; ++i) {
+    input_max_values[i] = 0.8f + i * 0.4f;
+    input_min_values[i] = -input_max_values[i];
+  }
+  AddInputFromArray<float>(range_shape, input_min_values);
+  AddInputFromArray<float>(range_shape, input_max_values);
+  std::vector<float> expected_vals(inputs.size());
+  int minor_size = 1;
+  for (int i = axis + 1; i < dims.size(); ++i) {
+    minor_size *= dims[i];
+  }
+  for (int i = 0; i < inputs.size(); ++i) {
+    int slice_idx = (i / minor_size) % num_slices;
+    expected_vals[i] = ((inputs[i] >= input_min_values[slice_idx]) &&
+                        (inputs[i] <= input_max_values[slice_idx]))
+                           ? gradients[i]
+                           : 0;
+  }
+  TF_ASSERT_OK(RunOpKernel());
+  Tensor expected(allocator(), DT_FLOAT, TensorShape(dims));
+  test::FillValues<float>(&expected, expected_vals);
+  test::ExpectTensorNear<float>(expected, *GetOutput(0), 1e-5);
 }
 
 // Instantiate parameterized tests for axis = -1, 1, 3.
@@ -711,15 +763,40 @@ TEST_F(QuantizeAndDequantizeTest, Invalid_range_given_V3) {
       << s;
 }
 
-#define BM_SIMPLE_QUAN_DEQUAN(DEVICE)                     \
-  static void BM_SIMPLE_QUAN_DEQUAN_##DEVICE(int iters) { \
-    auto root = Scope::NewRootScope().ExitOnError();      \
-    ops::QuantizeAndDequantizeV2(root, -3.5, -3.5, -3.5); \
-    TF_CHECK_OK(root.status());                           \
-    Graph* g = new Graph(OpRegistry::Global());           \
-    TF_CHECK_OK(root.ToGraph(g));                         \
-    test::Benchmark(#DEVICE, g).Run(iters);               \
-  }                                                       \
+// Axis is invalid
+TEST_F(QuantizeAndDequantizeTest, Invalid_axis_given_V3) {
+  TF_ASSERT_OK(
+      NodeDefBuilder("quantize_and_dequantize_Op", "QuantizeAndDequantizeV3")
+          .Input(FakeInput(DT_FLOAT))
+          .Input(FakeInput(DT_FLOAT))
+          .Input(FakeInput(DT_FLOAT))
+          .Input(FakeInput(DT_INT32))
+          .Attr("range_given", false)
+          .Attr("axis", static_cast<int32_t>(-2147483648))
+          .Finalize(node_def()));
+  TF_ASSERT_OK(InitOp());
+  AddInputFromArray<float>(TensorShape({2, 2, 1, 1}), {-0.5, 0, 0.3, 0.8});
+  AddInputFromArray<float>(TensorShape({}), {1.0});  // Min
+  AddInputFromArray<float>(TensorShape({}), {0.0});  // Max
+  AddInputFromArray<int32>(TensorShape({}), {8});    // num_bits
+
+  EXPECT_THAT(
+      RunOpKernel(),
+      StatusIs(
+          error::INVALID_ARGUMENT,
+          MatchesRegex("Axis requested is larger than input dimensions.*")));
+}
+
+#define BM_SIMPLE_QUAN_DEQUAN(DEVICE)                                    \
+  static void BM_SIMPLE_QUAN_DEQUAN_##DEVICE(                            \
+      ::testing::benchmark::State& state) {                              \
+    auto root = Scope::NewRootScope().ExitOnError();                     \
+    ops::QuantizeAndDequantizeV2(root, -3.5, -3.5, -3.5);                \
+    TF_CHECK_OK(root.status());                                          \
+    Graph* g = new Graph(OpRegistry::Global());                          \
+    TF_CHECK_OK(root.ToGraph(g));                                        \
+    test::Benchmark(#DEVICE, g, /*old_benchmark_api*/ false).Run(state); \
+  }                                                                      \
   BENCHMARK(BM_SIMPLE_QUAN_DEQUAN_##DEVICE);
 
 BM_SIMPLE_QUAN_DEQUAN(cpu);

@@ -20,6 +20,7 @@ limitations under the License.
 #include <stdint.h>
 
 #include "tensorflow/c/c_api.h"
+#include "tensorflow/c/c_api_macros.h"
 #include "tensorflow/c/eager/c_api.h"
 
 // --------------------------------------------------------------------------
@@ -27,25 +28,6 @@ limitations under the License.
 //
 // The API here is subject to changes in the future.
 // --------------------------------------------------------------------------
-
-// Macro to control visibility of exported symbols in the shared library (.so,
-// .dylib, .dll).
-// This duplicates the TF_EXPORT macro definition in
-// tensorflow/core/platform/macros.h in order to keep this .h file independent
-// of any other includes.$a
-#ifdef SWIG
-#define TF_CAPI_EXPORT
-#else
-#if defined(_WIN32)
-#ifdef TF_COMPILE_LIBRARY
-#define TF_CAPI_EXPORT __declspec(dllexport)
-#else
-#define TF_CAPI_EXPORT __declspec(dllimport)
-#endif  // TF_COMPILE_LIBRARY
-#else
-#define TF_CAPI_EXPORT __attribute__((visibility("default")))
-#endif  // _WIN32
-#endif  // SWIG
 
 #ifdef __cplusplus
 extern "C" {
@@ -74,6 +56,10 @@ TF_CAPI_EXPORT unsigned char TF_SetTfXlaCpuGlobalJit(unsigned char enable);
 // as if passed in XLA_FLAGS. This has global effect.
 TF_CAPI_EXPORT void TF_SetXlaAutoJitMode(const char* mode);
 
+// Returns whether the single GPU or general XLA auto jit optimizations are
+// enabled through MarkForCompilationPassFlags.
+TF_CAPI_EXPORT unsigned char TF_GetXlaAutoJitEnabled();
+
 // Sets XLA's minimum cluster size. This has global effect.
 TF_CAPI_EXPORT void TF_SetXlaMinClusterSize(int size);
 
@@ -86,7 +72,7 @@ TF_CAPI_EXPORT void TF_SetXlaConstantFoldingDisabled(
 
 // Create a serialized tensorflow.ConfigProto proto, where:
 //
-// a) ConfigProto.optimizer_options.global_jit_level is set to to ON_1 if
+// a) ConfigProto.optimizer_options.global_jit_level is set to ON_1 if
 // `enable_xla_compilation` is non-zero, and OFF otherwise.
 // b) ConfigProto.gpu_options.allow_growth is set to `gpu_memory_allow_growth`.
 // c) ConfigProto.device_count is set to `num_cpu_devices`.
@@ -145,73 +131,6 @@ TF_CAPI_EXPORT extern void TF_EnqueueNamedTensor(TF_Session* session,
                                                  TF_Status* status);
 // Create a serialized tensorflow.ServerDef proto.
 TF_Buffer* TFE_GetServerDef(const char* text_proto, TF_Status* status);
-
-// TODO: remove this API in favor of the next one.
-TF_CAPI_EXPORT extern TFE_Context* TFE_NewContextFromSession(
-    const TFE_ContextOptions* opts, TF_Session* sess, TF_Status* status);
-
-// Creates from `session` a new eager context to run a graph function or
-// sends/recvs, so that these concurrent TFE executions can share (via
-// `session` and its associated device mgr) the same set of fifo queue resource
-// ops, used for host<->TF tensor transfers. This way the sends/recvs calls and
-// graph function execution can access the same fifo queue resource handles
-// (associated with devices managed by the device manager, which can be obtained
-// from `session`).
-//
-// TODO: Remove this function once we migrate away from using session.
-TF_CAPI_EXPORT extern TFE_Context* TFE_CreateContextFromSession(
-    TF_Session* session, TF_Status* status);
-
-// TODO: Retire this API in favor of the next one.
-TF_CAPI_EXPORT extern TFE_TensorHandle* TFE_DequeueNamedTensor(
-    TF_Session* session, int tensor_id, TF_DataType inputType,
-    TF_Status* status);
-
-TF_CAPI_EXPORT extern TFE_TensorHandle* TFE_DequeueNamedTensorFromCtx(
-    TFE_Context* ctx, int tensor_id, TF_DataType inputType, TF_Status* status);
-
-TF_CAPI_EXPORT extern void TFE_EnqueueNamedTensor(TF_Session* session,
-                                                  int tensor_id,
-                                                  TFE_TensorHandle* tensor,
-                                                  TF_Status* status);
-
-TF_CAPI_EXPORT extern void TFE_EnqueueNamedTensorFromCtx(
-    TFE_Context* ctx, int tensor_id, TFE_TensorHandle* tensor,
-    TF_Status* status);
-
-// TODO: consider folding the 2 APIs below into the ones above.
-TF_CAPI_EXPORT extern void TFE_EnqueueVariantTensor(TF_Session* session,
-                                                    int tensor_id,
-                                                    TFE_TensorHandle* tensor,
-                                                    TF_Status* status);
-
-TF_CAPI_EXPORT extern TFE_TensorHandle* TFE_DequeueVariantTensor(
-    TF_Session* session, int tensor_id, TF_Status* status);
-
-// Prints `handle` in a human readable format to standard output for debugging.
-TF_CAPI_EXPORT extern void TFE_TensorHandlePrintDebugString(
-    TFE_TensorHandle* handle);
-
-TF_CAPI_EXPORT extern void TFE_OpPrintDebugString(TFE_Op* op);
-
-typedef struct TFE_ExecuteOpNotification TFE_ExecuteOpNotification;
-
-// Allows invoking a kernel asynchronously, and explicitly returns a
-// notification that can be waited upon. This always executes the kernel in a
-// new thread.
-// 1. `retvals` and `num_retvals` can only be consumed after
-// `TFE_ExecuteOp` returns successfully. They shouldn't be used
-// if the return is unsuccessful
-// 2. These new APIs cannot be used together with the TFE context level async
-// support.
-TF_CAPI_EXPORT extern TFE_ExecuteOpNotification* TFE_ExecuteOpInNewThread(
-    TFE_Op* op, TFE_TensorHandle** retvals, int* num_retvals,
-    TF_Status* status);
-
-// Waits to complete the op execution, and cleans up the notification.
-// Errors reported by op execution are set in `status`.
-TF_CAPI_EXPORT extern void TFE_ExecuteOpNotificationWaitAndDelete(
-    TFE_ExecuteOpNotification* notification, TF_Status* status);
 
 TF_CAPI_EXPORT extern void TF_MakeInternalErrorStatus(TF_Status* status,
                                                       const char* errMsg);
@@ -297,52 +216,20 @@ TF_CAPI_EXPORT extern void TFE_EnableCollectiveOps(TFE_Context* ctx,
                                                    size_t proto_len,
                                                    TF_Status* status);
 
-// Create a symbolic tensor from the input graph node.
-TF_CAPI_EXPORT extern TFE_TensorHandle* TFE_NewTensorHandleFromTFOutput(
-    TF_Output t, TF_DataType data_type);
-
-// Returns 0 if the input tensor handle represents a symbolic tensor (i.e., a
-// graph node). Otherwise returns non-0.
-TF_CAPI_EXPORT extern unsigned char TFE_TensorHandleIsConcrete(
-    TFE_TensorHandle* handle);
-
-// If `handle` is a symbolic tensor, return the corresponding graph node
-// represented by TF_Output. Otherwise, return an error status.
-TF_CAPI_EXPORT extern TF_Output TFE_GetTFOutputFromTensorHandle(
-    TFE_TensorHandle* handle, TF_Status* status);
-
-typedef struct TFE_TraceContext TFE_TraceContext;
-
-// A trace context contains a trace graph, to which TFE_AddEagerOpToGraph()
-// calls add graph nodes as a way to symbolically execute the eager ops.
+// Aborts all ongoing collectives with the specified status. After abortion,
+// subsequent collectives will error with this status immediately. To reset the
+// collectives, create a new EagerContext.
 //
-// It also contains a hash map from concrete input tensors to symbolic
-// tensors. That map will be used to create input tensors to the trace graph.
-TF_CAPI_EXPORT extern TFE_TraceContext* TFE_NewTraceContext(TF_Graph* graph);
+// This is intended to be used when a peer failure is detected.
+TF_CAPI_EXPORT extern void TFE_AbortCollectiveOps(TFE_Context* ctx,
+                                                  TF_Status* status);
 
-TF_CAPI_EXPORT extern void TFE_DeleteTraceContext(TFE_TraceContext* trace_ctx);
-
-// Symbolically executes `op`, by adding a corresponding node to the graph
-// associated with `trace_ctx`. This graph node outputs a set of symbolic
-// tensors in `retvals` and `num_retvals`. Returns the corresponding graph
-// operation on success, otherwise returns nullptr.
-TF_CAPI_EXPORT extern TF_Operation* TFE_AddEagerOpToGraph(
-    TFE_Op* op, TFE_TraceContext* trace_ctx, TFE_TensorHandle** retvals,
-    int* num_retvals, TF_Status* status);
-
-// Finalizes the trace graph and its inputs, and returns the number of inputs.
-// After this call, the next two APIs can be called to iterate over the input
-// tensors.
-TF_CAPI_EXPORT extern int TFE_FinalizeInputTensorsFromTraceContext(
-    TFE_TraceContext* trace_ctx);
-
-TF_CAPI_EXPORT extern TF_Output TFE_GetInputGraphNodeFromTraceContext(
-    TFE_TraceContext* trace_ctx, unsigned int idx);
-
-// Each input tensor should be consumed at most once.
-TF_CAPI_EXPORT extern TFE_TensorHandle*
-TFE_ConsumeInputConcreteTensorFromTraceContext(TFE_TraceContext* trace_ctx,
-                                               unsigned int idx);
+// Checks the health of collective ops peers. Explicit health check is needed in
+// multi worker collective ops to detect failures in the cluster.  If a peer is
+// down, collective ops may hang.
+TF_CAPI_EXPORT extern void TFE_CollectiveOpsCheckPeerHealth(
+    TFE_Context* ctx, const char* task, int64_t timeout_in_ms,
+    TF_Status* status);
 
 // Information about the shape of a Tensor and its type.
 struct TF_ShapeAndType {
@@ -402,6 +289,33 @@ TF_CAPI_EXPORT extern void TFE_InferShapes(
 TF_CAPI_EXPORT extern void
 TF_ImportGraphDefOptionsSetValidateColocationConstraints(
     TF_ImportGraphDefOptions* opts, unsigned char enable);
+
+// Load the library specified by library_filename and register the pluggable
+// device and related kernels present in that library. This function is not
+// supported on embedded on mobile and embedded platforms and will fail if
+// called.
+//
+// Pass "library_filename" to a platform-specific mechanism for dynamically
+// loading a library. The rules for determining the exact location of the
+// library are platform-specific and are not documented here.
+//
+// On success, returns the newly created library handle and places OK in status.
+// The caller owns the library handle.
+//
+// On failure, returns nullptr and places an error status in status.
+TF_CAPI_EXPORT extern TF_Library* TF_LoadPluggableDeviceLibrary(
+    const char* library_filename, TF_Status* status);
+
+// Frees the memory associated with the library handle.
+// Does NOT unload the library.
+TF_CAPI_EXPORT extern void TF_DeletePluggableDeviceLibraryHandle(
+    TF_Library* lib_handle);
+
+// Removes `func_name` from `g`. If `func_name` is not in `g`, an error will be
+// returned.
+TF_CAPI_EXPORT extern void TF_GraphRemoveFunction(TF_Graph* g,
+                                                  const char* func_name,
+                                                  TF_Status* status);
 
 #ifdef __cplusplus
 } /* end extern "C" */

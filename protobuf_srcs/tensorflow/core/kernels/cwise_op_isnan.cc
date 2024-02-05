@@ -20,10 +20,10 @@ REGISTER4(UnaryOp, CPU, "IsNan", functor::isnan, float, Eigen::half, double,
           bfloat16);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 REGISTER3(UnaryOp, GPU, "IsNan", functor::isnan, float, Eigen::half, double);
 #endif
+REGISTER(UnaryOp, GPU, "IsNan", functor::isnan, bfloat16);
+#endif
 
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER2(UnaryOp, SYCL, "IsNan", functor::isnan, float, double);
-#endif  // TENSORFLOW_USE_SYCL
 }  // namespace tensorflow

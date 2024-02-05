@@ -15,10 +15,6 @@
 # ==============================================================================
 """Smoke tests for tensorflow module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import pkgutil
 
 import tensorflow as tf
@@ -59,9 +55,8 @@ class ModuleTest(test.TestCase):
           'tf.Tensor([1 2 3 4 5 6 7 8 9], shape=(9,), dtype=int32)',
           str(tf.range(1, 10)))
     else:
-      self.assertEqual(
-          'Tensor("range:0", shape=(9,), dtype=int32)',
-          str(tf.range(1, 10)))
+      self.assertEqual('Tensor("range:0", shape=(9,), dtype=int32)',
+                       str(tf.range(1, 10)))
 
   def testCompatV2HasCompatV1(self):
     # pylint: disable=pointless-statement
@@ -73,11 +68,14 @@ class ModuleTest(test.TestCase):
     tf.summary.image
     # If we use v2 API, check for create_file_writer,
     # otherwise check for FileWriter.
-    if '._api.v2' in tf.bitwise.__name__:
+    if hasattr(tf, '_major_api_version') and tf._major_api_version == 2:
       tf.summary.create_file_writer
     else:
-      tf.summary.FileWriter
+      tf.compat.v1.summary.FileWriter
     # pylint: enable=pointless-statement
+
+  def testPythonModuleIsHidden(self):
+    self.assertNotIn('python', dir(tf))
 
 
 if __name__ == '__main__':

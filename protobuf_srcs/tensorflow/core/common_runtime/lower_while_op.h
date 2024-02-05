@@ -16,14 +16,19 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_COMMON_RUNTIME_LOWER_WHILE_OP_H_
 #define TENSORFLOW_CORE_COMMON_RUNTIME_LOWER_WHILE_OP_H_
 
-#include "tensorflow/core/common_runtime/optimization_registry.h"
 #include "tensorflow/core/lib/core/status.h"
 
 namespace tensorflow {
 
+class Graph;
+class Node;
+class FunctionLibraryDefinition;
+
 // Replaces While node `n` with its lowered form that uses Enter, Exit, Switch,
 // Merge, NextIteration and LoopCond nodes.
-Status RewriteWhileNode(Node* n, Graph* g, bool keep_node_fetchable);
+Status RewriteWhileNode(Node* n, Graph* g,
+                        const FunctionLibraryDefinition* flib_def,
+                        bool keep_node_fetchable);
 
 }  // namespace tensorflow
 

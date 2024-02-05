@@ -4,11 +4,9 @@
 load("//tensorflow:tensorflow.bzl", "tf_cc_binary")
 
 package(
-    default_visibility = ["//tensorflow:internal"],
-    licenses = ["notice"],  # Apache 2.0
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
 )
-
-exports_files(["LICENSE"])
 
 tf_cc_binary(
     name = "detect_objects",

@@ -13,11 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <stdint.h>
+
+#include <initializer_list>
+#include <vector>
+
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -68,13 +72,14 @@ class SpaceToBatchNDOpModel : public SingleOpModel {
 //    m.Invoke();
 class SpaceToBatchNDOpConstModel : public SpaceToBatchNDOpModel {
  public:
-  SpaceToBatchNDOpConstModel(const TensorData& input,
-                             std::initializer_list<int> block_shape,
-                             std::initializer_list<int> paddings,
-                             const TensorData& output) {
+  SpaceToBatchNDOpConstModel(
+      const TensorData& input, std::initializer_list<int> block_shape,
+      std::initializer_list<int> paddings, const TensorData& output,
+      std::initializer_list<int> paddings_dims = {2, 2}) {
     input_ = AddInput(input);
-    block_shape_ = AddConstInput(TensorType_INT32, block_shape, {2});
-    paddings_ = AddConstInput(TensorType_INT32, paddings, {2, 2});
+    block_shape_ = AddConstInput(TensorType_INT32, block_shape,
+                                 {static_cast<int>(block_shape.size())});
+    paddings_ = AddConstInput(TensorType_INT32, paddings, paddings_dims);
     output_ = AddOutput(output);
 
     SetBuiltinOp(BuiltinOperator_SPACE_TO_BATCH_ND,
@@ -94,8 +99,10 @@ class SpaceToBatchNDOpConstModel : public SpaceToBatchNDOpModel {
 //    m.Invoke();
 class SpaceToBatchNDOpDynamicModel : public SpaceToBatchNDOpModel {
  public:
-  SpaceToBatchNDOpDynamicModel(const TensorData& input,
-                               const TensorData& output) {
+  SpaceToBatchNDOpDynamicModel(
+      const TensorData& input, const TensorData& output,
+      std::initializer_list<int> block_shape_dims = {2},
+      std::initializer_list<int> paddings_dims = {2, 2}) {
     input_ = AddInput(input);
     block_shape_ = AddInput(TensorType_INT32);
     paddings_ = AddInput(TensorType_INT32);
@@ -104,11 +111,11 @@ class SpaceToBatchNDOpDynamicModel : public SpaceToBatchNDOpModel {
     SetBuiltinOp(BuiltinOperator_SPACE_TO_BATCH_ND,
                  BuiltinOptions_SpaceToBatchNDOptions,
                  CreateSpaceToBatchNDOptions(builder_).Union());
-    BuildInterpreter({input.shape, {2}, {2, 2}});
+    BuildInterpreter({input.shape, block_shape_dims, paddings_dims});
   }
 };
 
-#ifdef GTEST_HAS_DEATH_TEST
+#if GTEST_HAS_DEATH_TEST
 TEST(SpaceToBatchNDOpTest, InvalidShapeTest) {
   EXPECT_DEATH(
       SpaceToBatchNDOpConstModel({TensorType_FLOAT32, {1, 3, 3, 1}}, {2, 2},
@@ -121,7 +128,7 @@ TEST(SpaceToBatchNDOpTest, SimpleConstTest) {
   SpaceToBatchNDOpConstModel m({TensorType_FLOAT32, {1, 4, 4, 1}}, {2, 2},
                                {0, 0, 0, 0}, {TensorType_FLOAT32});
   m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({4, 2, 2, 1}));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({1, 3, 9, 11, 2, 4, 10, 12, 5, 7,
                                                13, 15, 6, 8, 14, 16}));
@@ -133,7 +140,7 @@ TEST(SpaceToBatchNDOpTest, SimpleDynamicTest) {
   m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
   m.SetBlockShape({2, 2});
   m.SetPaddings({0, 0, 0, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({4, 2, 2, 1}));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({1, 3, 9, 11, 2, 4, 10, 12, 5, 7,
                                                13, 15, 6, 8, 14, 16}));
@@ -143,7 +150,7 @@ TEST(SpaceToBatchNDOpTest, MultipleInputBatchesConstTest) {
   SpaceToBatchNDOpConstModel m({TensorType_FLOAT32, {2, 2, 4, 1}}, {2, 2},
                                {0, 0, 0, 0}, {TensorType_FLOAT32});
   m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({8, 1, 2, 1}));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({1, 3, 9, 11, 2, 4, 10, 12, 5, 7,
                                                13, 15, 6, 8, 14, 16}));
@@ -155,7 +162,7 @@ TEST(SpaceToBatchNDOpTest, MultipleInputBatchesDynamicTest) {
   m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
   m.SetBlockShape({2, 2});
   m.SetPaddings({0, 0, 0, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({8, 1, 2, 1}));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({1, 3, 9, 11, 2, 4, 10, 12, 5, 7,
                                                13, 15, 6, 8, 14, 16}));
@@ -165,7 +172,7 @@ TEST(SpaceToBatchNDOpTest, SimplePaddingConstTest) {
   SpaceToBatchNDOpConstModel m({TensorType_FLOAT32, {1, 5, 2, 1}}, {3, 2},
                                {1, 0, 2, 0}, {TensorType_FLOAT32});
   m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 2, 1}));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({
                                  0, 0, 0, 5, 0, 0, 0, 6, 0, 1, 0, 7,
@@ -179,7 +186,7 @@ TEST(SpaceToBatchNDOpTest, SimplePaddingDynamicTest) {
   m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
   m.SetBlockShape({3, 2});
   m.SetPaddings({1, 0, 2, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 2, 1}));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({
                                  0, 0, 0, 5, 0, 0, 0, 6, 0, 1, 0, 7,
@@ -191,7 +198,7 @@ TEST(SpaceToBatchNDOpTest, ComplexPaddingConstTest) {
   SpaceToBatchNDOpConstModel m({TensorType_FLOAT32, {1, 4, 2, 1}}, {3, 2},
                                {1, 1, 2, 4}, {TensorType_FLOAT32});
   m.SetInput({1, 2, 3, 4, 5, 6, 7, 8});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 4, 1}));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({
                                  0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0,
@@ -206,7 +213,7 @@ TEST(SpaceToBatchNDOpTest, ComplexPaddingDynamicTest) {
   m.SetInput({1, 2, 3, 4, 5, 6, 7, 8});
   m.SetBlockShape({3, 2});
   m.SetPaddings({1, 1, 2, 4});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 4, 1}));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({
                                  0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0,
@@ -215,17 +222,17 @@ TEST(SpaceToBatchNDOpTest, ComplexPaddingDynamicTest) {
                              }));
 }
 
-class QuantizedSpaceToBatchNDOpTest : public ::testing::Test {
- protected:
-  std::vector<Matcher<float>> DequantizedArrayNear(
-      const std::vector<float>& values, const float min, const float max) {
-    const float quantization_tolerance = (max - min) / 255.0;
-    return ArrayFloatNear(values, quantization_tolerance);
-  }
-};
+template <typename integer_dtype = int8_t>
+std::vector<Matcher<float>> DequantizedArrayNear(
+    const std::vector<float>& values, const float min, const float max) {
+  const float quantization_tolerance =
+      (max - min) / (std::numeric_limits<integer_dtype>::max() -
+                     std::numeric_limits<integer_dtype>::min());
+  return ArrayFloatNear(values, quantization_tolerance);
+}
 
-#ifdef GTEST_HAS_DEATH_TEST
-TEST_F(QuantizedSpaceToBatchNDOpTest, ZeroNotInQuantizationRange) {
+#if GTEST_HAS_DEATH_TEST
+TEST(QuantizedSpaceToBatchNDOpTest, ZeroNotInQuantizationRange) {
   // The test_util and actual quantization code currently ensure that the range
   // must include zero, but if that ever changes, this test will catch it.
   EXPECT_DEATH(SpaceToBatchNDOpConstModel m(
@@ -235,74 +242,79 @@ TEST_F(QuantizedSpaceToBatchNDOpTest, ZeroNotInQuantizationRange) {
 }
 #endif
 
-TEST_F(QuantizedSpaceToBatchNDOpTest, SimplePaddingConstTestUint8) {
-  SpaceToBatchNDOpConstModel m({TensorType_UINT8, {1, 5, 2, 1}, -1.0, 1.0},
-                               {3, 2}, {1, 0, 2, 0},
-                               {TensorType_UINT8, {}, -1.0, 1.0});
-  m.SetQuantizedInput<uint8_t>(
+template <typename integer_dtype>
+void SimplePaddingConstTestQuant() {
+  const float kMin = -1;
+  const float kMax =
+      std::numeric_limits<integer_dtype>::max() /
+      static_cast<float>(std::numeric_limits<integer_dtype>::max() + 1);
+  SpaceToBatchNDOpConstModel m(
+      {GetTensorType<integer_dtype>(), {1, 5, 2, 1}, 1.0f * kMin, 1.0f * kMax},
+      {3, 2}, {1, 0, 2, 0},
+      {GetTensorType<integer_dtype>(), {}, 1.0f * kMin, 1.0f * kMax});
+  m.SetQuantizedInput<integer_dtype>(
       {-0.1, 0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8, -0.9, 0.1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 2, 1}));
-  EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
-              ElementsAreArray(DequantizedArrayNear(
+  EXPECT_THAT(m.GetDequantizedOutput<integer_dtype>(),
+              ElementsAreArray(DequantizedArrayNear<integer_dtype>(
                   {0, 0,   0, -0.5, 0, 0,    0, 0.6,  0, -0.1, 0, -0.7,
                    0, 0.2, 0, 0.8,  0, -0.3, 0, -0.9, 0, 0.4,  0, 0.1},
                   -1.0, 1.0)));
 }
 
-TEST_F(QuantizedSpaceToBatchNDOpTest, SimplePaddingConstTestInt8) {
-  SpaceToBatchNDOpConstModel m({TensorType_INT8, {1, 5, 2, 1}, -1.0, 1.0},
-                               {3, 2}, {1, 0, 2, 0},
-                               {TensorType_INT8, {}, -1.0, 1.0});
-  m.SetQuantizedInput<int8_t>(
-      {-0.1, 0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8, -0.9, 0.1});
-  m.Invoke();
-  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 2, 1}));
-  EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
-              ElementsAreArray(DequantizedArrayNear(
-                  {0, 0,   0, -0.5, 0, 0,    0, 0.6,  0, -0.1, 0, -0.7,
-                   0, 0.2, 0, 0.8,  0, -0.3, 0, -0.9, 0, 0.4,  0, 0.1},
-                  -1.0, 1.0)));
+TEST(QuantizedSpaceToBatchNDOpTest, SimplePaddingConstTestUint8) {
+  SimplePaddingConstTestQuant<uint8_t>();
 }
 
-TEST_F(QuantizedSpaceToBatchNDOpTest, SimplePaddingDynamicTestUint8) {
-  SpaceToBatchNDOpDynamicModel m({TensorType_UINT8, {1, 5, 2, 1}, -1.0, 1.0},
-                                 {TensorType_UINT8, {}, -1.0, 1.0});
-  m.SetQuantizedInput<uint8_t>(
-      {-0.1, 0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8, -0.9, 0.1});
-  m.SetBlockShape({3, 2});
-  m.SetPaddings({1, 0, 2, 0});
-  m.Invoke();
-  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 2, 1}));
-  EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
-              ElementsAreArray(DequantizedArrayNear(
-                  {0, 0,   0, -0.5, 0, 0,    0, 0.6,  0, -0.1, 0, -0.7,
-                   0, 0.2, 0, 0.8,  0, -0.3, 0, -0.9, 0, 0.4,  0, 0.1},
-                  -1.0, 1.0)));
+TEST(QuantizedSpaceToBatchNDOpTest, SimplePaddingConstTestInt8) {
+  SimplePaddingConstTestQuant<int8_t>();
 }
 
-TEST_F(QuantizedSpaceToBatchNDOpTest, SimplePaddingDynamicTestInt8) {
-  SpaceToBatchNDOpDynamicModel m({TensorType_INT8, {1, 5, 2, 1}, -1.0, 1.0},
-                                 {TensorType_INT8, {}, -1.0, 1.0});
-  m.SetQuantizedInput<int8_t>(
+TEST(QuantizedSpaceToBatchNDOpTest, SimplePaddingConstTestInt16) {
+  SimplePaddingConstTestQuant<int16_t>();
+}
+
+template <typename integer_dtype>
+void SimplePaddingDynamicTestQuant() {
+  const float kMin = -1;
+  const float kMax =
+      std::numeric_limits<integer_dtype>::max() /
+      static_cast<float>(std::numeric_limits<integer_dtype>::max() + 1);
+  SpaceToBatchNDOpDynamicModel m(
+      {GetTensorType<integer_dtype>(), {1, 5, 2, 1}, 1.0f * kMin, 1.0f * kMax},
+      {GetTensorType<integer_dtype>(), {}, 1.0f * kMin, 1.0f * kMax});
+  m.SetQuantizedInput<integer_dtype>(
       {-0.1, 0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8, -0.9, 0.1});
   m.SetBlockShape({3, 2});
   m.SetPaddings({1, 0, 2, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 2, 1}));
-  EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
-              ElementsAreArray(DequantizedArrayNear(
+  EXPECT_THAT(m.GetDequantizedOutput<integer_dtype>(),
+              ElementsAreArray(DequantizedArrayNear<integer_dtype>(
                   {0, 0,   0, -0.5, 0, 0,    0, 0.6,  0, -0.1, 0, -0.7,
                    0, 0.2, 0, 0.8,  0, -0.3, 0, -0.9, 0, 0.4,  0, 0.1},
                   -1.0, 1.0)));
 }
 
-TEST_F(QuantizedSpaceToBatchNDOpTest, ComplexPaddingConstTest) {
+TEST(QuantizedSpaceToBatchNDOpTest, SimplePaddingDynamicTestUint8) {
+  SimplePaddingDynamicTestQuant<uint8_t>();
+}
+
+TEST(QuantizedSpaceToBatchNDOpTest, SimplePaddingDynamicTestInt8) {
+  SimplePaddingDynamicTestQuant<int8_t>();
+}
+
+TEST(QuantizedSpaceToBatchNDOpTest, SimplePaddingDynamicTestInt16) {
+  SimplePaddingDynamicTestQuant<int16_t>();
+}
+
+TEST(QuantizedSpaceToBatchNDOpTest, ComplexPaddingConstTest) {
   SpaceToBatchNDOpConstModel m({TensorType_UINT8, {1, 4, 2, 1}, -1.0, 1.0},
                                {3, 2}, {1, 1, 2, 4},
                                {TensorType_UINT8, {}, -1.0, 1.0});
   m.SetQuantizedInput<uint8_t>({-0.1, 0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 4, 1}));
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(DequantizedArrayNear(
@@ -314,13 +326,13 @@ TEST_F(QuantizedSpaceToBatchNDOpTest, ComplexPaddingConstTest) {
                   -1.0, 1.0)));
 }
 
-TEST_F(QuantizedSpaceToBatchNDOpTest, ComplexPaddingDynamicTest) {
+TEST(QuantizedSpaceToBatchNDOpTest, ComplexPaddingDynamicTest) {
   SpaceToBatchNDOpDynamicModel m({TensorType_UINT8, {1, 4, 2, 1}, -1.0, 1.0},
                                  {TensorType_UINT8, {}, -1.0, 1.0});
   m.SetQuantizedInput<uint8_t>({-0.1, 0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8});
   m.SetBlockShape({3, 2});
   m.SetPaddings({1, 1, 2, 4});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 2, 4, 1}));
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(DequantizedArrayNear(
@@ -330,6 +342,54 @@ TEST_F(QuantizedSpaceToBatchNDOpTest, ComplexPaddingDynamicTest) {
                       0, -0.3, 0, 0, 0, 0,    0, 0, 0, 0.4, 0, 0, 0, 0,   0, 0,
                   },
                   -1.0, 1.0)));
+}
+
+TEST(SpaceToBatchNDOpTest, Simple3DConstTest) {
+  SpaceToBatchNDOpConstModel m({TensorType_FLOAT32, {1, 4, 4}}, {2}, {0, 0},
+                               {TensorType_FLOAT32}, {1, 2});
+  m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 2, 4}));
+  EXPECT_THAT(m.GetOutput(), ElementsAreArray({1, 2, 3, 4, 9, 10, 11, 12, 5, 6,
+                                               7, 8, 13, 14, 15, 16}));
+}
+
+TEST(SpaceToBatchNDOpTest, Simple3DPaddingConstTest) {
+  SpaceToBatchNDOpConstModel m({TensorType_FLOAT32, {1, 4, 4}}, {2}, {2, 2},
+                               {TensorType_FLOAT32}, {1, 2});
+  m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 4, 4}));
+  EXPECT_THAT(
+      m.GetOutput(),
+      ElementsAreArray({0, 0, 0, 0, 1, 2, 3, 4, 9,  10, 11, 12, 0, 0, 0, 0,
+                        0, 0, 0, 0, 5, 6, 7, 8, 13, 14, 15, 16, 0, 0, 0, 0}));
+}
+
+TEST(SpaceToBatchNDOpTest, Simple3DDynamicTest) {
+  SpaceToBatchNDOpDynamicModel m({TensorType_FLOAT32, {1, 4, 4}},
+                                 {TensorType_FLOAT32}, {1}, {1, 2});
+  m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+  m.SetBlockShape({2});
+  m.SetPaddings({0, 0});
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 2, 4}));
+  EXPECT_THAT(m.GetOutput(), ElementsAreArray({1, 2, 3, 4, 9, 10, 11, 12, 5, 6,
+                                               7, 8, 13, 14, 15, 16}));
+}
+
+TEST(SpaceToBatchNDOpTest, Simple3DPaddingDynamicTest) {
+  SpaceToBatchNDOpDynamicModel m({TensorType_FLOAT32, {1, 4, 4}},
+                                 {TensorType_FLOAT32}, {1}, {1, 2});
+  m.SetInput({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+  m.SetBlockShape({2});
+  m.SetPaddings({2, 2});
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 4, 4}));
+  EXPECT_THAT(
+      m.GetOutput(),
+      ElementsAreArray({0, 0, 0, 0, 1, 2, 3, 4, 9,  10, 11, 12, 0, 0, 0, 0,
+                        0, 0, 0, 0, 5, 6, 7, 8, 13, 14, 15, 16, 0, 0, 0, 0}));
 }
 
 }  // namespace

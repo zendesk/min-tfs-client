@@ -16,13 +16,14 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_EAGER_REMOTE_COPY_NODE_H_
 #define TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_EAGER_REMOTE_COPY_NODE_H_
 
-#include "tensorflow/core/common_runtime/device.h"
+#include <memory>
+#include <vector>
+
 #include "tensorflow/core/common_runtime/eager/eager_executor.h"
 #include "tensorflow/core/common_runtime/eager/eager_operation.h"
 #include "tensorflow/core/common_runtime/eager/tensor_handle.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/lib/core/status.h"
 
 namespace tensorflow {
 namespace eager {
@@ -121,6 +122,9 @@ class RemoteCopyNode : public AsyncEagerNode {
   // SendTensor RPC *on the receiver*.
   void StartRemoteSendTensor(StatusCallback done);
 
+  // Send a local packed TensorHandle to a remote device.
+  void StartSendPackedHandle(StatusCallback done);
+
   // State that is captured by Send and/or Recv callbacks (depending on which
   // one(s) is remote) and outlives this node in the case of remote->remote
   // copy.
@@ -166,6 +170,7 @@ class RemoteCopyNode : public AsyncEagerNode {
   const uint64 recv_op_id_;
 
   std::shared_ptr<CapturedSharedState> captured_state_;
+  bool started_;
 };
 
 }  // namespace eager

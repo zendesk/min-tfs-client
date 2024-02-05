@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/core/grappler/optimizers/loop_optimizer.h"
 
 #include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/core/framework/full_type.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/grappler/grappler_item.h"
@@ -60,13 +61,6 @@ class LoopOptimizerTest : public GrapplerTest {
     AddNode(name, op, inputs, attributes, graph);
   }
 
-  void DisableAllStages(LoopOptimizer* optimizer) {
-    LoopOptimizer::LoopOptimizerOptions options;
-    options.enable_loop_invariant_node_motion = false;
-    options.enable_stack_push_removal = false;
-    optimizer->options_ = options;
-  }
-
   void EnableOnlyLoopInvariantNodeMotion(LoopOptimizer* optimizer) {
     DisableAllStages(optimizer);
     optimizer->options_.enable_loop_invariant_node_motion = true;
@@ -75,6 +69,14 @@ class LoopOptimizerTest : public GrapplerTest {
   void EnableOnlyStackPushRemoval(LoopOptimizer* optimizer) {
     DisableAllStages(optimizer);
     optimizer->options_.enable_stack_push_removal = true;
+  }
+
+ private:
+  void DisableAllStages(LoopOptimizer* optimizer) {
+    LoopOptimizer::LoopOptimizerOptions options;
+    options.enable_loop_invariant_node_motion = false;
+    options.enable_stack_push_removal = false;
+    optimizer->options_ = options;
   }
 };
 
@@ -756,6 +758,16 @@ TEST_F(LoopOptimizerTest, RemoveDeadBranchesConstantCondition) {
   ops::Switch s1(scope.WithOpName("switch1"), v_in, ctrl1);
   Output square1 = ops::Square(scope.WithOpName("square1"), s1.output_false);
   Output sqrt1 = ops::Sqrt(scope.WithOpName("sqrt1"), s1.output_true);
+  // Add full type information to Switch op s1
+  FullTypeDef* s1_t =
+      s1.operation.node()->mutable_def()->mutable_experimental_type();
+  s1_t->set_type_id(TFT_PRODUCT);
+  s1_t->add_args()->set_type_id(TFT_TENSOR);
+  s1_t->mutable_args(0)->add_args()->set_type_id(TFT_FLOAT);
+  s1_t->add_args()->set_type_id(TFT_TENSOR);
+  s1_t->mutable_args(1)->add_args()->set_type_id(TFT_FLOAT);
+  EXPECT_EQ(s1.operation.node()->num_outputs(),
+            s1.operation.node()->def().experimental_type().args_size());
 
   Output ctrl2 = ops::Const(scope.WithOpName("ctrl2"), true, TensorShape({}));
   ops::Switch s2(scope.WithOpName("switch2"), v_in, ctrl2);
@@ -773,14 +785,21 @@ TEST_F(LoopOptimizerTest, RemoveDeadBranchesConstantCondition) {
   Output sqrt4 = ops::Sqrt(scope.WithOpName("sqrt4"), s4.output_true);
 
   ops::Merge m1(scope.WithOpName("m1"), {square1, sqrt1});
+  // Add full type information to Merge op m1
+  FullTypeDef* m1_t =
+      m1.operation.node()->mutable_def()->mutable_experimental_type();
+  m1_t->set_type_id(TFT_PRODUCT);
+  m1_t->add_args()->set_type_id(TFT_TENSOR);
+  m1_t->mutable_args(0)->add_args()->set_type_id(TFT_FLOAT);
+  m1_t->add_args()->set_type_id(TFT_TENSOR);
+  m1_t->mutable_args(1)->add_args()->set_type_id(TFT_INT32);
+  EXPECT_EQ(m1.operation.node()->num_outputs(),
+            m1.operation.node()->def().experimental_type().args_size());
+
   ops::Merge m2(scope.WithOpName("m2"), {v_in, square1});
   ops::Merge m3(scope.WithOpName("m3"), {v_in, sqrt1});
   ops::Merge m4(scope.WithOpName("m4"), {square1, sqrt2});
   ops::Merge m5(scope.WithOpName("m5"), {square2, sqrt1});
-  ops::Merge m6(scope.WithOpName("m6").WithControlDependencies(sqrt2),
-                {v_in, square1});
-  ops::Merge m7(scope.WithOpName("m7").WithControlDependencies(sqrt1),
-                {v_in, square1});
 
   ops::Switch s5(scope.WithOpName("switch5"), v_in, ctrl1);
   Output id1 = ops::Identity(scope.WithOpName("id1"), s5.output_false);
@@ -814,6 +833,9 @@ TEST_F(LoopOptimizerTest, RemoveDeadBranchesConstantCondition) {
       EXPECT_EQ(node.op(), "Identity");
       ASSERT_EQ(node.input_size(), 1);
       EXPECT_EQ(node.input(0), "square1");
+      // Check that full type information is updated to match the one output
+      // of the Identity node.
+      EXPECT_EQ(node.experimental_type().args_size(), 1);
     } else if (node.name() == "m2") {
       // both inputs are alive
       EXPECT_EQ(node.op(), "Merge");
@@ -831,19 +853,6 @@ TEST_F(LoopOptimizerTest, RemoveDeadBranchesConstantCondition) {
       ASSERT_EQ(node.input_size(), 2);
       EXPECT_EQ(node.input(0), "square1");
       EXPECT_EQ(node.input(1), "sqrt2");
-    } else if (node.name() == "m6") {
-      // both inputs are alive and the control dependency can get triggered
-      EXPECT_EQ(node.op(), "Merge");
-      ASSERT_EQ(node.input_size(), 3);
-      EXPECT_EQ(node.input(0), "v_in");
-      EXPECT_EQ(node.input(1), "square1");
-      EXPECT_EQ(node.input(2), "^sqrt2");
-    } else if (node.name() == "m7") {
-      // removed control input from dead sqrt1
-      EXPECT_EQ(node.op(), "Merge");
-      ASSERT_EQ(node.input_size(), 2);
-      EXPECT_EQ(node.input(0), "v_in");
-      EXPECT_EQ(node.input(1), "square1");
     } else if (node.name() == "m8") {
       // The node is to be preserved because of a fetch
       EXPECT_EQ(node.op(), "Merge");
@@ -856,17 +865,105 @@ TEST_F(LoopOptimizerTest, RemoveDeadBranchesConstantCondition) {
       ASSERT_EQ(2, node.input_size());
       EXPECT_EQ(node.input(0), "id3");
       EXPECT_EQ(node.input(1), "id4");
+    } else if (node.name() == "switch1") {
+      // The node can be replaced by Identity with control_dependency
+      EXPECT_EQ(node.op(), "Identity");
+      ASSERT_EQ(node.input_size(), 2);
+      EXPECT_EQ(node.input(0), "v_in");
+      EXPECT_EQ(node.input(1), "^ctrl1");
+      // Check that full type information is updated to match the one output
+      // of the Identity node.
+      EXPECT_EQ(node.experimental_type().args_size(), 1);
+
+    } else if (node.name() == "switch2") {
+      // The node can be replaced by Identity with control_dependency
+      EXPECT_EQ(node.op(), "Identity");
+      ASSERT_EQ(node.input_size(), 2);
+      EXPECT_EQ(node.input(0), "v_in");
+      EXPECT_EQ(node.input(1), "^ctrl2");
+    } else if (node.name() == "switch3") {
+      // The node can be replaced by Identity with control_dependency
+      EXPECT_EQ(node.op(), "Identity");
+      ASSERT_EQ(node.input_size(), 2);
+      EXPECT_EQ(node.input(0), "v_in");
+      EXPECT_EQ(node.input(1), "^ctrl3");
+    } else if (node.name() == "switch4") {
+      // The node can be replaced by Identity with control_dependency
+      EXPECT_EQ(node.op(), "Identity");
+      ASSERT_EQ(node.input_size(), 2);
+      EXPECT_EQ(node.input(0), "v_in");
+      EXPECT_EQ(node.input(1), "^ctrl4");
+    } else if (node.name() == "switch5") {
+      // The node should remain unchanged
+      EXPECT_EQ(node.op(), "Switch");
+      ASSERT_EQ(node.input_size(), 2);
+      EXPECT_EQ(node.input(0), "v_in");
+      EXPECT_EQ(node.input(1), "ctrl1");
+    } else if (node.name() == "switch6") {
+      // The node should remain unchanged
+      EXPECT_EQ(node.op(), "Switch");
+      ASSERT_EQ(node.input_size(), 2);
+      EXPECT_EQ(node.input(0), "v_in");
+      EXPECT_EQ(node.input(1), "ctrl1");
     }
   }
 
-  auto tensors_expected = EvaluateNodes(item.graph, {"m7", "m8", "m9"});
-  ASSERT_EQ(tensors_expected.size(), 3);
+  auto tensors_expected = EvaluateNodes(item.graph, {"m8", "m9"});
+  ASSERT_EQ(tensors_expected.size(), 2);
 
-  auto tensors = EvaluateNodes(output, {"m7", "m8", "m9"});
-  ASSERT_EQ(tensors.size(), 3);
+  auto tensors = EvaluateNodes(output, {"m8", "m9"});
+  ASSERT_EQ(tensors.size(), 2);
 
   test::ExpectTensorNear<float>(tensors_expected[0], tensors[0], 1e-6);
   test::ExpectTensorNear<float>(tensors_expected[1], tensors[1], 1e-6);
+}
+
+TEST_F(LoopOptimizerTest, RemoveDeadBranchesConstantCondition2) {
+  Scope scope = Scope::NewRootScope();
+  Output v_in = ops::Const<float>(scope.WithOpName("v_in"), {123.0}, {});
+
+  Output ctrl1 = ops::Const(scope.WithOpName("ctrl1"), true, TensorShape({}));
+  ops::Switch s1(scope.WithOpName("switch1"), v_in, ctrl1);
+
+  Output square1 = ops::Square(scope.WithOpName("square1"), s1.output_false);
+
+  Output add1 =
+      ops::Add(scope.WithOpName("add1"), s1.output_true, s1.output_true);
+
+  Output const2 = ops::Const<float>(scope.WithOpName("const2"), {20.0}, {});
+  Output add2 = ops::Add(scope.WithOpName("add2"), s1.output_true, const2);
+
+  Output sub1 = ops::Sub(scope.WithOpName("sub1"), add1, add2);
+
+  ops::Merge m1(scope.WithOpName("m1"), {square1, sub1});
+  Output add3 = ops::Add(scope.WithOpName("add3"), m1.output, const2);
+
+  GrapplerItem item;
+  item.fetch.push_back("add3");
+
+  TF_CHECK_OK(scope.ToGraphDef(&item.graph));
+
+  LoopOptimizer optimizer(RewriterConfig::AGGRESSIVE, nullptr);
+  GraphDef output;
+  Status status = optimizer.Optimize(nullptr, item, &output);
+  TF_CHECK_OK(status);
+
+  for (const NodeDef& node : output.node()) {
+    // This node should have been pruned
+    EXPECT_NE(node.name(), "Square1");
+
+    if (node.name() == "m1") {
+      // square1 is dead
+      EXPECT_EQ(node.op(), "Identity");
+      ASSERT_EQ(node.input_size(), 1);
+      EXPECT_EQ(node.input(0), "sub1");
+    } else if (node.name() == "switch1") {
+      EXPECT_EQ(node.op(), "Identity");
+      ASSERT_EQ(node.input_size(), 2);
+      EXPECT_EQ(node.input(0), "v_in");
+      EXPECT_EQ(node.input(1), "^ctrl1");
+    }
+  }
 }
 
 TEST_F(LoopOptimizerTest, RemoveDeadBranchesFullyRemoveDeadBranches) {
@@ -1098,7 +1195,6 @@ node {
   op: "Merge"
   input: "EpisodicReplayBuffer/add/assert_equal/Assert/AssertGuard/control_dependency_1"
   input: "EpisodicReplayBuffer/add/assert_equal/Assert/AssertGuard/control_dependency"
-  input: "^EpisodicReplayBuffer/add/assert_equal/Assert/AssertGuard/Assert"
   device: "/job:localhost/replica:0/task:0/device:CPU:0"
   attr {
     key: "N"

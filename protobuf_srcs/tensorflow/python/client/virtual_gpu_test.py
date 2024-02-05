@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for multiple virtual GPU support."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import random
 
 import numpy as np
@@ -97,7 +93,7 @@ class VirtualGpuTestUtil(object):
 
   # Generates a list of 3-tuples, each tuple contains the source and destination
   # device index for a binary operation like 'add', like:
-  # (src_devcie_1, src_device_2, dst_device)
+  # (src_device_1, src_device_2, dst_device)
   def _GenerateOperationPlacement(self):
     result = []
     for unused_i in range(self._num_ops):

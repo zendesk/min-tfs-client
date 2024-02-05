@@ -14,17 +14,18 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/c/c_api.h"
-
 #include "tensorflow/c/c_api_internal.h"
 #include "tensorflow/c/c_test_util.h"
+#include "tensorflow/core/framework/common_shape_fns.h"
+#include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/op_def.pb.h"
-#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/lib/strings/proto_serialization.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/str_util.h"
+#include "tensorflow/core/platform/strcat.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -34,6 +35,9 @@ namespace {
 // DataType value of DT_INVALID signifies that we don't want to
 // check the data type.
 typedef std::pair<string, DataType> IOSpec;
+
+const char* kFeedStackToString = "File \"feed.cc\", line 10, in alpha";
+const char* kNegStackToString = "File \"neg.cc\", line 15, in beta";
 
 std::vector<IOSpec> M(const std::initializer_list<string>& names) {
   std::vector<IOSpec> v;
@@ -1221,6 +1225,11 @@ void DefineFunction(const char* name, TF_Function** func,
   TF_Operation* feed = Placeholder(func_graph.get(), s.get());
   TF_Operation* neg = Neg(feed, func_graph.get(), s.get());
 
+  std::vector<StackFrame> feed_frames = {{"feed.cc", 10, "alpha"}};
+  std::vector<StackFrame> neg_frames = {{"neg.cc", 15, "beta"}};
+  feed->node.SetStackTrace(std::make_shared<FrozenStackTrace>(feed_frames));
+  neg->node.SetStackTrace(std::make_shared<FrozenStackTrace>(neg_frames));
+
   TF_Output inputs[] = {{feed, 0}};
   TF_Output outputs[] = {{neg, 0}};
   *func = TF_GraphToFunction(func_graph.get(), name, append_hash, -1,
@@ -1260,22 +1269,21 @@ TEST_F(CApiFunctionTest, GraphToFunctionDefWithPlaceholderAttr) {
   NodeWithPlaceholderAttrHelper(func_graph.get(), s.get(), "node3", "v2",
                                 &node3);
 
-  TF_Output inputs[] = {};
   TF_Output outputs[] = {{node1, 0}, {node2, 0}, {node3, 0}};
   func_ = TF_GraphToFunction(
       func_graph.get(), "func", /*append_hash_to_fn_name=*/false, -1,
-      /*opers=*/nullptr, 0, inputs, 3, outputs,
+      /*opers=*/nullptr, 0, nullptr, 3, outputs,
       /*output_names=*/nullptr,
       /*opts=*/nullptr, /*description=*/nullptr, s.get());
   ASSERT_EQ(TF_OK, TF_GetCode(s.get())) << TF_Message(s.get());
   ASSERT_NE(func_, nullptr);
 
   // Verify that FunctionDef has 2 attributes, "v1" and "v2".
-  ASSERT_EQ(func_->fdef.signature().attr().size(), 2);
-  EXPECT_EQ(func_->fdef.signature().attr(0).name(), "v1");
-  EXPECT_EQ(func_->fdef.signature().attr(0).type(), "int");
-  EXPECT_EQ(func_->fdef.signature().attr(1).name(), "v2");
-  EXPECT_EQ(func_->fdef.signature().attr(1).type(), "int");
+  ASSERT_EQ(func_->record->fdef().signature().attr().size(), 2);
+  EXPECT_EQ(func_->record->fdef().signature().attr(0).name(), "v1");
+  EXPECT_EQ(func_->record->fdef().signature().attr(0).type(), "int");
+  EXPECT_EQ(func_->record->fdef().signature().attr(1).name(), "v2");
+  EXPECT_EQ(func_->record->fdef().signature().attr(1).type(), "int");
 }
 
 void NodeWithAttrHelper(TF_Graph* graph, TF_Status* s, const char* name,
@@ -1300,22 +1308,66 @@ TEST_F(CApiFunctionTest, GraphToFunctionDefWithArgAttr) {
                      &node);
 
   TF_Output inputs[] = {{node, 0}};
-  TF_Output outputs[] = {};
   func_ = TF_GraphToFunction(
       func_graph.get(), "func", /*append_hash_to_fn_name=*/false, -1,
-      /*opers=*/nullptr, 1, inputs, 0, outputs,
+      /*opers=*/nullptr, 1, inputs, 0, nullptr,
       /*output_names=*/nullptr,
       /*opts=*/nullptr, /*description=*/nullptr, s.get());
   ASSERT_EQ(TF_OK, TF_GetCode(s.get())) << TF_Message(s.get());
   ASSERT_NE(func_, nullptr);
 
   // Verify that FunctionDef ArgDef has attributes.
-  ASSERT_EQ(func_->fdef.arg_attr_size(), 1);
-  auto arg_attrs = func_->fdef.arg_attr().find(0);
-  ASSERT_NE(arg_attrs, func_->fdef.arg_attr().end());
+  ASSERT_EQ(func_->record->fdef().arg_attr_size(), 1);
+  auto arg_attrs = func_->record->fdef().arg_attr().find(0);
+  ASSERT_NE(arg_attrs, func_->record->fdef().arg_attr().end());
   auto iter = arg_attrs->second.attr().find("_test_attr");
   ASSERT_NE(iter, arg_attrs->second.attr().end());
   EXPECT_EQ(iter->second.s(), "value");
+}
+
+TEST_F(CApiFunctionTest, TFGraphToFunctionWithStackTraces) {
+  DefineFunction(func_name_, &func_);
+  auto stack_traces = func_->record->stack_traces();
+
+  EXPECT_EQ(stack_traces.size(), 4);
+  EXPECT_EQ(stack_traces["neg"]->ToString({}), kNegStackToString);
+  EXPECT_EQ(stack_traces["feed"]->ToString({}), kFeedStackToString);
+}
+
+TEST_F(CApiFunctionTest, TFGraphCopyFunctionWithStackTraces) {
+  // Define the function and its grad
+  DefineFunction(func_name_, &func_);
+  TF_Function* grad_func;
+  DefineFunction("MyGrad", &grad_func);
+
+  // Add func and its gradient to host graph
+  TF_GraphCopyFunction(host_graph_, func_, grad_func, s_);
+
+  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
+
+  TF_DeleteFunction(grad_func);
+
+  const StackTracesMap* func_stack_traces;
+  const StackTracesMap* grad_stack_traces;
+
+  {
+    mutex_lock l(host_graph_->mu);
+    auto flib_def = host_graph_->graph.flib_def();
+    func_stack_traces = flib_def.GetStackTraces(func_name_);
+    grad_stack_traces = flib_def.GetStackTraces("MyGrad");
+  }
+
+  // Verify that stack traces of func is copied to graph function library.
+  ASSERT_NE(func_stack_traces, nullptr);
+  EXPECT_EQ(func_stack_traces->size(), 4);
+  EXPECT_EQ(func_stack_traces->at("neg")->ToString({}), kNegStackToString);
+  EXPECT_EQ(func_stack_traces->at("feed")->ToString({}), kFeedStackToString);
+
+  // Verify that stack traces of grad_func is copied to graph function library.
+  ASSERT_NE(grad_stack_traces, nullptr);
+  EXPECT_EQ(grad_stack_traces->size(), 4);
+  EXPECT_EQ(grad_stack_traces->at("neg")->ToString({}), kNegStackToString);
+  EXPECT_EQ(grad_stack_traces->at("feed")->ToString({}), kFeedStackToString);
 }
 
 TEST_F(CApiFunctionTest, SetGradientAndRun) {
@@ -1603,11 +1655,10 @@ void DefineStatefulFunction(const char* name, TF_Function** func) {
   TF_Operation* random =
       RandomUniform(shape, TF_FLOAT, func_graph.get(), s.get());
 
-  TF_Output inputs[] = {};
   TF_Output outputs[] = {{random, 0}};
   *func = TF_GraphToFunction(func_graph.get(), name,
                              /*append_hash_to_fn_name=*/false, -1,
-                             /*opers=*/nullptr, 0, inputs, 1, outputs,
+                             /*opers=*/nullptr, 0, nullptr, 1, outputs,
                              /*output_names=*/nullptr,
                              /*opts=*/nullptr, "", s.get());
   ASSERT_EQ(TF_OK, TF_GetCode(s.get())) << TF_Message(s.get());
@@ -1706,67 +1757,6 @@ TEST_F(CApiFunctionTest, GetFunctionsFromGraph) {
   TF_DeleteFunction(func0);
   TF_DeleteFunction(func1);
 }
-
-// This test only works when the TF build includes XLA compiler. One way to set
-// this up is via bazel build option "--define with_xla_support=true".
-//
-// FIXME: generalize the macro name TENSORFLOW_EAGER_USE_XLA to
-// something like TENSORFLOW_CAPI_USE_XLA.
-#ifdef TENSORFLOW_EAGER_USE_XLA
-TEST_F(CApiFunctionTest, StatelessIf_XLA) {
-  TF_Function* func;
-  const std::string funcName = "BranchFunc";
-  DefineFunction(funcName.c_str(), &func);
-  TF_GraphCopyFunction(host_graph_, func, nullptr, s_);
-  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
-
-  TF_Operation* feed = Placeholder(host_graph_, s_);
-  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
-
-  TF_Operation* true_cond = ScalarConst(true, host_graph_, s_);
-  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
-
-  TF_OperationDescription* desc =
-      TF_NewOperation(host_graph_, "StatelessIf", "IfNode");
-  TF_AddInput(desc, {true_cond, 0});
-  TF_Output inputs[] = {{feed, 0}};
-  TF_AddInputList(desc, inputs, TF_ARRAYSIZE(inputs));
-  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
-  TF_SetAttrType(desc, "Tcond", TF_BOOL);
-  TF_DataType inputType = TF_INT32;
-  TF_SetAttrTypeList(desc, "Tin", &inputType, 1);
-  TF_SetAttrTypeList(desc, "Tout", &inputType, 1);
-  TF_SetAttrFuncName(desc, "then_branch", funcName.data(), funcName.size());
-  TF_SetAttrFuncName(desc, "else_branch", funcName.data(), funcName.size());
-  TF_SetDevice(desc, "/device:XLA_CPU:0");
-  auto op = TF_FinishOperation(desc, s_);
-  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
-  ASSERT_NE(op, nullptr);
-
-  // Create a session for this graph.
-  CSession csession(host_graph_, s_, /*use_XLA*/ true);
-  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
-
-  // Run the graph.
-  csession.SetInputs({{feed, Int32Tensor(17)}});
-  csession.SetOutputs({op});
-  csession.Run(s_);
-  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
-  TF_Tensor* out = csession.output_tensor(0);
-  ASSERT_TRUE(out != nullptr);
-  EXPECT_EQ(TF_INT32, TF_TensorType(out));
-  EXPECT_EQ(0, TF_NumDims(out));  // scalar
-  ASSERT_EQ(sizeof(int32), TF_TensorByteSize(out));
-  int32* output_contents = static_cast<int32*>(TF_TensorData(out));
-  EXPECT_EQ(-17, *output_contents);
-
-  // Clean up
-  csession.CloseAndDelete(s_);
-  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
-
-  TF_DeleteFunction(func);
-}
-#endif  // TENSORFLOW_EAGER_USE_XLA
 
 }  // namespace
 }  // namespace tensorflow

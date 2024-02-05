@@ -1,4 +1,4 @@
-/* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,22 +15,14 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_KERNELS_REGISTER_H_
 #define TENSORFLOW_LITE_KERNELS_REGISTER_H_
 
-#include "tensorflow/lite/c/c_api_internal.h"
-#include "tensorflow/lite/model.h"
-#include "tensorflow/lite/mutable_op_resolver.h"
+#include "tensorflow/lite/core/kernels/register.h"
 
 namespace tflite {
 namespace ops {
 namespace builtin {
-
-class BuiltinOpResolver : public MutableOpResolver {
- public:
-  BuiltinOpResolver();
-
-  const TfLiteRegistration* FindOp(tflite::BuiltinOperator op,
-                                   int version) const override;
-  const TfLiteRegistration* FindOp(const char* op, int version) const override;
-};
+using BuiltinOpResolver = ::tflite::ops::builtin::BuiltinOpResolver;
+using BuiltinOpResolverWithoutDefaultDelegates =
+    ::tflite::ops::builtin::BuiltinOpResolverWithoutDefaultDelegates;
 
 }  // namespace builtin
 }  // namespace ops

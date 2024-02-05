@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/core/util/xla_config_registry.h"
 
+#include <utility>
+
 #include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
@@ -24,7 +26,7 @@ namespace xla_config_registry {
 namespace {
 struct GlobalJitLevelState {
   mutex mu;
-  GlobalJitLevelGetterTy getter GUARDED_BY(mu);
+  GlobalJitLevelGetterTy getter TF_GUARDED_BY(mu);
 };
 
 GlobalJitLevelState* GetSingletonState() {

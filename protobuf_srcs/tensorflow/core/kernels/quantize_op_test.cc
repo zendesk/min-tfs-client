@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <random>
+
 #include "tensorflow/core/framework/fake_input.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -58,10 +60,11 @@ TEST_F(QuantizedOpTest, QuantizeV2) {
 // Creates a tensor with the specified dims, using values chosen from data,
 // multiplied by (1 + index) along the axis dimension.
 template <typename T>
-std::vector<T> ScalePerSliceAlongAxis(std::vector<int64> dims, int axis,
+std::vector<T> ScalePerSliceAlongAxis(std::vector<int64_t> dims, int axis,
                                       const std::vector<T>& data) {
   uint32 seed = 123;
-  int64 out_size = 1;
+  std::minstd_rand rng(seed);
+  int64_t out_size = 1;
   for (int dim : dims) {
     out_size *= dim;
   }
@@ -72,7 +75,7 @@ std::vector<T> ScalePerSliceAlongAxis(std::vector<int64> dims, int axis,
   std::vector<T> out(out_size);
   int num_slices = (axis == -1) ? 1 : dims[axis];
   for (int out_idx = 0; out_idx < out_size; ++out_idx) {
-    int in_idx = rand_r(&seed) % data.size();
+    int in_idx = rng() % data.size();
     T multiplier = ((out_idx / minor_size) % num_slices) + 1;
     out[out_idx] = data[in_idx] * multiplier;
   }
@@ -90,7 +93,7 @@ TEST_P(ParameterizedQuantizeOpTest, QuantizeV2Quint8Scaled) {
                    .Attr("axis", axis)
                    .Finalize(node_def()));
   TF_ASSERT_OK(InitOp());
-  const std::vector<int64> dims = {2, 3, 4, 5};
+  const std::vector<int64_t> dims = {2, 3, 4, 5};
   int num_slices = (axis == -1) ? 1 : dims[axis];
 
   // Each channel contains the same 8 values multiplied by (channel + 1).
@@ -171,7 +174,7 @@ TEST_P(ParameterizedQuantizeOpTest, QuantizeV2Qint8Scaled) {
                    .Attr("axis", axis)
                    .Finalize(node_def()));
   TF_ASSERT_OK(InitOp());
-  const std::vector<int64> dims = {2, 3, 4, 5};
+  const std::vector<int64_t> dims = {2, 3, 4, 5};
   int num_slices = (axis == -1) ? 1 : dims[axis];
 
   // Each channel contains the same 7 values multiplied by (channel + 1).
@@ -221,7 +224,7 @@ TEST_P(ParameterizedQuantizeOpTest, QuantizeV2Qint8ScaledNarrowRange) {
                    .Attr("axis", axis)
                    .Finalize(node_def()));
   TF_ASSERT_OK(InitOp());
-  const std::vector<int64> dims = {2, 3, 4, 5};
+  const std::vector<int64_t> dims = {2, 3, 4, 5};
   int num_slices = (axis == -1) ? 1 : dims[axis];
 
   // Each channel contains the same 7 values multiplied by (channel + 1).
@@ -381,11 +384,11 @@ TEST_F(QuantizedOpTest, QuantizeV2_32Bit) {
                            });
   // We expect there will be some fuzziness in the lower bits, since this is
   // converting from float.
-  const int64 epsilon = 1 << 8;
+  const int64_t epsilon = 1 << 8;
   const qint32* output_data = GetOutput(0)->flat<qint32>().data();
   const qint32* expected_data = expected.flat<qint32>().data();
   for (int i = 0; i < element_count; ++i) {
-    const int64 delta = output_data[i] - expected_data[i];
+    const int64_t delta = output_data[i] - expected_data[i];
     EXPECT_GT(epsilon, std::abs(delta))
         << "output_data[" << i << "]=" << output_data[i] << ", expected_data["
         << i << "]=" << expected_data[i] << ", delta=" << delta;

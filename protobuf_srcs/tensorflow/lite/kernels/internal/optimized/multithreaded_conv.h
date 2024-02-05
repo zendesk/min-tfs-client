@@ -19,6 +19,7 @@ limitations under the License.
 #include <assert.h>
 #include <stdint.h>
 #include <sys/types.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -26,7 +27,7 @@ limitations under the License.
 #include <tuple>
 #include <type_traits>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
 #include "tensorflow/lite/kernels/internal/common.h"
 #include "tensorflow/lite/kernels/internal/optimized/eigen_spatial_convolutions.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
@@ -140,8 +141,8 @@ inline void Conv(const Eigen::ThreadPoolDevice& device,
                  float* output_data, const RuntimeShape& im2col_shape,
                  float* im2col_data) {
   // Nest profiling under "Conv", to aggregate with other kernels.
-  gemmlowp::ScopedProfilingLabel label("Conv");
-  gemmlowp::ScopedProfilingLabel inner_label("Multithreaded EigenTensor");
+  ruy::profiler::ScopeLabel label("Conv");
+  ruy::profiler::ScopeLabel inner_label("Multithreaded EigenTensor");
 
   // im2col data should not be generated for the multi-thread supporting case.
   TFLITE_DCHECK(!im2col_data);

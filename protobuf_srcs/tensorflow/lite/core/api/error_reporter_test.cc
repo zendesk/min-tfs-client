@@ -23,6 +23,7 @@ namespace tflite {
 
 class MockErrorReporter : public ErrorReporter {
  public:
+  MockErrorReporter() { buffer_[0] = 0; }
   int Report(const char* format, va_list args) override {
     vsnprintf(buffer_, kBufferSize, format, args);
     return 0;
@@ -41,9 +42,20 @@ TEST(ErrorReporter, TestReport) {
   EXPECT_EQ(0, strcmp(mock_reporter.GetBuffer(), "Error: 23"));
 }
 
-}  // namespace tflite
+TEST(ErrorReporter, TestReportMacro) {
+  MockErrorReporter mock_reporter;
+  // Only define the reporter if it's used, to avoid warnings.
+#ifndef TF_LITE_STRIP_ERROR_STRINGS
+  ErrorReporter* reporter = &mock_reporter;
+#endif  // TFLITE_STRIP_ERROR_STRINGS
 
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+  TF_LITE_REPORT_ERROR(reporter, "Error: %d", 23);
+
+#ifndef TF_LITE_STRIP_ERROR_STRINGS
+  EXPECT_EQ(0, strcmp(mock_reporter.GetBuffer(), "Error: 23"));
+#else   // TF_LITE_STRIP_ERROR_STRINGS
+  EXPECT_EQ(0, strcmp(mock_reporter.GetBuffer(), ""));
+#endif  // TF_LITE_STRIP_ERROR_STRINGS
 }
+
+}  // namespace tflite

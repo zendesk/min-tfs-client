@@ -13,12 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include <stdint.h>
+
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
+#include "tensorflow/lite/string_util.h"
 
 namespace tflite {
 namespace ops {
@@ -39,7 +41,7 @@ TfLiteStatus ResizeOutputImpl(TfLiteContext* context, const TfLiteTensor* dims,
     T data = GetTensorData<T>(dims)[i];
     if (data < 0) {
       TfLiteIntArrayFree(output_shape);
-      context->ReportError(context, "Fill dimensions must be >= 0", dims->type);
+      TF_LITE_KERNEL_LOG(context, "Fill dimensions must be >= 0", dims->type);
       return kTfLiteError;
     }
     output_shape->data[i] = data;
@@ -55,7 +57,7 @@ TfLiteStatus ResizeOutput(TfLiteContext* context, const TfLiteTensor* dims,
     case kTfLiteInt64:
       return ResizeOutputImpl<int64_t>(context, dims, output);
     default:
-      context->ReportError(
+      TF_LITE_KERNEL_LOG(
           context,
           "Fill only currently supports int32, int64 for input 0, "
           "got %d.",
@@ -70,8 +72,10 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
 
-  const TfLiteTensor* dims = GetInput(context, node, kDimsTensor);
-  const TfLiteTensor* value = GetInput(context, node, kValueTensor);
+  const TfLiteTensor* dims;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kDimsTensor, &dims));
+  const TfLiteTensor* value;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kValueTensor, &value));
 
   // Make sure the 1st input tensor is 1-D.
   TF_LITE_ENSURE_EQ(context, NumDimensions(dims), 1);
@@ -83,10 +87,20 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   // Make sure the 2nd input tensor is a scalar.
   TF_LITE_ENSURE_EQ(context, NumDimensions(value), 0);
 
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
   output->type = value->type;
 
-  if (IsConstantTensor(dims)) {
+  TF_LITE_ENSURE_EQ(context, output->params.scale, value->params.scale);
+  TF_LITE_ENSURE_EQ(context, output->params.zero_point,
+                    value->params.zero_point);
+
+  if (value->type == kTfLiteInt16) {
+    TF_LITE_ENSURE_EQ(context, value->params.zero_point, 0);
+  }
+
+  if (IsConstantOrPersistentTensor(dims)) {
     TF_LITE_ENSURE_OK(context, ResizeOutput(context, dims, output));
   } else {
     SetTensorToDynamic(output);
@@ -94,13 +108,31 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   return kTfLiteOk;
 }
 
-TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* value = GetInput(context, node, kValueTensor);
+TfLiteStatus FillString(const TfLiteTensor* value, TfLiteTensor* output) {
+  DynamicBuffer buffer;
+  const auto string_ref = GetString(value, 0);
+  int n = 1;
+  for (int i = 0; i < output->dims->size; ++i) {
+    n *= output->dims->data[i];
+  }
+  for (int i = 0; i < n; ++i) {
+    buffer.AddString(string_ref.str, string_ref.len);
+  }
+  buffer.WriteToTensor(output, /*new_shape=*/nullptr);
+  return kTfLiteOk;
+}
 
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+  const TfLiteTensor* value;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kValueTensor, &value));
+
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
 
   if (IsDynamicTensor(output)) {
-    const TfLiteTensor* dims = GetInput(context, node, kDimsTensor);
+    const TfLiteTensor* dims;
+    TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kDimsTensor, &dims));
     TF_LITE_ENSURE_OK(context, ResizeOutput(context, dims, output));
   }
 #define TF_LITE_FILL(data_type)                                               \
@@ -108,20 +140,35 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
                       GetTensorShape(output),                                 \
                       GetTensorData<data_type>(output))
   switch (output->type) {
+    case kTfLiteInt8:
+      TF_LITE_FILL(int8_t);
+      break;
+    case kTfLiteInt16:
+      TF_LITE_FILL(int16_t);
+      break;
     case kTfLiteInt32:
       TF_LITE_FILL(int32_t);
       break;
     case kTfLiteInt64:
       TF_LITE_FILL(int64_t);
       break;
+    case kTfLiteFloat16:
+      TF_LITE_FILL(Eigen::half);
+      break;
     case kTfLiteFloat32:
       TF_LITE_FILL(float);
       break;
+    case kTfLiteBool:
+      TF_LITE_FILL(bool);
+      break;
+    case kTfLiteString:
+      FillString(value, output);
+      break;
     default:
-      context->ReportError(
+      TF_LITE_KERNEL_LOG(
           context,
-          "Fill only currently supports int32, int64, float32 for input 1,"
-          "got %d.",
+          "Fill only currently supports int8, int16, int32, int64, float32, "
+          "bool, string for input 1, got %d.",
           value->type);
       return kTfLiteError;
   }

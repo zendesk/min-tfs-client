@@ -16,10 +16,11 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
-#include "tensorflow/core/kernels/data/name_utils.h"
 #include "tensorflow/core/lib/random/random.h"
 
 namespace tensorflow {
@@ -58,7 +59,7 @@ class MapDatasetOp::Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, name_utils::IteratorPrefix(kDatasetType, prefix)});
   }
 
@@ -72,11 +73,35 @@ class MapDatasetOp::Dataset : public DatasetBase {
     return name_utils::DatasetDebugString(kDatasetType);
   }
 
-  int64 Cardinality() const override { return input_->Cardinality(); }
+  int64_t CardinalityInternal(CardinalityOptions options) const override {
+    if (preserve_cardinality_) {
+      return input_->Cardinality(options);
+    } else {
+      return kUnknownCardinality;
+    }
+  }
+
+  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+    inputs->push_back(input_);
+    return OkStatus();
+  }
 
   Status CheckExternalState() const override {
     TF_RETURN_IF_ERROR(captured_func_->CheckExternalState());
     return input_->CheckExternalState();
+  }
+
+  Status Get(OpKernelContext* ctx, int64 index,
+             std::vector<Tensor>* out_tensors) const override {
+    TF_RETURN_IF_ERROR(CheckRandomAccessCompatible(index));
+    std::vector<Tensor> args;
+    TF_RETURN_IF_ERROR(input_->Get(ctx, index, &args));
+    if (!instantiated_captured_func_) {
+      TF_RETURN_IF_ERROR(
+          captured_func_->Instantiate(InstantiateCapturedFunctionParams(ctx),
+                                      &instantiated_captured_func_));
+    }
+    return instantiated_captured_func_->RunInstantiated(args, out_tensors);
   }
 
  protected:
@@ -117,7 +142,7 @@ class MapDatasetOp::Dataset : public DatasetBase {
          std::make_pair(kPreserveCardinality,
                         preserve_cardinality_attr)},  // Attrs
         output));
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -126,42 +151,41 @@ class MapDatasetOp::Dataset : public DatasetBase {
     explicit Iterator(const Params& params)
         : DatasetIterator<Dataset>(params) {}
 
+    bool SymbolicCheckpointCompatible() const override { return true; }
+
     Status Initialize(IteratorContext* ctx) override {
       TF_RETURN_IF_ERROR(
-          dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_));
+          dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_));
       return dataset()->captured_func_->Instantiate(
           ctx, &instantiated_captured_func_);
     }
 
+    // NOTE(mrry): This method is thread-safe as long as `input_impl_` and `f`
+    // are thread-safe. However, if multiple threads enter this method,
+    // outputs may be observed in a non-deterministic order.
     Status GetNextInternal(IteratorContext* ctx,
                            std::vector<Tensor>* out_tensors,
                            bool* end_of_sequence) override {
-      // NOTE(mrry): This method is thread-safe as long as
-      // `input_impl_` and `f` are thread-safe. However, if multiple
-      // threads enter this method, outputs may be observed in a
-      // non-deterministic order.
-
       std::vector<Tensor> args;
       TF_RETURN_IF_ERROR(input_impl_->GetNext(ctx, &args, end_of_sequence));
       if (*end_of_sequence) {
-        return Status::OK();
+        return OkStatus();
       }
 
-      Status s =
-          instantiated_captured_func_->Run(ctx, std::move(args), out_tensors);
+      Status s = instantiated_captured_func_->Run(ctx, std::move(args),
+                                                  out_tensors, model_node());
       if (errors::IsOutOfRange(s)) {
         if (dataset()->preserve_cardinality_) {
           // To guarantee that the transformation preserves the cardinality of
           // the dataset, we convert `OutOfRange` to `InvalidArgument` as the
           // former may be interpreted by a caller as the end of sequence.
           return errors::InvalidArgument(
-              "Function invocation produced OutOfRangeError: ",
-              s.error_message());
+              "Function invocation produced OutOfRangeError: ", s.message());
         } else {
           // `f` may deliberately raise `errors::OutOfRange` to indicate
           // that we should terminate the iteration early.
           *end_of_sequence = true;
-          return Status::OK();
+          return OkStatus();
         }
       } else {
         return s;
@@ -174,15 +198,18 @@ class MapDatasetOp::Dataset : public DatasetBase {
       return model::MakeKnownRatioNode(std::move(args), /*ratio=*/1);
     }
 
-    Status SaveInternal(IteratorStateWriter* writer) override {
-      TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
-      return Status::OK();
+    Status SaveInternal(SerializationContext* ctx,
+                        IteratorStateWriter* writer) override {
+      TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
+          dataset()->captured_func_->CheckExternalState()));
+      TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
+      return OkStatus();
     }
 
     Status RestoreInternal(IteratorContext* ctx,
                            IteratorStateReader* reader) override {
       TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-      return Status::OK();
+      return OkStatus();
     }
 
    private:
@@ -195,6 +222,9 @@ class MapDatasetOp::Dataset : public DatasetBase {
   const std::unique_ptr<CapturedFunction> captured_func_;
   const DataTypeVector output_types_;
   const std::vector<PartialTensorShape> output_shapes_;
+  // This is used for random access provided by Get().
+  mutable std::unique_ptr<InstantiatedCapturedFunction>
+      instantiated_captured_func_;
 };
 
 MapDatasetOp::MapDatasetOp(OpKernelConstruction* ctx)
@@ -202,7 +232,6 @@ MapDatasetOp::MapDatasetOp(OpKernelConstruction* ctx)
   FunctionMetadata::Params params;
   OP_REQUIRES_OK(ctx, ctx->GetAttr(kUseInterOpParallelism,
                                    &params.use_inter_op_parallelism));
-  params.is_multi_device_function = true;
   OP_REQUIRES_OK(ctx,
                  FunctionMetadata::Create(ctx, kFunc, params, &func_metadata_));
   OP_REQUIRES_OK(ctx, ctx->GetAttr(kOutputTypes, &output_types_));

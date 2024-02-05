@@ -36,12 +36,10 @@ class VariableOp : public OpKernel {
  private:
   DataType dtype_;
   TensorShape shape_;
+  ContainerInfo cinfo_;
 
-  mutex init_mu_;
-  ContainerInfo cinfo_ GUARDED_BY(init_mu_);
-  bool initialized_ GUARDED_BY(init_mu_){false};
-
-  TF_DISALLOW_COPY_AND_ASSIGN(VariableOp);
+  VariableOp(const VariableOp&) = delete;
+  void operator=(const VariableOp&) = delete;
 };
 
 }  // namespace tensorflow

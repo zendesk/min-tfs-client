@@ -15,6 +15,10 @@ limitations under the License.
 
 #include "tensorflow/core/profiler/internal/tfprof_node.h"
 
+#include <algorithm>
+#include <utility>
+#include <vector>
+
 #include "tensorflow/core/profiler/internal/tfprof_utils.h"
 
 namespace tensorflow {
@@ -23,8 +27,7 @@ bool CountAsAcceleratorTime(const string& device) {
   return device.find("stream:all") != device.npos;
 }
 bool CountAsCPUTime(const string& device) {
-  return RE2::FullMatch(device,
-                        ".*/(device:gpu|gpu|device:cpu|cpu|device:sycl):\\d+");
+  return RE2::FullMatch(device, ".*/(device:gpu|gpu|device:cpu|cpu):\\d+");
 }
 bool IsCanonicalDevice(const string& device) { return CountAsCPUTime(device); }
 
@@ -49,21 +52,21 @@ void ExecStep::AddTimeStats(const string& dev, const NodeExecStats& step_stat) {
   if (step_stat.all_start_micros() > 0) {
     if (exec_.all_start_micros() > 0) {
       exec_.set_all_start_micros(
-          std::min(static_cast<int64>(exec_.all_start_micros()),
-                   static_cast<int64>(step_stat.all_start_micros())));
+          std::min(static_cast<int64_t>(exec_.all_start_micros()),
+                   static_cast<int64_t>(step_stat.all_start_micros())));
     } else {
       exec_.set_all_start_micros(step_stat.all_start_micros());
     }
-    int64 op_end_rel_micros = step_stat.op_end_rel_micros();
+    int64_t op_end_rel_micros = step_stat.op_end_rel_micros();
     // Round quick execution to 1 micro to be semantically robust.
     if (op_end_rel_micros == 0) {
       ++op_end_rel_micros;
     }
     exec_.set_latest_end_micros(
-        std::max(static_cast<int64>(exec_.latest_end_micros()),
+        std::max(static_cast<int64_t>(exec_.latest_end_micros()),
                  step_stat.all_start_micros() + op_end_rel_micros));
 
-    const std::pair<int64, int64> pair =
+    const std::pair<int64_t, int64_t> pair =
         std::make_pair(step_stat.all_start_micros(), op_end_rel_micros);
     if (CountAsAcceleratorTime(dev)) {
       accelerator_execs_[dev].push_back(pair);
@@ -85,8 +88,8 @@ void ExecStep::AddMemoryStats(const string& dev,
     exec_mem.set_memory_micros(step_stat.all_start_micros() +
                                step_stat.op_end_rel_micros());
   } else {
-    fprintf(stderr, "%s has no start time, skipping\n",
-            step_stat.node_name().c_str());
+    absl::FPrintF(stderr, "%s has no start time, skipping\n",
+                  step_stat.node_name());
     return;
   }
 
@@ -99,28 +102,28 @@ void ExecStep::AddMemoryStats(const string& dev,
     }
     ++accelerator_allocator_cnt;
     exec_mem.set_allocator_bytes_in_use(
-        std::max(static_cast<int64>(exec_mem.allocator_bytes_in_use()),
-                 static_cast<int64>(mem.allocator_bytes_in_use())));
+        std::max(static_cast<int64_t>(exec_mem.allocator_bytes_in_use()),
+                 static_cast<int64_t>(mem.allocator_bytes_in_use())));
     for (const auto& alloc : mem.allocation_records()) {
       allocations_.push_back(alloc);
     }
   }
   if (accelerator_allocator_cnt > 1) {
-    fprintf(stderr, "found %d gpu allocator for 1 node\n",
-            accelerator_allocator_cnt);
+    absl::FPrintF(stderr, "found %d gpu allocator for 1 node\n",
+                  accelerator_allocator_cnt);
   }
 
-  int64 total_output_bytes = 0;
+  int64_t total_output_bytes = 0;
   for (const auto& output : step_stat.output()) {
     if (output.has_tensor_description() &&
         output.tensor_description().has_allocation_description()) {
       // TODO(xpan): Maybe allocated_bytes.
-      int64 output_bytes = std::max(output.tensor_description()
-                                        .allocation_description()
-                                        .allocated_bytes(),
-                                    output.tensor_description()
-                                        .allocation_description()
-                                        .requested_bytes());
+      int64_t output_bytes = std::max(output.tensor_description()
+                                          .allocation_description()
+                                          .allocated_bytes(),
+                                      output.tensor_description()
+                                          .allocation_description()
+                                          .requested_bytes());
       uint64 output_ptr =
           output.tensor_description().allocation_description().ptr();
       total_output_bytes += output_bytes;
@@ -153,7 +156,7 @@ void ExecStep::AddMemoryStats(const string& dev,
   // TODO(xpan): Make this more accurate:
   // High level: Memory tracking is suspicious and requires large scale
   // clean up.
-  // Investigte the memory usage difference between CPU/GPU with OpViewTest.
+  // Investigate the memory usage difference between CPU/GPU with OpViewTest.
   //
   // 1. OpKernelConstruction::allocate_xxx is not traced. Below, we only
   //    discuss OpKernelContext-related allocations.
@@ -161,16 +164,13 @@ void ExecStep::AddMemoryStats(const string& dev,
   //    'NodeExecStats.memory'.
   // 3. allocate_temp is only tracked through record_xxx_temp. It appears
   //    in 'NodeExecStats.memory_stats'.
-  // 4. allocate_persistent calls allocate_tensor, which is properly tracked
-  //    in 'NodeExecStats.memory'. However, there is no way to count it as
-  //    persistent now.
-  // 5. record_xxx_persistent is called when allocate_persistent
+  // 4. record_xxx_persistent is called when allocate_persistent
   //    is not used and hence tracks some complementary bytes. It appears in
   //    'NodeExecStats.memory_stats'. It's suspicious. But we should
   //    use it now since it covers constant op.
-  int64 residual_bytes = 0;
-  int64 requested_bytes = 0;
-  int64 peak_bytes = 0;
+  int64_t residual_bytes = 0;
+  int64_t requested_bytes = 0;
+  int64_t peak_bytes = 0;
   for (const auto& mem : step_stat.memory()) {
     residual_bytes += mem.live_bytes();
     requested_bytes += mem.total_bytes();
@@ -192,7 +192,7 @@ void ExecStep::AddMemoryStats(const string& dev,
   memory_execs_.emplace_back(exec_mem);
 }
 
-void TFGraphNode::AddStepStat(int64 step, const string& device,
+void TFGraphNode::AddStepStat(int64_t step, const string& device,
                               const NodeExecStats& step_stat) {
   string dev = absl::AsciiStrToLower(device);
 
@@ -210,18 +210,14 @@ void TFGraphNode::AddStepStat(int64 step, const string& device,
     } else {
       node_.set_canonical_device(dev);
       // TODO(xpan): Support things other than gpu?
-      if (dev.find("sycl") != dev.npos) {
-        node_.set_host_device(StringReplace(dev, "device:sycl:\\d+", "cpu:0"));
-      } else {
-        node_.set_host_device(StringReplace(dev, "gpu:\\d+", "cpu:0"));
-      }
+      node_.set_host_device(StringReplace(dev, "gpu:\\d+", "cpu:0"));
       AddOpType(node_.canonical_device());
     }
   }
 
   auto exec = execs_.find(step);
   if (exec == execs_.end()) {
-    execs_.insert(std::pair<int64, ExecStep>(step, ExecStep()));
+    execs_.insert(std::pair<int64_t, ExecStep>(step, ExecStep()));
     exec = execs_.find(step);
   }
 
@@ -232,12 +228,12 @@ void TFGraphNode::AddStepStat(int64 step, const string& device,
   }
 }
 
-int64 ExecStep::exec_micros() const {
+int64_t ExecStep::exec_micros() const {
   return accelerator_exec_micros() + cpu_exec_micros();
 }
 
-int64 ExecStep::accelerator_exec_micros() const {
-  int64 total = 0;
+int64_t ExecStep::accelerator_exec_micros() const {
+  int64_t total = 0;
   // Normally, an op should only be scheduled on 1 accelerator device.
   // Hence there should generally be 1 element in accelerator_execs_.
   for (const auto& execs : accelerator_execs_) {
@@ -250,8 +246,8 @@ int64 ExecStep::accelerator_exec_micros() const {
   return total;
 }
 
-int64 ExecStep::cpu_exec_micros() const {
-  int64 total = 0;
+int64_t ExecStep::cpu_exec_micros() const {
+  int64_t total = 0;
   // Normally, an op can only be scheduled on 1 device.
   for (const auto& execs : cpu_execs_) {
     // An op can be scheduled multiple times in while-loop.
@@ -262,8 +258,8 @@ int64 ExecStep::cpu_exec_micros() const {
   return total;
 }
 
-std::vector<int64> ShapeProtoToVec(const TensorShapeProto& shape_pb) {
-  std::vector<int64> shape_vec;
+std::vector<int64_t> ShapeProtoToVec(const TensorShapeProto& shape_pb) {
+  std::vector<int64_t> shape_vec;
   if (shape_pb.dim_size() == 0 && !shape_pb.unknown_rank()) {
     // Scalar parameter with empty shape but known rank.
     shape_vec.push_back(1);
@@ -275,21 +271,20 @@ std::vector<int64> ShapeProtoToVec(const TensorShapeProto& shape_pb) {
   return shape_vec;
 }
 
-TensorShapeProto VecToShapeProto(const std::vector<int64>& shape_vec) {
+TensorShapeProto VecToShapeProto(const std::vector<int64_t>& shape_vec) {
   TensorShapeProto shape_pb;
   if (shape_vec.empty()) {
     shape_pb.set_unknown_rank(true);
     return shape_pb;
   }
-  for (const int64 s : shape_vec) {
+  for (const int64_t s : shape_vec) {
     shape_pb.add_dim()->set_size(s);
   }
   return shape_pb;
 }
 
 bool IsPlacedOnAccelerator(const string& device) {
-  return device.find("gpu") != device.npos ||
-         device.find("sycl") != device.npos;
+  return device.find("gpu") != device.npos;
 }
 bool IsPlacedOnCPU(const string& device) {
   return device.find("cpu") != device.npos;

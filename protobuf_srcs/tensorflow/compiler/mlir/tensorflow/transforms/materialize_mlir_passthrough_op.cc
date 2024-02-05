@@ -12,21 +12,24 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <iterator>
 #include <memory>
+#include <string>
 #include <tuple>
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
-#include "mlir/IR/Block.h"  // TF:local_config_mlir
-#include "mlir/IR/Diagnostics.h"  // TF:local_config_mlir
-#include "mlir/IR/Module.h"  // TF:local_config_mlir
-#include "mlir/IR/OpDefinition.h"  // TF:local_config_mlir
-#include "mlir/IR/Operation.h"  // TF:local_config_mlir
-#include "mlir/IR/Types.h"  // TF:local_config_mlir
-#include "mlir/IR/Value.h"  // TF:local_config_mlir
-#include "mlir/Parser.h"  // TF:local_config_mlir
-#include "mlir/Pass/Pass.h"  // TF:local_config_mlir
-#include "mlir/Pass/PassRegistry.h"  // TF:local_config_mlir
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/IR/Block.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/Diagnostics.h"  // from @llvm-project
+#include "mlir/IR/OpDefinition.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/IR/Value.h"  // from @llvm-project
+#include "mlir/Parser/Parser.h"  // from @llvm-project
+#include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Pass/PassRegistry.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 
 #define DEBUG_TYPE "tf-materialize-passthrough-op"
@@ -34,24 +37,27 @@ limitations under the License.
 namespace mlir {
 namespace {
 
+#define GEN_PASS_DEF_MATERIALIZEPASSTHROUGHOP
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_passes.h.inc"
+
 class MaterializePassthroughOpPass
-    : public FunctionPass<MaterializePassthroughOpPass> {
+    : public impl::MaterializePassthroughOpBase<MaterializePassthroughOpPass> {
  public:
-  void runOnFunction() override;
+  void runOnOperation() override;
 };
 
-void MaterializePassthroughOpPass::runOnFunction() {
-  getFunction().walk([](Operation *op) {
-    auto passthrough_op = dyn_cast<TF::MlirPassthroughOp>(op);
-    if (!passthrough_op) return;
-    std::string module_string = passthrough_op.mlir_module();
+void MaterializePassthroughOpPass::runOnOperation() {
+  getOperation().walk([](TF::MlirPassthroughOp op) {
+    std::string module_string(op.getMlirModule());
     // Parse the module.
-    auto nested_module = parseSourceString(module_string, op->getContext());
+    auto nested_module =
+        parseSourceString<ModuleOp>(module_string, op.getContext());
     if (!nested_module) {
       op->emitError() << "could not parse attached MLIR module";
       return;
     }
-    FuncOp main = dyn_cast<FuncOp>(nested_module->lookupSymbol("main"));
+    func::FuncOp main =
+        dyn_cast<func::FuncOp>(nested_module->lookupSymbol("main"));
     if (!main) {
       op->emitError() << "MLIR Opaque Op expects a main() entry point\n";
       return;
@@ -63,15 +69,16 @@ void MaterializePassthroughOpPass::runOnFunction() {
                       << main.getNumArguments() << " args)\n";
       return;
     }
-    if (main.getType().getNumResults() != op->getNumResults()) {
+    if (main.getFunctionType().getNumResults() != op->getNumResults()) {
       op->emitError() << "mismatch between MLIR Opaque Op number of results ("
                       << op->getNumResults()
                       << ") and main() entry point in the module ("
-                      << main.getType().getNumResults() << " results)\n";
+                      << main.getFunctionType().getNumResults()
+                      << " results)\n";
       return;
     }
     Region &body = main.getBody();
-    if (body.getBlocks().size() != 1) {
+    if (!llvm::hasSingleElement(body)) {
       op->emitError() << "MLIR Opaque Op expects a main() entry point with a "
                          "single block\n";
       return;
@@ -79,7 +86,7 @@ void MaterializePassthroughOpPass::runOnFunction() {
     Block &block = body.front();
     for (const auto &arg_mapping :
          llvm::zip(block.getArguments(), op->getOperands())) {
-      std::get<0>(arg_mapping)->replaceAllUsesWith(std::get<1>(arg_mapping));
+      std::get<0>(arg_mapping).replaceAllUsesWith(std::get<1>(arg_mapping));
     }
     op->getBlock()->getOperations().splice(op->getIterator(),
                                            block.getOperations(), block.begin(),
@@ -87,7 +94,7 @@ void MaterializePassthroughOpPass::runOnFunction() {
     Operation &return_op = block.front();
     for (auto ret_mapping :
          llvm::zip(op->getResults(), return_op.getOperands())) {
-      std::get<0>(ret_mapping)->replaceAllUsesWith(std::get<1>(ret_mapping));
+      std::get<0>(ret_mapping).replaceAllUsesWith(std::get<1>(ret_mapping));
     }
     op->erase();
   });
@@ -96,14 +103,10 @@ void MaterializePassthroughOpPass::runOnFunction() {
 }  // namespace
 
 namespace TF {
-std::unique_ptr<OpPassBase<FuncOp>> CreateMaterializePassthroughOpPass() {
+std::unique_ptr<OperationPass<func::FuncOp>>
+CreateMaterializePassthroughOpPass() {
   return std::make_unique<MaterializePassthroughOpPass>();
 }
 }  // namespace TF
-
-static PassRegistration<MaterializePassthroughOpPass> pass(
-    "tf-materialize-passthrough-op",
-    "Materialize the MlirPassthroughOp by replacing it with the MLIR module "
-    "attached as an attribute");
 
 }  // namespace mlir

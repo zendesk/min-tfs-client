@@ -18,8 +18,8 @@ As described in the [Introduction](intro.md), AutoGraph aims to preserve the
 semantics of valid Python code. If a control flow statement runs in graph
 execution without raising an error, then AutoGraph will also execute it as
 normal Python control flow. Statements which would normally raise an error, for
-example because a `tf.Tensor` cannot be used as a `bool` in an `if` statement,
-are converted to TensorFlow control flow ops.
+example an `if` statement using a `bool` `Tensor` as condition, are converted to
+TensorFlow control flow ops.
 
 #### Analogy with compile-time constants and code optimization
 
@@ -46,8 +46,8 @@ In the example above, we've optimized away the conditional on a constant
 condition. The AutoGraph dispatch rules have the same effect: anything that is
 not a TensorFlow object is a compile-time constant for TensorFlow, and can be
 optimized away. For this reason, you can usually mix Python and TensorFlow
-computation and it will transparently have the expected result even
-when only some computations are executed in the graph.
+computation, and it will transparently have the expected result even when only
+some computations are executed in the graph.
 
 <!-- TODO(mdan): This is actually a limitation (a very subtle one) -->
 Caution: The assumption of invariant code made above is not true if the
@@ -118,9 +118,9 @@ first with a temporary graph, to determine whether it evaluates to a
 `tf.Tensor`, then if it is a `tf.Tensor`, it's executed a second time in the
 proper graph.
 
-In other words, when tracing executes both branches of an if statement.
-Similarly, the body of loops is executed once (even if the loop would otherwise
-not iterate at all).
+In other words, tracing executes both branches of an if statement. Similarly,
+the body of loops is executed once (even if the loop would otherwise not iterate
+at all).
 
 This explains why inserting `print` statements in an `if` statement produces
 this output:
@@ -164,7 +164,7 @@ after if
 #### Python values modified in TensorFlow control flow become Tensors
 
 If a symbol is modified in a TensorFlow control flow statement, then it becomes
-a `tf.Tensor`, even if it started off as a Python promitive value.
+a `tf.Tensor`, even if it started off as a Python primitive value.
 
 For example, the conditional below will run as a `tf.cond` (its condition is a
 `tf.Tensor`), which in turn will cause `i` to become a `tf.Tensor`.
@@ -173,7 +173,7 @@ For example, the conditional below will run as a `tf.cond` (its condition is a
 i = 0
 if tf.greater(i, 0):
   i = 1
-# i is not a Tensor
+# i is now a Tensor
 ```
 
 ### `if` statements
@@ -264,12 +264,13 @@ for i in tf.stack(l):
 ```
 
 <!-- TODO(mdan): List this under limitations -->
-Caution: A loop in which the type of the condition condition changes across
-iterations, in a way that would influence the way the loop is executed, is not
-allowed in AutoGraph.
 
-For example, the loop below will generate an error. After the first iteration,
-`i` becomes a tf.Tensor, because
+Caution: A loop in which the type of the condition changes across iterations, in
+a way that would influence the way the loop is executed, is not allowed in
+AutoGraph.
+
+For example, the loop below will generate an error, because after the first
+iteration, `i` becomes a tf.Tensor:
 
 ```
 i = 0
@@ -296,7 +297,7 @@ iteration: [3, 4]
 Note: If possible, AutoGraph will also set the `maximum_iteration` parameter
 of the `tf.while_loop`.
 
-`for` statements that iterate over a the output of a `tf.range` are executed as
+`for` statements that iterate over the output of a `tf.range` are executed as
 TensorFlow loops by converting them to a `tf.while_loop` which uses the
 arguments passed to the `tf.range`:
 
@@ -314,9 +315,9 @@ for i in tf.data.Dataset.range(3):
   tf.print('iteration:', i)
 ```
 
-`for` statements that iterate over a _distributed_ `tf.data.Dataset` and which
-do not contain `break` or `return` statements are executed as TensorFlow loops
-by converting them to the datasets' `reduce` ops:
+`for` statements that iterate over a _distributed dataset_ and which do not
+contain `break` or `return` statements are executed as TensorFlow loops by
+converting them to the dataset's `reduce` ops:
 
 ```
 for i in tf.distribute.OneDeviceStrategy('cpu').experimental_distribute_dataset(
@@ -361,11 +362,19 @@ iterate over a Python `list` (or respectively `tuple`), therefore will be
 executed as normal Python. If you intended to run it as a TensorFlow loop,
 use `tf.stack` or `tf.concat`.
 
-Caution: A `for` loop over a Python `range` will be executed as normal Python.
-If you intended to run it as a TensorFlow loop, `tf.range`.
+Caution: A `for` loop over a Python `range` will execute as normal Python.
+If you intended to run it as a TensorFlow loop, use `tf.range`.
 
 Note: AutoGraph may output a warning when it believes that you are unrolling
 a loop inefficiently. However, the warning thresholds are very conservative.
+The warning is only printed when
+[__debug__](https://docs.python.org/3/library/constants.html#__debug__) is
+`True`.
+
+Note: If `__debug__` is `True`, AutoGraph limits the number of iterations in
+normal Python loops to prevent infinite loops and raise an error if the limits
+are exceeded. However, the iteration limits are very large and may take a while
+to trigger an error.
 
 ### `break` statements
 
@@ -412,6 +421,21 @@ def extra_test(break_):
 break_, = ag__.for_stmt(range(10), extra_test, ..., (break_,))
 ```
 
+Mixing Tensor-dependent `break` and Python-dependent loops is disallowed:
+
+```
+@tf.function
+def buggy_while_py_true_tf_break(x):
+  while True:   # python conditional
+    if tf.equal(x, 0): # tensor break
+      break
+    x -= 1
+  return x
+
+# Raises OperatorNotAllowedInGraphError: using a `tf.Tensor` as a Python `bool` is not allowed
+# buggy_while_true_tf_break(5)
+```
+
 ### `continue` statements
 
 Code blocks in which `continue` statements are used are rewritten with
@@ -451,7 +475,7 @@ has executed). AutoGraph keeps track of this by using a special value.
 This special value is converted to `None` (the default return value) upon
 exiting the function.
 
-Caution: TensorFlow control flow doe not support undefined values, and an
+Caution: TensorFlow control flow does not support undefined values, and an
 undefined return value is no exception. Therefore, AutoGraph will raise an
 error for TensorFlow control flow in which the return value is not known for
 all code paths.

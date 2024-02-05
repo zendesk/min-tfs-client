@@ -16,13 +16,16 @@ limitations under the License.
 #include "tensorflow/core/distributed_runtime/rpc/rpc_rendezvous_mgr.h"
 
 #include "tensorflow/core/common_runtime/process_util.h"
+#include "tensorflow/core/distributed_runtime/test_utils.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/control_flow.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/platform/blocking_counter.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/random.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -48,16 +51,41 @@ Rendezvous::ParsedKey MakeKey(const string& s) {
 }
 
 namespace {
+// A dummy worker interface implementation that simply triggers the callback
+// with OK status for RecvTensor request.
+class DummyWorker : public TestWorkerInterface {
+ public:
+  void RecvTensorAsync(CallOptions* opts, const RecvTensorRequest* request,
+                       TensorResponse* response, StatusCallback done) override {
+    SchedClosure([done = std::move(done)]() {
+      // Simulate a random delay for RPC. This is needed to fill the entire
+      // object buffer in `RpcRecvTensorFreeList` and trigger the destruction of
+      // RPC call objects.
+      const int64_t t_us = random::New64() % 100 * 1000;
+      Env::Default()->SleepForMicroseconds(t_us);
+      done(OkStatus());
+    });
+  }
+};
+
 // Fake cache implementation for WorkerEnv.
 class DummyWorkerCache : public WorkerCacheInterface {
   void ListWorkers(std::vector<string>* workers) const override {}
   void ListWorkersInJob(const string& job_name,
                         std::vector<string>* workers) const override {}
   WorkerInterface* GetOrCreateWorker(const string& target) override {
-    return nullptr;
+    if (dummy_remote_worker_ == nullptr) {
+      // Ownership transferred to WorkerFreeList
+      dummy_remote_worker_ = new DummyWorker;
+    }
+    return dummy_remote_worker_;
   }
   Status GetEagerClientCache(
       std::unique_ptr<eager::EagerClientCache>* eager_client_cache) override {
+    return errors::Unimplemented("Unimplemented.");
+  }
+  Status GetCoordinationClientCache(
+      std::unique_ptr<CoordinationClientCache>* coord_client_cache) override {
     return errors::Unimplemented("Unimplemented.");
   }
   bool GetDeviceLocalityNonBlocking(const string& device,
@@ -66,7 +94,31 @@ class DummyWorkerCache : public WorkerCacheInterface {
   }
   void GetDeviceLocalityAsync(const string& device, DeviceLocality* locality,
                               StatusCallback done) override {}
+
+ private:
+  DummyWorker* dummy_remote_worker_ = nullptr;
 };
+
+static Device* CreateDevice(const char* type, const char* name) {
+  class FakeDevice : public Device {
+   public:
+    explicit FakeDevice(const DeviceAttributes& attr) : Device(nullptr, attr) {}
+    Status Sync() override { return OkStatus(); }
+    Allocator* GetAllocator(AllocatorAttributes) override { return nullptr; }
+  };
+  DeviceAttributes attr;
+  attr.set_name(name);
+  attr.set_device_type(type);
+  return new FakeDevice(attr);
+}
+
+static DeviceMgr* CreateDeviceMgr() {
+  std::unique_ptr<Device> d0(
+      CreateDevice("CPU", "/job:mnist/replica:1/task:2/cpu:1"));
+  std::vector<std::unique_ptr<Device>> devices;
+  devices.emplace_back(std::move(d0));
+  return new StaticDeviceMgr(std::move(devices));
+}
 }  // namespace
 
 class RpcRendezvousMgrTest : public ::testing::Test {
@@ -75,8 +127,10 @@ class RpcRendezvousMgrTest : public ::testing::Test {
       : cache_(new DummyWorkerCache),
         worker_session_("rpc_session", "/job:mnist/replica:1/task:2",
                         std::unique_ptr<WorkerCacheInterface>(cache_),
-                        std::unique_ptr<DeviceMgr>(),
-                        std::unique_ptr<GraphMgr>(), nullptr),
+                        std::unique_ptr<DeviceMgr>(CreateDeviceMgr()),
+                        std::unique_ptr<GraphMgr>(), nullptr,
+                        [](WorkerSession* worker_session, bool called,
+                           DeviceMgr* remote_device_mgr) { return nullptr; }),
         rmgr_(&env) {
     env.env = Env::Default();
   }
@@ -89,14 +143,13 @@ class RpcRendezvousMgrTest : public ::testing::Test {
 };
 
 TEST_F(RpcRendezvousMgrTest, LocalSendRecv) {
-  const int64 step_id = 123;
+  const int64_t step_id = 123;
   const Rendezvous::ParsedKey key = MakeKey(Rendezvous::CreateKey(
       "/job:mnist/replica:1/task:2/cpu:0", 7890,
       "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
   {
-    RemoteRendezvous* rendez = rmgr_.Find(step_id);
+    tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
     TF_ASSERT_OK(rendez->Initialize(&worker_session_));
-    core::ScopedUnref unref(rendez);
     Rendezvous::Args args;
     TF_ASSERT_OK(rendez->Send(key, args, V("peach"), false));
   }
@@ -114,10 +167,9 @@ TEST_F(RpcRendezvousMgrTest, LocalAbort) {
       "/job:mnist/replica:1/task:2/cpu:0", 7890,
       "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
   {  // Explicit Abort().
-    const int64 step_id = 123;
-    RemoteRendezvous* rendez = rmgr_.Find(step_id);
-    core::ScopedUnref unref(rendez);
-    SchedClosure([this, rendez]() {
+    const int64_t step_id = 123;
+    tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
+    SchedClosure([this, rendez = rendez.GetNewRef()]() {
       env.env->SleepForMicroseconds(100 * 1000);
       rendez->StartAbort(errors::Aborted(""));
     });
@@ -128,9 +180,8 @@ TEST_F(RpcRendezvousMgrTest, LocalAbort) {
     EXPECT_TRUE(errors::IsAborted(rendez->Recv(key, args, &val, &val_dead)));
   }
   {  // Cleanup causes Abort().
-    const int64 step_id = 321;
-    RemoteRendezvous* rendez = rmgr_.Find(step_id);
-    core::ScopedUnref unref(rendez);
+    const int64_t step_id = 321;
+    tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
     SchedClosure([this, step_id]() {
       env.env->SleepForMicroseconds(100 * 1000);
       rmgr_.Cleanup(step_id);
@@ -148,9 +199,8 @@ TEST_F(RpcRendezvousMgrTest, LocalCancel) {
       "/job:mnist/replica:1/task:2/cpu:0", 7890,
       "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
   auto* cm = new CancellationManager();
-  const int64 step_id = 123;
-  RemoteRendezvous* rendez = rmgr_.Find(step_id);
-  core::ScopedUnref unref(rendez);
+  const int64_t step_id = 123;
+  tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
   Notification n;
   SchedClosure([this, cm, &n]() {
     env.env->SleepForMicroseconds(100 * 1000);
@@ -172,11 +222,10 @@ TEST_F(RpcRendezvousMgrTest, CancelAfterReceived) {
       "/job:mnist/replica:1/task:2/cpu:0", 7890,
       "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
   auto* cm = new CancellationManager();
-  const int64 step_id = 123;
-  RemoteRendezvous* rendez = rmgr_.Find(step_id);
-  core::ScopedUnref unref(rendez);
+  const int64_t step_id = 123;
+  tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
   Notification n;
-  SchedClosure([this, rendez, key, cm, &n]() {
+  SchedClosure([this, rendez = rendez.get(), key, cm, &n]() {
     env.env->SleepForMicroseconds(100 * 1000);
     TF_ASSERT_OK(rendez->Send(key, Rendezvous::Args(), V("peach"), false));
     cm->StartCancel();
@@ -193,24 +242,7 @@ TEST_F(RpcRendezvousMgrTest, CancelAfterReceived) {
   delete cm;
 }
 
-TEST_F(RpcRendezvousMgrTest, CleanupAll) {
-  const Rendezvous::ParsedKey key = MakeKey(Rendezvous::CreateKey(
-      "/job:mnist/replica:1/task:2/cpu:0", 7890,
-      "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
-  {
-    const int64 step_id = 123;
-    RemoteRendezvous* rendez = rmgr_.Find(step_id);
-    TF_ASSERT_OK(rendez->Initialize(&worker_session_));
-    core::ScopedUnref unref(rendez);
-    Rendezvous::Args args;
-    TF_ASSERT_OK(rendez->Send(key, args, V("peach"), false));
-    rmgr_.CleanupAll();
-    Tensor val(DT_STRING);
-    bool val_dead = false;
-    EXPECT_TRUE(errors::IsAborted(rendez->Recv(key, args, &val, &val_dead)));
-  }
-}
-
+namespace {
 class DummyDeviceContext : public DeviceContext {
  public:
   explicit DummyDeviceContext(int stream_id) : stream_id_(stream_id) {}
@@ -220,17 +252,17 @@ class DummyDeviceContext : public DeviceContext {
  private:
   const int stream_id_;
 };
+}  // namespace
 
 TEST_F(RpcRendezvousMgrTest, TransferDummyDeviceContext) {
   DummyDeviceContext* dc = new DummyDeviceContext(123);
 
-  const int64 step_id = 123;
+  const int64_t step_id = 123;
   const Rendezvous::ParsedKey key = MakeKey(Rendezvous::CreateKey(
       "/job:mnist/replica:1/task:2/cpu:0", 7890,
       "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
   {
-    RemoteRendezvous* rendez = rmgr_.Find(step_id);
-    core::ScopedUnref unref(rendez);
+    tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
     Rendezvous::Args args;
     args.device_context = dc;
     TF_ASSERT_OK(rendez->Initialize(&worker_session_));
@@ -255,6 +287,59 @@ TEST_F(RpcRendezvousMgrTest, TransferDummyDeviceContext) {
   dc->Unref();
 }
 
-// NOTE: Remote Send/Recv is better tested in worker_test.cc
+TEST_F(RpcRendezvousMgrTest, RemoteRecvOne) {
+  const int64_t step_id = 123;
+  const Rendezvous::ParsedKey key = MakeKey(Rendezvous::CreateKey(
+      "/job:worker/replica:1/task:2/cpu:0", 7890,
+      "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
+  {
+    tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
+    TF_ASSERT_OK(rendez->Initialize(&worker_session_));
+    Rendezvous::Args args;
+
+    Tensor val(DT_STRING);
+    bool val_dead = false;
+
+    TF_ASSERT_OK(rendez->Recv(key, args, &val, &val_dead));
+  }
+  rmgr_.Cleanup(step_id);
+}
+
+TEST_F(RpcRendezvousMgrTest, RemoteRecvAsyncMany) {
+  const int64_t step_id = 123;
+  const Rendezvous::ParsedKey key = MakeKey(Rendezvous::CreateKey(
+      "/job:worker/replica:1/task:2/cpu:0", 7890,
+      "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
+  {
+    tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
+    TF_ASSERT_OK(rendez->Initialize(&worker_session_));
+    Rendezvous::Args args;
+
+    // Send a large number of async RPC requests to fill up the buffer in
+    // `RpcRecvTensorFreeList`, in order to test deleting RPC call objects.
+    int num_requests = 10000;
+    Tensor val(DT_STRING);
+    mutex mu_;
+    Status status = OkStatus();
+    BlockingCounter counter(num_requests);
+
+    for (int i = 0; i < num_requests; i++) {
+      rendez->RecvAsync(
+          key, args,
+          [&mu_, &status, &counter](const Status& s, const Rendezvous::Args&,
+                                    const Rendezvous::Args&, const Tensor&,
+                                    const bool) {
+            {
+              mutex_lock l(mu_);
+              status.Update(s);
+            }
+            counter.DecrementCount();
+          });
+    }
+    counter.Wait();
+    TF_ASSERT_OK(status);
+  }
+  rmgr_.Cleanup(step_id);
+}
 
 }  // namespace tensorflow

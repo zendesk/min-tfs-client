@@ -14,8 +14,11 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/kernels/internal/quantization_util.h"
 
+#include <limits>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "tensorflow/lite/kernels/internal/common.h"
 
 namespace tflite {
 namespace {
@@ -168,7 +171,7 @@ TEST(QuantizationUtilTest, ChooseQuantizationParamsZeroPointOnMinBoundary) {
   EXPECT_EQ(qp.zero_point, 0);
 }
 
-#ifdef GTEST_HAS_DEATH_TEST
+#if GTEST_HAS_DEATH_TEST
 TEST(QuantizationUtilTest, ChooseQuantizationParamsZeroNotInRange) {
   // Assumption is that zero is within the range.
   EXPECT_DEATH(ChooseQuantizationParams<uint8>(10.0, 30.0), "");
@@ -325,7 +328,7 @@ TEST(QuantizationUtilTest, IntegerDoubleCompare) {
   EXPECT_EQ(1, IntegerDoubleCompare(INFINITY, NAN));
 }
 
-#ifdef GTEST_HAS_DEATH_TEST
+#if GTEST_HAS_DEATH_TEST
 TEST(QuantizationUtilTest, ChooseQuantizationParamsInvalidRange) {
   EXPECT_DEATH(ChooseQuantizationParams<uint8>(10.0, -30.0), "");
 }
@@ -397,6 +400,98 @@ TEST(QuantizationUtilTest, QuantizeMultiplierUnderflow) {
 }
 #endif
 
+TEST(QuantizationUtilTest, GetInvSqrtQuantizedMultiplierExp) {
+  auto inv_sqrt = [](std::int32_t input) {
+    int32_t output;
+    int output_shift;
+    GetInvSqrtQuantizedMultiplierExp(input, 1, &output, &output_shift);
+    return std::pair<int32_t, int>{output, output_shift};
+  };
+
+  const auto kInt32Max = std::numeric_limits<std::int32_t>::max();
+  EXPECT_THAT(inv_sqrt(0), Pair(kInt32Max, 0));
+  EXPECT_THAT(inv_sqrt(1), Pair(kInt32Max, 0));
+  EXPECT_THAT(inv_sqrt(2), Pair(1518498372, 0));
+  EXPECT_THAT(inv_sqrt(3), Pair(1239850284, 0));
+  EXPECT_THAT(inv_sqrt(4), Pair(1073741828, 0));
+  EXPECT_THAT(inv_sqrt(100), Pair(214748363, 0));
+  EXPECT_THAT(inv_sqrt(10000), Pair(343597361, 4));
+  EXPECT_THAT(inv_sqrt(1000000), Pair(274877901, 7));
+  EXPECT_THAT(inv_sqrt(100000000), Pair(219902323, 10));
+  EXPECT_THAT(inv_sqrt((1 << 30)), Pair(268435457, 12));
+  EXPECT_THAT(inv_sqrt(kInt32Max), Pair(189812531, 12));
+}
+
+TEST(QuantizationUtilTest, MultiplyByQuantizedMultiplierInt32) {
+  auto quant_and_multiply = [](int32_t x, double multiplier) {
+    int32_t quantized_multiplier;
+    int shift;
+    QuantizeMultiplier(multiplier, &quantized_multiplier, &shift);
+    return MultiplyByQuantizedMultiplier(x, quantized_multiplier, shift);
+  };
+
+  EXPECT_EQ(quant_and_multiply(0, 0.1), 0);
+  EXPECT_EQ(quant_and_multiply(1, 0), 0);
+  EXPECT_EQ(quant_and_multiply(10000, 0.00097656), 10);
+  EXPECT_EQ(quant_and_multiply(-10000, 0.00097656), -10);
+  EXPECT_EQ(quant_and_multiply(std::numeric_limits<int32_t>::min(), 0.00001),
+            -21475);
+  EXPECT_EQ(quant_and_multiply(std::numeric_limits<int32_t>::max(), 0.00001),
+            21475);
+#if !TFLITE_SINGLE_ROUNDING
+  // Single-rounding doesn't support negative multipliers, only test negative
+  // multipliers in double-rounding mode.
+  EXPECT_EQ(quant_and_multiply(10000, -0.00097656), -10);
+  EXPECT_EQ(quant_and_multiply(-10000, -0.00097656), 10);
+  EXPECT_EQ(quant_and_multiply(std::numeric_limits<int32_t>::min(), -0.00001),
+            21475);
+  EXPECT_EQ(quant_and_multiply(std::numeric_limits<int32_t>::max(), -0.00001),
+            -21475);
+#endif
+
+  // Test with maximum possible x and quantized_multiplier
+  const int32_t x = std::numeric_limits<int32_t>::max();
+  const int32_t quantized_multiplier = std::numeric_limits<int32_t>::max();
+  const int shift = -3;
+  const int32_t expected = static_cast<int32_t>(
+      TfLiteRound(static_cast<int64_t>(x) * quantized_multiplier /
+                  static_cast<double>(1LL << (31 - shift))));
+  EXPECT_EQ(MultiplyByQuantizedMultiplier(x, quantized_multiplier, shift),
+            expected);
+  EXPECT_EQ(MultiplyByQuantizedMultiplier(-x, quantized_multiplier, shift),
+            -expected);
+}
+
+TEST(QuantizationUtilTest, MultiplyByQuantizedMultiplierInt64) {
+  auto quant_and_multiply = [](int64_t x, double multiplier) {
+    int32_t quantized_multiplier;
+    int shift;
+    QuantizeMultiplier(multiplier, &quantized_multiplier, &shift);
+    return MultiplyByQuantizedMultiplier(x, quantized_multiplier, shift);
+  };
+
+  // Negative multipliers are not supported by the 64-bit
+  // MultiplyByQuantizedMultiplier, only use >= 0 multipliers.
+  EXPECT_EQ(quant_and_multiply(0, 0.1), 0);
+  EXPECT_EQ(quant_and_multiply(1, 0), 0);
+  EXPECT_EQ(quant_and_multiply(10000, 0.00097656), 10);
+  EXPECT_EQ(quant_and_multiply(-10000, 0.00097656), -10);
+  EXPECT_EQ(quant_and_multiply(-(1LL << 47), 0.00001), -1407385600);
+  EXPECT_EQ(quant_and_multiply((1LL << 47) - 1, 0.00001), 1407385600);
+
+  // Test with maximum possible x and quantized_multiplier
+  const int64_t x = (1LL << 47) - 1;
+  const int32_t quantized_multiplier = std::numeric_limits<int32_t>::max();
+  const int shift = -31;
+  // Expected is around 'x * quantized_multiplier / 2**(31 - shift)' ~= 65536
+  // As there is some rounding error, expected is a bit smaller.
+  const int32_t expected = 65534;
+  EXPECT_EQ(MultiplyByQuantizedMultiplier(x, quantized_multiplier, shift),
+            expected);
+  EXPECT_EQ(MultiplyByQuantizedMultiplier(-x, quantized_multiplier, shift),
+            -expected);
+}
+
 TEST(QuantizationUtilTest, PreprocessSoftmaxScaling) {
   auto quantize = [](double beta, double scale, int integer_bits) {
     int32_t q;
@@ -405,6 +500,16 @@ TEST(QuantizationUtilTest, PreprocessSoftmaxScaling) {
     return std::pair<int32_t, int>{q, s};
   };
 
+#if TFLITE_SINGLE_ROUNDING
+  // If beta * scale is greater than fits in the number of integer bits, the
+  // result is move near the maximum. Otherwise they quantize as expected.
+  // With 4 integer bits we can represent up to 8.0.
+  EXPECT_THAT(quantize(1.0, 8.0, 4), Pair(2147483646, 30));
+  EXPECT_THAT(quantize(1.0, 4.0, 4), Pair(1073741824, 30));
+  // But with 5 bits we can go further.
+  EXPECT_THAT(quantize(2.0, 8.0, 5), Pair(2147483646, 30));
+  EXPECT_THAT(quantize(2.0, 4.0, 5), Pair(1073741824, 30));
+#else
   // If beta * scale is greater than fits in the number of integer bits, the
   // result is move near the maximum. Otherwise they quantize as expected.
   // With 4 integer bits we can represent up to 16.0.
@@ -413,6 +518,7 @@ TEST(QuantizationUtilTest, PreprocessSoftmaxScaling) {
   // But with 5 bits we can go further.
   EXPECT_THAT(quantize(2.0, 16.0, 5), Pair(2147483647, 31));
   EXPECT_THAT(quantize(2.0, 8.0, 5), Pair(1073741824, 31));
+#endif
 }
 #endif  // GTEST_HAS_DEATH_TEST
 

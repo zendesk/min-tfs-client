@@ -466,8 +466,10 @@ void RecomputationRewritingPass(RewriterConfig::MemOptType optimization_level,
         // meaning it either begins with or contains the name scope.
         // Defaults to "gradients/" which will match any node names that begins
         // with "gradients/" or contains "/gradients/".
-        return node.name().find(recomputation_targets_name_scope) == 0 ||
-               node.name().find("/" + recomputation_targets_name_scope) != -1;
+        return absl::StartsWith(node.name(),
+                                recomputation_targets_name_scope) ||
+               static_cast<int>(node.name().find(
+                   "/" + recomputation_targets_name_scope)) != -1;
       };
 
   if (optimization_level == RewriterConfig::RECOMPUTATION_HEURISTICS ||
@@ -510,7 +512,8 @@ void RecomputationRewritingPass(RewriterConfig::MemOptType optimization_level,
   }
 }
 
-bool SchedulingPass(Cluster* cluster, GrapplerItem* item) {
+bool SchedulingPass(Cluster* cluster, std::unique_ptr<GraphMemory>* memory_ptr,
+                    GrapplerItem* item) {
   // Look for AddN nodes (and equivalent) and record input names.
   MutableGraphView view(&item->graph);
 
@@ -536,17 +539,19 @@ bool SchedulingPass(Cluster* cluster, GrapplerItem* item) {
     return false;
   }
 
-  GraphMemory memory(*item);
-  const std::unordered_map<string, DeviceProperties>& devices =
-      cluster->GetDevices();
-  Status s = memory.InferStatically(devices);
-  if (!s.ok()) {
-    VLOG(1) << "Failed to infer memory usage: " << s.error_message();
-    return false;
+  if ((*memory_ptr) == nullptr) {
+    memory_ptr->reset(new GraphMemory(*item));
+    Status s = (*memory_ptr)->InferStatically(cluster->GetDevices());
+    if (!s.ok()) {
+      memory_ptr->reset();
+      VLOG(1) << "Failed to infer memory usage: " << s.message();
+      return false;
+    }
   }
+  const GraphMemory& memory = **memory_ptr;
 
   std::unordered_set<NodeDef*> addn_to_rewrite;
-  for (const auto& device : devices) {
+  for (const auto& device : cluster->GetDevices()) {
     const string& name = device.first;
     const DeviceProperties& prop = device.second;
     if (prop.memory_size() <= 0) {
@@ -572,11 +577,11 @@ bool SchedulingPass(Cluster* cluster, GrapplerItem* item) {
     return false;
   }
   GraphProperties properties(*item);
-  s = properties.InferStatically(/*assume_valid_feeds=*/false,
-                                 /*aggressive_shape_inference=*/false,
-                                 /*include_tensor_values=*/false);
+  Status s = properties.InferStatically(/*assume_valid_feeds=*/false,
+                                        /*aggressive_shape_inference=*/false,
+                                        /*include_tensor_values=*/false);
   if (!s.ok()) {
-    VLOG(1) << "Failed to infer shapes: " << s.error_message();
+    VLOG(1) << "Failed to infer shapes: " << s.message();
     return false;
   }
 
@@ -586,7 +591,7 @@ bool SchedulingPass(Cluster* cluster, GrapplerItem* item) {
   Status initialized_topology = graph_topology.InitializeFromGraph(item->graph);
   if (!initialized_topology.ok()) {
     VLOG(1) << "Failed to initialize graph topology view: "
-            << initialized_topology.error_message();
+            << initialized_topology.message();
     return false;
   }
 
@@ -718,7 +723,7 @@ bool SchedulingPass(Cluster* cluster, GrapplerItem* item) {
     // Rewrite the AddN node as a DestroyTemporaryVariable ops
     node->set_op("DestroyTemporaryVariable");
     node->clear_input();
-    node->clear_attr();
+    EraseRegularNodeAttributes(node);
     (*node->mutable_attr())["T"].set_type(dtype);
     (*node->mutable_attr())["var_name"].set_s(tmp_var->name());
     *node->add_input() = initialize->name();
@@ -789,7 +794,7 @@ Status BuildSwapPair(NodeDef* node, int input_to_swap,
   (*swap_out_node->mutable_attr())["T"].set_type(input_type);
   *swap_pair = std::make_pair(swap_out_node, swap_in_node);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 struct SwapInfo {
@@ -965,7 +970,7 @@ static bool IsSwappable(MutableGraphView::InputPort input) {
 
 struct MemInfo {
   MutableGraphView::OutputPort port;
-  int64 memory_used;
+  int64_t memory_used;
   std::vector<MutableGraphView::InputPort> uses_left;
   double fitness;
 
@@ -973,19 +978,23 @@ struct MemInfo {
 };
 
 static bool IdentifySwappingCandidates(
-    Cluster* cluster, GrapplerItem* item, std::unordered_set<string>* skip_list,
+    Cluster* cluster, GrapplerItem* item,
+    std::unique_ptr<GraphMemory>* memory_ptr,
+    std::unordered_set<string>* skip_list,
     std::unordered_map<NodeDef*, SwapInfo>* nodes_to_swap) {
-  GraphMemory memory(*item);
-  const std::unordered_map<string, DeviceProperties>& devices =
-      cluster->GetDevices();
-  Status s = memory.InferStatically(devices);
-  if (!s.ok()) {
-    VLOG(1) << "Failed to infer memory usage: " << s.error_message();
-    return false;
+  if ((*memory_ptr) == nullptr) {
+    memory_ptr->reset(new GraphMemory(*item));
+    Status s = (*memory_ptr)->InferStatically(cluster->GetDevices());
+    if (!s.ok()) {
+      memory_ptr->reset();
+      VLOG(1) << "Failed to infer memory usage: " << s.message();
+      return false;
+    }
   }
+  const GraphMemory& memory = **memory_ptr;
 
   bool updated_graph = false;
-  for (const auto& device : devices) {
+  for (const auto& device : cluster->GetDevices()) {
     const string& name = device.first;
     const DeviceProperties& prop = device.second;
     if (prop.type() != "GPU") {
@@ -1000,7 +1009,7 @@ static bool IdentifySwappingCandidates(
     if (mem_usage.used_memory <= prop.memory_size()) {
       continue;
     }
-    int64 required_savings = mem_usage.used_memory - prop.memory_size();
+    int64_t required_savings = mem_usage.used_memory - prop.memory_size();
 
     std::unordered_map<string, Costs::NanoSeconds> op_completion_times;
     {
@@ -1138,26 +1147,27 @@ static bool IdentifySwappingCandidates(
 }
 
 bool SwappingPass(RewriterConfig::MemOptType optimization_level,
-                  Cluster* cluster, GrapplerItem* item,
-                  std::unordered_set<string>* skip_list) {
+                  Cluster* cluster, std::unique_ptr<GraphMemory>* memory,
+                  GrapplerItem* item, std::unordered_set<string>* skip_list) {
   std::unordered_map<NodeDef*, SwapInfo> nodes_to_swap;
   if (optimization_level == RewriterConfig::DEFAULT_MEM_OPT ||
       optimization_level == RewriterConfig::SWAPPING_HEURISTICS ||
       optimization_level == RewriterConfig::HEURISTICS) {
     // Use heuristics to figure out what needs to be swapped;
-    IdentifySwappingCandidates(cluster, item, skip_list, &nodes_to_swap);
+    IdentifySwappingCandidates(cluster, item, memory, skip_list,
+                               &nodes_to_swap);
   }
-  // Look for manual annotatations in the graph.
+  // Look for manual annotations in the graph.
   for (auto& node : *item->graph.mutable_node()) {
     if (node.attr().count("_swap_to_host") != 0) {
       SwapInfo& swap_info = nodes_to_swap[&node];
       const AttrValue& val = node.attr().at("_swap_to_host");
       if (val.has_list()) {
-        for (int64 input_id : val.list().i()) {
+        for (int64_t input_id : val.list().i()) {
           swap_info.inputs_to_swap.push_back(input_id);
         }
       } else {
-        int64 input_id = val.i();
+        int64_t input_id = val.i();
         swap_info.inputs_to_swap.push_back(input_id);
       }
     }
@@ -1181,8 +1191,8 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
     const std::vector<OpInfo::TensorProperties>& props =
         properties.GetInputProperties(node->name());
     SwapInfo& swap_info = swap.second;
-    int64 bytes_to_swap = 0;
-    for (int64 input_id : swap_info.inputs_to_swap) {
+    int64_t bytes_to_swap = 0;
+    for (int64_t input_id : swap_info.inputs_to_swap) {
       const OpInfo::TensorProperties& t = props[input_id];
       bytes_to_swap += CalculateTensorSize(t);
     }
@@ -1303,7 +1313,7 @@ Status FindAssignNodesToRelax(const GraphDef& graph,
   }
   if (!found_send && devices.size() == 1) {
     nodes_to_relax->insert(assign_nodes.begin(), assign_nodes.end());
-    return Status::OK();
+    return OkStatus();
   }
 
   GraphTopologyView graph_view;
@@ -1363,7 +1373,7 @@ Status FindAssignNodesToRelax(const GraphDef& graph,
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -1395,7 +1405,8 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
   // that simply won't fit in memory.
   // SchedulingPass() and SwappingPass() rely on defined fetches in order to
   // infer the memory usage, so skip optimization if there are no fetches.
-  if (!item.fetch.empty()) {
+  std::unique_ptr<GraphMemory> memory;
+  if (!item.fetch.empty() && cluster != nullptr) {
     bool updated_graph = true;
     for (int i = 0; i < 25 && updated_graph; ++i) {
       GRAPPLER_RETURN_IF_DEADLINE_EXCEEDED();
@@ -1404,7 +1415,11 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
            optimization_level_ == RewriterConfig::SCHEDULING_HEURISTICS ||
            optimization_level_ == RewriterConfig::HEURISTICS) &&
           cluster != nullptr) {
-        updated_graph |= SchedulingPass(cluster, &optimized_item);
+        if (SchedulingPass(cluster, &memory, &optimized_item)) {
+          // Reset the inferred memory usage since the graph changed.
+          memory.reset();
+          updated_graph = true;
+        }
       }
 
       GRAPPLER_RETURN_IF_DEADLINE_EXCEEDED();
@@ -1413,19 +1428,18 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
            optimization_level_ == RewriterConfig::HEURISTICS ||
            optimization_level_ == RewriterConfig::MANUAL) &&
           cluster != nullptr) {
-        updated_graph |= SwappingPass(optimization_level_, cluster,
-                                      &optimized_item, &skip_list);
+        if (SwappingPass(optimization_level_, cluster, &memory, &optimized_item,
+                         &skip_list)) {
+          // Reset the inferred memory usage since the graph changed.
+          memory.reset();
+          updated_graph = true;
+        }
       }
     }
   }
 
   optimized_graph->Swap(&optimized_item.graph);
-  return Status::OK();
-}
-
-void MemoryOptimizer::Feedback(Cluster* cluster, const GrapplerItem& item,
-                               const GraphDef& optimized_graph, double result) {
-  // Nothing to do for MemoryOptimizer.
+  return OkStatus();
 }
 
 }  // end namespace grappler

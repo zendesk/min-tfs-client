@@ -20,8 +20,7 @@ limitations under the License.
 
 #include <array>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-#include "tensorflow/core/framework/common_shape_fns.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -48,12 +47,12 @@ Eigen::PaddingType BrainPadding2EigenPadding(Padding padding);
 template <typename T>
 bool IsInnerDimsSizeAligned(const TensorShape& s) {
   if (s.dims() == 0) return false;
-  const int64 dim0_size = s.dim_size(0);
+  const int64_t dim0_size = s.dim_size(0);
   if (dim0_size == 0) return false;
 #if EIGEN_MAX_ALIGN_BYTES == 0
   return true;
 #else
-  const int64 bytes_per_dim0 = (s.num_elements() / dim0_size) * sizeof(T);
+  const int64_t bytes_per_dim0 = (s.num_elements() / dim0_size) * sizeof(T);
   return bytes_per_dim0 % EIGEN_MAX_ALIGN_BYTES == 0;
 #endif
 }
@@ -63,7 +62,8 @@ bool IsInnerDimsSizeAligned(const TensorShape& s) {
 // tensor. Here aligned implies the address is a multiple of
 // EIGEN_MAX_ALIGN_BYTES.
 template <typename T>
-bool IsDim0SliceAligned(const TensorShape& s, int64 start, int64 end_or_size) {
+bool IsDim0SliceAligned(const TensorShape& s, int64_t start,
+                        int64_t end_or_size) {
   if (s.dims() == 1) {
 #if EIGEN_MAX_ALIGN_BYTES == 0
     return true;
@@ -82,7 +82,7 @@ bool IsDim0SliceAligned(const TensorShape& s, int64 start, int64 end_or_size) {
 }
 
 // Returns <suffix> sanitized to have only [a-zA-Z0-9-_].
-string SanitizeThreadSuffix(string suffix);
+std::string SanitizeThreadSuffix(std::string suffix);
 
 // Helper to compute 'strides' given a tensor 'shape'. I.e.,
 // strides[i] = prod(shape.dim_size[(i+1):])

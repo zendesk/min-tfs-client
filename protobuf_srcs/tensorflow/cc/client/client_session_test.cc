@@ -17,10 +17,11 @@ limitations under the License.
 
 #include "tensorflow/cc/client/client_session.h"
 
+#include <utility>
 #include <vector>
 
 #include "absl/synchronization/barrier.h"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
@@ -38,6 +39,14 @@ using ops::Const;
 using ops::Mul;
 using ops::Placeholder;
 using ops::Sub;
+
+tensorflow::SessionOptions GetSessionOptions() {
+  tensorflow::SessionOptions options;
+  // Disable optimizations for static graph to allow calls to Session::Extend.
+  options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true);
+  return options;
+}
 
 class CustomThreadPoolImpl : public thread::ThreadPoolInterface {
  public:
@@ -100,7 +109,7 @@ TEST(ClientSessionTest, Extend) {
   Scope root = Scope::NewRootScope();
   auto a = Placeholder(root, DT_INT32, Placeholder::Shape({2}));
   auto c = Add(root, a, {2, 2});
-  ClientSession session(root);
+  ClientSession session(root, GetSessionOptions());
   std::vector<Tensor> outputs;
 
   TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs));
@@ -112,11 +121,11 @@ TEST(ClientSessionTest, Extend) {
   test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}));
 }
 
-TEST(ClientSessionTest, MultiThreaded) {
+TEST(ClientSessionTest, MultiThreadedWithDefaultThreadpool) {
   Scope root = Scope::NewRootScope();
   auto a = Add(root, {1, 2}, {3, 4});
   auto b = Mul(root, {1, 2}, {3, 4});
-  ClientSession session(root);
+  ClientSession session(root, GetSessionOptions());
   {
     thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
     thread_pool.Schedule([&session, a]() {
@@ -135,6 +144,49 @@ TEST(ClientSessionTest, MultiThreaded) {
   auto c = Sub(root, b, a);
   std::vector<Tensor> outputs;
   TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithCustomThreadpool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()));
   test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
 }
 

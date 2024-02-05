@@ -28,10 +28,12 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/kernels/ops_util.h"
+#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
+#include "tensorflow/core/public/session_options.h"
 
 namespace tensorflow {
 namespace {
@@ -125,7 +127,7 @@ TEST_F(ReverseOpTest, Reverse_0_float) { Reverse_0<float>(); }
 
 TEST_F(ReverseOpTest, Reverse_0_int32) { Reverse_0<int32>(); }
 
-TEST_F(ReverseOpTest, Reverse_0_int64) { Reverse_0<int64>(); }
+TEST_F(ReverseOpTest, Reverse_0_int64) { Reverse_0<int64_t>(); }
 
 TEST_F(ReverseOpTest, Reverse_0_double) { Reverse_0<double>(); }
 
@@ -145,7 +147,7 @@ TEST_F(ReverseOpTest, Reverse_234_float) { Reverse_234<float>(); }
 
 TEST_F(ReverseOpTest, Reverse_234_int32) { Reverse_234<int32>(); }
 
-TEST_F(ReverseOpTest, Reverse_234_int64) { Reverse_234<int64>(); }
+TEST_F(ReverseOpTest, Reverse_234_int64) { Reverse_234<int64_t>(); }
 
 TEST_F(ReverseOpTest, Reverse_234_double) { Reverse_234<double>(); }
 
@@ -165,7 +167,7 @@ TEST_F(ReverseOpTest, Reverse_1234_float) { Reverse_1234<float>(); }
 
 TEST_F(ReverseOpTest, Reverse_1234_int32) { Reverse_1234<int32>(); }
 
-TEST_F(ReverseOpTest, Reverse_1234_int64) { Reverse_1234<int64>(); }
+TEST_F(ReverseOpTest, Reverse_1234_int64) { Reverse_1234<int64_t>(); }
 
 TEST_F(ReverseOpTest, Reverse_1234_double) { Reverse_1234<double>(); }
 
@@ -195,148 +197,187 @@ static Graph* Reverse(const TensorShape& shape, int reverse_axis) {
 }
 
 template <typename T>
-static void RunReverseRowsBenchmark(int iters, int outer_dim, int middle_dim,
+static void RunReverseRowsBenchmark(::testing::benchmark::State& state,
+                                    int outer_dim, int middle_dim,
                                     int intra_threads, int channels) {
   SessionOptions opts = GetOptions(intra_threads);
   TensorShape shape{outer_dim, middle_dim, channels};
-  const int64 num_items = static_cast<int64>(iters) * shape.num_elements();
-  testing::ItemsProcessed(num_items);
-  testing::BytesProcessed(num_items * sizeof(T));
-  testing::UseRealTime();
-  test::Benchmark("cpu", Reverse<T>(shape, 1), &opts).Run(iters);
+  test::Benchmark("cpu", Reverse<T>(shape, 1), &opts, nullptr, nullptr, "",
+                  /*old_benchmark_api*/ false)
+      .Run(state);
+  const int64_t num_items =
+      static_cast<int64_t>(state.iterations()) * shape.num_elements();
+  state.SetItemsProcessed(num_items);
+  state.SetBytesProcessed(num_items * sizeof(T));
 }
 
-static void BM_ReverseRowsOf1Channel_1T_float(int iters, int outer_dim,
-                                              int middle_dim) {
-  RunReverseRowsBenchmark<float>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf1Channel_1T_float(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<float>(state, outer_dim, middle_dim,
                                  1 /* intra_threads */, 1 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf1Channel_1T_float)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf1Channel_1T_uint8(int iters, int outer_dim,
-                                              int middle_dim) {
-  RunReverseRowsBenchmark<uint8>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf1Channel_1T_uint8(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<uint8>(state, outer_dim, middle_dim,
                                  1 /* intra_threads */, 1 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf1Channel_1T_uint8)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf1Channel_4T_float(int iters, int outer_dim,
-                                              int middle_dim) {
-  RunReverseRowsBenchmark<float>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf1Channel_4T_float(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<float>(state, outer_dim, middle_dim,
                                  4 /* intra_threads */, 1 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf1Channel_4T_float)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf1Channel_4T_uint8(int iters, int outer_dim,
-                                              int middle_dim) {
-  RunReverseRowsBenchmark<uint8>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf1Channel_4T_uint8(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<uint8>(state, outer_dim, middle_dim,
                                  4 /* intra_threads */, 1 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf1Channel_4T_uint8)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf3Channels_1T_float(int iters, int outer_dim,
-                                               int middle_dim) {
-  RunReverseRowsBenchmark<float>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf3Channels_1T_float(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<float>(state, outer_dim, middle_dim,
                                  1 /* intra_threads */, 3 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf3Channels_1T_float)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(30, 30)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf3Channels_1T_uint8(int iters, int outer_dim,
-                                               int middle_dim) {
-  RunReverseRowsBenchmark<uint8>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf3Channels_1T_uint8(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<uint8>(state, outer_dim, middle_dim,
                                  1 /* intra_threads */, 3 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf3Channels_1T_uint8)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(30, 30)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf3Channels_4T_float(int iters, int outer_dim,
-                                               int middle_dim) {
-  RunReverseRowsBenchmark<float>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf3Channels_4T_float(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<float>(state, outer_dim, middle_dim,
                                  4 /* intra_threads */, 3 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf3Channels_4T_float)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(30, 30)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf3Channels_4T_uint8(int iters, int outer_dim,
-                                               int middle_dim) {
-  RunReverseRowsBenchmark<uint8>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf3Channels_4T_uint8(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<uint8>(state, outer_dim, middle_dim,
                                  4 /* intra_threads */, 3 /* channels */);
 }
 BENCHMARK(BM_ReverseRowsOf3Channels_4T_uint8)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(30, 30)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf4Channels_1T_float(int iters, int outer_dim,
-                                               int middle_dim) {
-  RunReverseRowsBenchmark<float>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf4Channels_1T_float(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<float>(state, outer_dim, middle_dim,
                                  1 /* intra_threads */, 4 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf4Channels_1T_float)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf4Channels_1T_uint8(int iters, int outer_dim,
-                                               int middle_dim) {
-  RunReverseRowsBenchmark<uint8>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf4Channels_1T_uint8(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<uint8>(state, outer_dim, middle_dim,
                                  1 /* intra_threads */, 4 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf4Channels_1T_uint8)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf4Channels_4T_float(int iters, int outer_dim,
-                                               int middle_dim) {
-  RunReverseRowsBenchmark<float>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf4Channels_4T_float(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<float>(state, outer_dim, middle_dim,
                                  4 /* intra_threads */, 4 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf4Channels_4T_float)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);
 
-static void BM_ReverseRowsOf4Channels_4T_uint8(int iters, int outer_dim,
-                                               int middle_dim) {
-  RunReverseRowsBenchmark<uint8>(iters, outer_dim, middle_dim,
+void BM_ReverseRowsOf4Channels_4T_uint8(::testing::benchmark::State& state) {
+  const int outer_dim = state.range(0);
+  const int middle_dim = state.range(1);
+
+  RunReverseRowsBenchmark<uint8>(state, outer_dim, middle_dim,
                                  4 /* intra_threads */, 4 /* channels */);
 }
 
 BENCHMARK(BM_ReverseRowsOf4Channels_4T_uint8)
+    ->UseRealTime()
     ->ArgPair(288, 288)
     ->ArgPair(1024, 1024)
     ->ArgPair(10 * 1024, 1024);

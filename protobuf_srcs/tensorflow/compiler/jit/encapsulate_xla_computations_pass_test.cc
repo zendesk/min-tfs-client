@@ -18,17 +18,18 @@ limitations under the License.
 #include "tensorflow/cc/ops/function_ops.h"
 #include "tensorflow/cc/ops/resource_variable_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/compiler/jit/defs.h"
 #include "tensorflow/compiler/jit/encapsulate_subgraphs_pass.h"
+#include "tensorflow/compiler/jit/xla_cluster_util.h"
 #include "tensorflow/compiler/tf2xla/cc/ops/xla_jit_ops.h"
 #include "tensorflow/compiler/tf2xla/test_util.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/framework/graph_to_functiondef.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/lib/strings/proto_serialization.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/util/equal_graph_def.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 
@@ -46,19 +47,18 @@ static std::unique_ptr<Graph> MakeOuterGraph(
   auto w = ops::Placeholder(scope.WithOpName("W"), DT_RESOURCE);
 
   NodeDef def;
-  TF_CHECK_OK(
-      NodeDefBuilder("launch0", function, &flib_def)
-          .Input(a.node()->name(), 0, DT_INT32)
-          .Input(b.node()->name(), 0, DT_FLOAT)
-          .Input(c.node()->name(), 0, DT_INT32)
-          .Input(d.node()->name(), 0, DT_FLOAT)
-          .Input(u.node()->name(), 0, DT_RESOURCE)
-          .Input(v.node()->name(), 0, DT_RESOURCE)
-          .Input(w.node()->name(), 0, DT_RESOURCE)
-          .Device("/gpu:0")
-          .Attr(EncapsulateXlaComputationsPass::kXlaClusterAttr, "launch0")
-          .Attr("_variable_start_index", 4)
-          .Finalize(&def));
+  TF_CHECK_OK(NodeDefBuilder("launch0", function, &flib_def)
+                  .Input(a.node()->name(), 0, DT_INT32)
+                  .Input(b.node()->name(), 0, DT_FLOAT)
+                  .Input(c.node()->name(), 0, DT_INT32)
+                  .Input(d.node()->name(), 0, DT_FLOAT)
+                  .Input(u.node()->name(), 0, DT_RESOURCE)
+                  .Input(v.node()->name(), 0, DT_RESOURCE)
+                  .Input(w.node()->name(), 0, DT_RESOURCE)
+                  .Device("/gpu:0")
+                  .Attr(kXlaClusterIdAttr, "launch0")
+                  .Attr("_variable_start_index", 4)
+                  .Finalize(&def));
 
   Status status;
   Node* launch = scope.graph()->AddNode(def, &status);
@@ -107,7 +107,7 @@ static std::unique_ptr<Graph> MakeBodyGraph() {
   auto arg6 = ops::_Arg(scope.WithOpName("w_0_arg"), DT_RESOURCE, 6);
 
   auto add_attrs = [](Node* node) {
-    node->AddAttr(EncapsulateXlaComputationsPass::kXlaClusterAttr, "launch0");
+    node->AddAttr(kXlaClusterIdAttr, "launch0");
     node->set_requested_device("/gpu:0");
   };
 
@@ -155,8 +155,7 @@ TEST(EncapsulateXlaComputations, DeterministicEncapsulate) {
                                     : ops::Add(scope.WithOpName("E"), a1, a0);
 
       auto add_attrs = [](Node* node) {
-        node->AddAttr(EncapsulateXlaComputationsPass::kXlaClusterAttr,
-                      "launch0");
+        node->AddAttr(kXlaClusterIdAttr, "launch0");
       };
       add_attrs(e.node());
 
@@ -179,14 +178,7 @@ TEST(EncapsulateXlaComputations, DeterministicEncapsulate) {
       }
     }
     TF_CHECK_OK(EncapsulateXlaComputationsPass::Encapsulate(&graph, &flib_def));
-    GraphDef gdef;
-    graph->ToGraphDef(&gdef);
-    // Before serialization, sort control inputs first to remove
-    // nondeterminism.
-    SortControlInputs(&gdef);
-    string serialized;
-    SerializeToStringDeterministic(gdef, &serialized);
-    return serialized;
+    return SerializeGraphDeterministic(*graph).value();
   };
 
   // Changing the order of control input shouldn't affect the graph generated.
@@ -216,7 +208,7 @@ TEST(EncapsulateXlaComputations, Encapsulate) {
     auto w = ops::Placeholder(scope.WithOpName("W"), DT_RESOURCE);
 
     auto add_attrs = [](Node* node) {
-      node->AddAttr(EncapsulateXlaComputationsPass::kXlaClusterAttr, "launch0");
+      node->AddAttr(kXlaClusterIdAttr, "launch0");
       node->set_requested_device("/gpu:0");
     };
 

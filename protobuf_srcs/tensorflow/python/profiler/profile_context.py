@@ -14,10 +14,6 @@
 # ==============================================================================
 """A Context that captures profile and performs profiling/dumping.
 """
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import contextlib
 import os
 import random
@@ -25,12 +21,12 @@ import sys
 import threading
 
 from tensorflow.core.protobuf import config_pb2
-from tensorflow.python import _pywrap_tfprof as print_mdl
 from tensorflow.python.client import session
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.platform import gfile
 from tensorflow.python.profiler import model_analyzer
+from tensorflow.python.util import _pywrap_tfprof as print_mdl
 from tensorflow.python.util import compat
 
 WARMUP_STEPS = 10
@@ -115,23 +111,23 @@ class ProfileContext(object):
 
   ```python
     # Trace steps 100~200, profile at [150, 200] and dump profile at 200.
-    with tf.contrib.tfprof.ProfileContext('/tmp/train_dir',
-                                          trace_steps=range(100, 200, 3),
-                                          dump_steps=[200]) as pctx:
+    with profile_context.ProfileContext('/tmp/train_dir',
+                                        trace_steps=range(100, 200, 3),
+                                        dump_steps=[200]) as pctx:
       opts = tf.profiler.ProfileOptionBuilder.time_and_memory()
       pctx.add_auto_profiling('op', opts, [150, 200])
       train_loop().
 
     # Tracing only.
-    with tf.contrib.tfprof.ProfileContext('/tmp/train_dir') as pctx:
+    with profile_context.tfprof.ProfileContext('/tmp/train_dir') as pctx:
       # Run train/eval loop for at least few hundred steps. Profiles will be
       # dumped to train_dir. Use web UI or command line to do profiling.
       train_loop().
 
     # When session object is available, do explicit trace, profile and dump.
-    with tf.contrib.tfprof.ProfileContext('/tmp/train_dir',
-                                          trace_steps=[],
-                                          dump_steps=[]) as pctx:
+    with profile_context.ProfileContext('/tmp/train_dir',
+                                        trace_steps=[],
+                                        dump_steps=[]) as pctx:
       opts = tf.profiler.ProfileOptionBuilder.time_and_memory()
       pctx.trace_next_step()
       _ = session.run(train_op)
@@ -295,22 +291,20 @@ class ProfileContext(object):
       return
     if self._debug:
       sys.stderr.write('debug: dumping file at step: %d\n' % step)
-    if not gfile.Exists(self._profiler_dir):
-      gfile.MakeDirs(self._profiler_dir)
+    gfile.MakeDirs(self._profiler_dir)
 
     filename = os.path.join(compat.as_bytes(self._profiler_dir),
                             compat.as_bytes('profile_%d' % step))
     self.profiler._write_profile(filename)  # pylint: disable=protected-access
 
   def _dump_file(self, pb, basename):
-    if not gfile.Exists(self._profiler_dir):
-      gfile.MakeDirs(self._profiler_dir)
+    gfile.MakeDirs(self._profiler_dir)
     with gfile.Open(os.path.join(self._profiler_dir, basename), 'w') as f:
       f.write('%s' % pb)
 
   @contextlib.contextmanager
   def _new_step(self):
-    acquired = self._lock.acquire(False)
+    acquired = self._lock.acquire(False)  # pylint: disable=assignment-from-no-return
     yield (self._step, acquired)
     self._step += 1
     self._trace_next_step = False

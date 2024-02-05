@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for squeeze_transpose."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
 from tensorflow.lite.testing.zip_test_utils import make_zip_of_tests
@@ -39,7 +35,7 @@ def make_squeeze_transpose_tests(options):
         name="input",
         shape=parameters["input_shape"])
     out = tf.squeeze(input_tensor, axis=parameters["axis"])
-    out = tf.transpose(out, perm=[1, 2])
+    out = tf.transpose(a=out, perm=[1, 2])
     return [input_tensor], [out]
 
   def build_inputs(parameters, sess, inputs, outputs):

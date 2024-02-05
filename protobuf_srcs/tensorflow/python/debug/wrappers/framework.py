@@ -44,7 +44,7 @@ c) (To be implemented in a future CL) Enter an instruction loop to let an
 3) The callback handles the request and returns a OnSessionInitResponse
    object with an action field, directing the wrapper session what to do next.
 
-If the action field in the OnSessionInitResponse is PROCEED, the constuctor
+If the action field in the OnSessionInitResponse is PROCEED, the constructor
 returns. Control is released back to the caller of the constructor, which can
 invoke run() method of wrapper session with the same syntax as a non-wrapped
 session, e.g.,:
@@ -69,7 +69,7 @@ A1) Right at the start of each run() call, the on_run_start() callback is
 
 A2) Right before the run() returns, the on_run_end() callback is invoked,
     with an OnRunEndRequest object as the argument, which carries information
-    including the actual action performed in the warpper run() call and the
+    including the actual action performed in the wrapper run() call and the
     run_metadata from the run() call.
 
 However, if the action field in OnSessionInitResponse is
@@ -94,25 +94,19 @@ TODO(cais): Implemented the instruction loop in B1 - B3.
 
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import abc
-import collections
 import re
 import threading
-
-import six
 
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.client import session
 from tensorflow.python.debug.lib import debug_utils
 from tensorflow.python.framework import errors
-from tensorflow.python.framework import ops
+from tensorflow.python.framework import stack
 from tensorflow.python.platform import tf_logging
 from tensorflow.python.training import monitored_session
 from tensorflow.python.util import nest
+from tensorflow.python.util.compat import collections_abc
 
 
 # Helper function.
@@ -132,7 +126,7 @@ def _check_type(obj, expected_types):
                     (expected_types, type(obj)))
 
 
-class OnSessionInitRequest(object):
+class OnSessionInitRequest:
   """Request to an on-session-init callback.
 
   This callback is invoked during the __init__ call to a debug-wrapper session.
@@ -149,7 +143,7 @@ class OnSessionInitRequest(object):
     self.session = sess
 
 
-class OnSessionInitAction(object):
+class OnSessionInitAction:
   """Enum-like values for possible action to take on session init."""
 
   # Proceed, without special actions, in the wrapper session initialization.
@@ -165,7 +159,7 @@ class OnSessionInitAction(object):
   REMOTE_INSTR_LOOP = "remote_instr_loop"
 
 
-class OnSessionInitResponse(object):
+class OnSessionInitResponse:
   """Response from an on-session-init callback."""
 
   def __init__(self, action):
@@ -178,7 +172,7 @@ class OnSessionInitResponse(object):
     self.action = action
 
 
-class OnRunStartRequest(object):
+class OnRunStartRequest:
   """Request to an on-run-start callback.
 
   This callback is invoked during a run() call of the debug-wrapper
@@ -209,7 +203,7 @@ class OnRunStartRequest(object):
     self.is_callable_runner = is_callable_runner
 
 
-class OnRunStartAction(object):
+class OnRunStartAction:
   """Enum-like values for possible action to take on start of a run() call."""
 
   # Run once with debug tensor-watching.
@@ -223,7 +217,7 @@ class OnRunStartAction(object):
 
 
 
-class OnRunStartResponse(object):
+class OnRunStartResponse:
   """Request from an on-run-start callback.
 
   The caller of the callback can use this response object to specify what
@@ -234,9 +228,9 @@ class OnRunStartResponse(object):
                action,
                debug_urls,
                debug_ops="DebugIdentity",
-               node_name_regex_whitelist=None,
-               op_type_regex_whitelist=None,
-               tensor_dtype_regex_whitelist=None,
+               node_name_regex_allowlist=None,
+               op_type_regex_allowlist=None,
+               tensor_dtype_regex_allowlist=None,
                tolerate_debug_op_creation_failures=False):
     """Constructor of `OnRunStartResponse`.
 
@@ -247,10 +241,10 @@ class OnRunStartResponse(object):
         during the run() call.
       debug_ops: (`str` or `list` of `str`) Debug op(s) to be used by the
         debugger.
-      node_name_regex_whitelist: Regular-expression whitelist for node
+      node_name_regex_allowlist: Regular-expression allowlist for node
         name.
-      op_type_regex_whitelist: Regular-expression whitelist for op type.
-      tensor_dtype_regex_whitelist: Regular-expression whitelist for tensor
+      op_type_regex_allowlist: Regular-expression allowlist for op type.
+      tensor_dtype_regex_allowlist: Regular-expression allowlist for tensor
         dtype.
       tolerate_debug_op_creation_failures: Whether debug op creation failures
         are to be tolerated.
@@ -264,14 +258,14 @@ class OnRunStartResponse(object):
 
     self.debug_ops = debug_ops
 
-    self.node_name_regex_whitelist = node_name_regex_whitelist
-    self.op_type_regex_whitelist = op_type_regex_whitelist
-    self.tensor_dtype_regex_whitelist = tensor_dtype_regex_whitelist
+    self.node_name_regex_allowlist = node_name_regex_allowlist
+    self.op_type_regex_allowlist = op_type_regex_allowlist
+    self.tensor_dtype_regex_allowlist = tensor_dtype_regex_allowlist
     self.tolerate_debug_op_creation_failures = (
         tolerate_debug_op_creation_failures)
 
 
-class OnRunEndRequest(object):
+class OnRunEndRequest:
   """Request to an on-run-end callback.
 
   The callback is invoked immediately before the wrapped run() call ends.
@@ -305,7 +299,7 @@ class OnRunEndRequest(object):
     self.tf_error = tf_error
 
 
-class OnRunEndResponse(object):
+class OnRunEndResponse:
   """Response from an on-run-end callback."""
 
   def __init__(self):
@@ -314,8 +308,7 @@ class OnRunEndResponse(object):
     pass
 
 
-@six.add_metaclass(abc.ABCMeta)
-class BaseDebugWrapperSession(session.SessionInterface):
+class BaseDebugWrapperSession(session.SessionInterface, metaclass=abc.ABCMeta):
   """Base class of debug-wrapper session classes.
 
   Concrete classes that inherit from this class need to implement the abstract
@@ -329,7 +322,7 @@ class BaseDebugWrapperSession(session.SessionInterface):
     Args:
       sess: An (unwrapped) TensorFlow session instance. It should be a subtype
         of `BaseSession` or `tf.MonitoredSession`.
-      thread_name_filter: Regular-expression filter (whitelist) for name(s) of
+      thread_name_filter: Regular-expression filter (allowlist) for name(s) of
         thread(s) on which the wrapper session will be active. This regular
         expression is used in a start-anchored fashion on the thread name, i.e.,
         by applying the `match` method of the compiled pattern. The default
@@ -445,7 +438,7 @@ class BaseDebugWrapperSession(session.SessionInterface):
       """Check whether a possibly nested structure is empty."""
       if not nest.is_nested(x):
         return False
-      if isinstance(x, collections.Mapping):
+      if isinstance(x, collections_abc.Mapping):
         return is_empty(list(x.values()))
       for item in x:
         if not is_empty(item):
@@ -545,11 +538,10 @@ class BaseDebugWrapperSession(session.SessionInterface):
           decorated_run_options,
           run_start_resp.debug_urls,
           debug_ops=run_start_resp.debug_ops,
-          node_name_regex_whitelist=(
-              run_start_resp.node_name_regex_whitelist),
-          op_type_regex_whitelist=run_start_resp.op_type_regex_whitelist,
-          tensor_dtype_regex_whitelist=(
-              run_start_resp.tensor_dtype_regex_whitelist),
+          node_name_regex_allowlist=(run_start_resp.node_name_regex_allowlist),
+          op_type_regex_allowlist=run_start_resp.op_type_regex_allowlist,
+          tensor_dtype_regex_allowlist=(
+              run_start_resp.tensor_dtype_regex_allowlist),
           tolerate_debug_op_creation_failures=(
               run_start_resp.tolerate_debug_op_creation_failures))
 
@@ -707,9 +699,9 @@ class BaseDebugWrapperSession(session.SessionInterface):
       run_options,
       debug_urls,
       debug_ops="DebugIdentity",
-      node_name_regex_whitelist=None,
-      op_type_regex_whitelist=None,
-      tensor_dtype_regex_whitelist=None,
+      node_name_regex_allowlist=None,
+      op_type_regex_allowlist=None,
+      tensor_dtype_regex_allowlist=None,
       tolerate_debug_op_creation_failures=False):
     """Modify a RunOptions object for debug tensor watching.
 
@@ -721,10 +713,10 @@ class BaseDebugWrapperSession(session.SessionInterface):
       debug_urls: (list of str) debug URLs to be entered in run_options.
         debug_tensor_watch_opts.
       debug_ops: (str or list of str) debug op(s) to be used by the debugger.
-      node_name_regex_whitelist: Regular-expression whitelist for node
+      node_name_regex_allowlist: Regular-expression allowlist for node
         name.
-      op_type_regex_whitelist: Regular-expression whitelist for op type.
-      tensor_dtype_regex_whitelist: Regular-expression whitelist for tensor
+      op_type_regex_allowlist: Regular-expression allowlist for op type.
+      tensor_dtype_regex_allowlist: Regular-expression allowlist for tensor
         dtype.
       tolerate_debug_op_creation_failures: Whether debug op creation failures
         are to be tolerated.
@@ -736,9 +728,9 @@ class BaseDebugWrapperSession(session.SessionInterface):
         self._sess.graph,
         debug_urls=debug_urls,
         debug_ops=debug_ops,
-        node_name_regex_whitelist=node_name_regex_whitelist,
-        op_type_regex_whitelist=op_type_regex_whitelist,
-        tensor_dtype_regex_whitelist=tensor_dtype_regex_whitelist,
+        node_name_regex_allowlist=node_name_regex_allowlist,
+        op_type_regex_allowlist=op_type_regex_allowlist,
+        tensor_dtype_regex_allowlist=tensor_dtype_regex_allowlist,
         tolerate_debug_op_creation_failures=tolerate_debug_op_creation_failures,
         reset_disk_byte_usage=(self._run_call_count == 1 or
                                self._is_disk_usage_reset_each_run()))
@@ -803,7 +795,7 @@ class BaseDebugWrapperSession(session.SessionInterface):
     """
 
   def as_default(self):
-    return ops.default_session(self)
+    return stack.default_session(self)
 
   def __enter__(self):
     if self._default_session_context_manager is None:
@@ -821,8 +813,8 @@ class BaseDebugWrapperSession(session.SessionInterface):
   def close(self):
     self._sess.close()
 
-  # TODO(cais): Add _node_name_regex_whitelist and
-  #   _node_op_type_regex_whitelist.
+  # TODO(cais): Add _node_name_regex_allowlist and
+  #   _node_op_type_regex_allowlist.
 
   def should_stop(self):
     if hasattr(self._sess, "should_stop"):
@@ -833,14 +825,14 @@ class BaseDebugWrapperSession(session.SessionInterface):
           "Do you intend to wrap a tf.MonitoredSession instead?" % self._sess)
 
 
-class WatchOptions(object):
+class WatchOptions:
   """Type for return values of watch_fn."""
 
   def __init__(self,
                debug_ops=None,
-               node_name_regex_whitelist=None,
-               op_type_regex_whitelist=None,
-               tensor_dtype_regex_whitelist=None,
+               node_name_regex_allowlist=None,
+               op_type_regex_allowlist=None,
+               tensor_dtype_regex_allowlist=None,
                tolerate_debug_op_creation_failures=False):
     """Constructor of WatchOptions: Debug watch options.
 
@@ -848,17 +840,17 @@ class WatchOptions(object):
 
     Args:
       debug_ops: (`str` or `list of str`) Debug ops to be used.
-      node_name_regex_whitelist: Regular-expression whitelist for node_name,
+      node_name_regex_allowlist: Regular-expression allowlist for node_name,
         e.g., `"(weight_[0-9]+|bias_.*)"`
-      op_type_regex_whitelist: Regular-expression whitelist for the op type of
+      op_type_regex_allowlist: Regular-expression allowlist for the op type of
         nodes, e.g., `"(Variable|Add)"`.
-        If both `node_name_regex_whitelist` and `op_type_regex_whitelist`
+        If both `node_name_regex_allowlist` and `op_type_regex_allowlist`
         are set, the two filtering operations will occur in a logical `AND`
         relation. In other words, a node will be included if and only if it
-        hits both whitelists.
-      tensor_dtype_regex_whitelist: Regular-expression whitelist for Tensor
+        hits both allowlists.
+      tensor_dtype_regex_allowlist: Regular-expression allowlist for Tensor
         data type, e.g., `"^int.*"`.
-        This whitelist operates in logical `AND` relations to the two whitelists
+        This allowlist operates in logical `AND` relations to the two allowlists
         above.
       tolerate_debug_op_creation_failures: (`bool`) whether debug op creation
         failures (e.g., due to dtype incompatibility) are to be tolerated by not
@@ -868,19 +860,19 @@ class WatchOptions(object):
       self.debug_ops = debug_ops
     else:
       self.debug_ops = ["DebugIdentity"]
-    self.node_name_regex_whitelist = node_name_regex_whitelist
-    self.op_type_regex_whitelist = op_type_regex_whitelist
-    self.tensor_dtype_regex_whitelist = tensor_dtype_regex_whitelist
+    self.node_name_regex_allowlist = node_name_regex_allowlist
+    self.op_type_regex_allowlist = op_type_regex_allowlist
+    self.tensor_dtype_regex_allowlist = tensor_dtype_regex_allowlist
     self.tolerate_debug_op_creation_failures = (
         tolerate_debug_op_creation_failures)
 
   def __repr__(self):
-    return ("WatchOptions(debug_ops=%r, node_name_regex_whitelist=%r, "
-            "op_type_regex_whitelist=%r, tensor_dtype_regex_whitelist=%r, "
-            "tolerate_debug_op_creation_failures=%r)" % (
-                self.debug_ops, self.node_name_regex_whitelist,
-                self.op_type_regex_whitelist, self.tensor_dtype_regex_whitelist,
-                self.tolerate_debug_op_creation_failures))
+    return ("WatchOptions(debug_ops=%r, node_name_regex_allowlist=%r, "
+            "op_type_regex_allowlist=%r, tensor_dtype_regex_allowlist=%r, "
+            "tolerate_debug_op_creation_failures=%r)" %
+            (self.debug_ops, self.node_name_regex_allowlist,
+             self.op_type_regex_allowlist, self.tensor_dtype_regex_allowlist,
+             self.tolerate_debug_op_creation_failures))
 
 
 class NonInteractiveDebugWrapperSession(BaseDebugWrapperSession):
@@ -952,14 +944,14 @@ class NonInteractiveDebugWrapperSession(BaseDebugWrapperSession):
         OnRunStartAction.DEBUG_RUN,
         debug_urls,
         debug_ops=watch_opts.debug_ops,
-        node_name_regex_whitelist=watch_opts.node_name_regex_whitelist,
-        op_type_regex_whitelist=watch_opts.op_type_regex_whitelist,
-        tensor_dtype_regex_whitelist=watch_opts.tensor_dtype_regex_whitelist,
+        node_name_regex_allowlist=watch_opts.node_name_regex_allowlist,
+        op_type_regex_allowlist=watch_opts.op_type_regex_allowlist,
+        tensor_dtype_regex_allowlist=watch_opts.tensor_dtype_regex_allowlist,
         tolerate_debug_op_creation_failures=(
             watch_opts.tolerate_debug_op_creation_failures))
 
   def _prepare_run_watch_config(self, fetches, feed_dict):
-    """Get the debug_urls, and node/op whitelists for the current run() call.
+    """Get the debug_urls, and node/op allowlists for the current run() call.
 
     Args:
       fetches: Same as the `fetches` argument to `Session.run()`.
@@ -969,7 +961,7 @@ class NonInteractiveDebugWrapperSession(BaseDebugWrapperSession):
       debug_urls: (str or list of str) Debug URLs for the current run() call.
         Currently, the list consists of only one URL that is a file:// URL.
       watch_options: (WatchOptions) The return value of a watch_fn, containing
-        options including debug_ops, and whitelists.
+        options including debug_ops, and allowlists.
     """
 
     debug_urls = self.prepare_run_debug_urls(fetches, feed_dict)

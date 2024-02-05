@@ -14,13 +14,9 @@
 # ==============================================================================
 """Code for backpropagation using the tape utilities."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 
-from tensorflow.python import pywrap_tensorflow
+from tensorflow.python import pywrap_tfe
 from tensorflow.python.ops.unconnected_gradients import UnconnectedGradients
 from tensorflow.python.util import compat
 
@@ -68,7 +64,7 @@ def imperative_grad(tape,
     raise ValueError(
         "Unknown value for unconnected_gradients: %r" % unconnected_gradients)
 
-  return pywrap_tensorflow.TFE_Py_TapeGradient(
+  return pywrap_tfe.TFE_Py_TapeGradient(
       tape._tape,  # pylint: disable=protected-access
       target,
       sources,

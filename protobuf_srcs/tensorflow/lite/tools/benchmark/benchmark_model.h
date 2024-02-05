@@ -17,14 +17,18 @@ limitations under the License.
 #define TENSORFLOW_LITE_TOOLS_BENCHMARK_BENCHMARK_MODEL_H_
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <ostream>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "tensorflow/core/util/stats_calculator.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/profiling/memory_info.h"
+#include "tensorflow/lite/profiling/memory_usage_monitor.h"
 #include "tensorflow/lite/tools/benchmark/benchmark_params.h"
 #include "tensorflow/lite/tools/command_line_flags.h"
 
@@ -38,14 +42,24 @@ enum RunType {
 
 class BenchmarkResults {
  public:
-  BenchmarkResults(int64_t startup_latency_us, uint64_t input_bytes,
+  BenchmarkResults() {}
+  BenchmarkResults(double model_size_mb, int64_t startup_latency_us,
+                   uint64_t input_bytes,
                    tensorflow::Stat<int64_t> warmup_time_us,
-                   tensorflow::Stat<int64_t> inference_time_us)
-      : startup_latency_us_(startup_latency_us),
+                   tensorflow::Stat<int64_t> inference_time_us,
+                   const profiling::memory::MemoryUsage& init_mem_usage,
+                   const profiling::memory::MemoryUsage& overall_mem_usage,
+                   float peak_mem_mb)
+      : model_size_mb_(model_size_mb),
+        startup_latency_us_(startup_latency_us),
         input_bytes_(input_bytes),
         warmup_time_us_(warmup_time_us),
-        inference_time_us_(inference_time_us) {}
+        inference_time_us_(inference_time_us),
+        init_mem_usage_(init_mem_usage),
+        overall_mem_usage_(overall_mem_usage),
+        peak_mem_mb_(peak_mem_mb) {}
 
+  const double model_size_mb() const { return model_size_mb_; }
   tensorflow::Stat<int64_t> inference_time_us() const {
     return inference_time_us_;
   }
@@ -58,11 +72,27 @@ class BenchmarkResults {
     return bytes_per_sec / (1024.0 * 1024.0);
   }
 
+  const profiling::memory::MemoryUsage& init_mem_usage() const {
+    return init_mem_usage_;
+  }
+  const profiling::memory::MemoryUsage& overall_mem_usage() const {
+    return overall_mem_usage_;
+  }
+  float peak_mem_mb() const { return peak_mem_mb_; }
+
  private:
-  int64_t startup_latency_us_;
-  uint64_t input_bytes_;
+  double model_size_mb_ = 0.0;
+  int64_t startup_latency_us_ = 0;
+  uint64_t input_bytes_ = 0;
   tensorflow::Stat<int64_t> warmup_time_us_;
   tensorflow::Stat<int64_t> inference_time_us_;
+  profiling::memory::MemoryUsage init_mem_usage_;
+  profiling::memory::MemoryUsage overall_mem_usage_;
+  // An invalid value could happen when we don't monitor memory footprint for
+  // the inference, or the memory usage info isn't available on the benchmarking
+  // platform.
+  float peak_mem_mb_ =
+      profiling::memory::MemoryUsageMonitor::kInvalidMemUsageMB;
 };
 
 class BenchmarkListener {
@@ -91,6 +121,14 @@ class BenchmarkListeners : public BenchmarkListener {
     listeners_.push_back(listener);
   }
 
+  // Remove all listeners after [index] including the one at 'index'.
+  void RemoveListeners(int index) {
+    if (index >= NumListeners()) return;
+    listeners_.resize(index);
+  }
+
+  int NumListeners() const { return listeners_.size(); }
+
   void OnBenchmarkStart(const BenchmarkParams& params) override {
     for (auto listener : listeners_) {
       listener->OnBenchmarkStart(params);
@@ -115,7 +153,7 @@ class BenchmarkListeners : public BenchmarkListener {
     }
   }
 
-  ~BenchmarkListeners() {}
+  ~BenchmarkListeners() override {}
 
  private:
   // Use vector so listeners are invoked in the order they are added.
@@ -124,6 +162,7 @@ class BenchmarkListeners : public BenchmarkListener {
 
 // Benchmark listener that just logs the results of benchmark run.
 class BenchmarkLoggingListener : public BenchmarkListener {
+ public:
   void OnBenchmarkEnd(const BenchmarkResults& results) override;
 };
 
@@ -131,8 +170,11 @@ template <typename T>
 Flag CreateFlag(const char* name, BenchmarkParams* params,
                 const std::string& usage) {
   return Flag(
-      name, [params, name](const T& val) { params->Set<T>(name, val); },
-      params->Get<T>(name), usage);
+      name,
+      [params, name](const T& val, int argv_position) {
+        params->Set<T>(name, val, argv_position);
+      },
+      params->Get<T>(name), usage, Flag::kOptional);
 }
 
 // Benchmarks a model.
@@ -143,14 +185,18 @@ class BenchmarkModel {
  public:
   static BenchmarkParams DefaultParams();
   BenchmarkModel();
-  BenchmarkModel(BenchmarkParams params) : params_(std::move(params)) {}
+  explicit BenchmarkModel(BenchmarkParams params)
+      : params_(std::move(params)) {}
   virtual ~BenchmarkModel() {}
   virtual TfLiteStatus Init() = 0;
-  TfLiteStatus Run(int argc, char** argv);
+  virtual TfLiteStatus Run(int argc, char** argv);
   virtual TfLiteStatus Run();
   void AddListener(BenchmarkListener* listener) {
     listeners_.AddListener(listener);
   }
+  // Remove all listeners after [index] including the one at 'index'.
+  void RemoveListeners(int index) { listeners_.RemoveListeners(index); }
+  int NumListeners() const { return listeners_.NumListeners(); }
 
   BenchmarkParams* mutable_params() { return &params_; }
 
@@ -167,6 +213,8 @@ class BenchmarkModel {
   }
   virtual std::vector<Flag> GetFlags();
 
+  // Get the model file size if it's available.
+  virtual int64_t MayGetModelFileSize() { return -1; }
   virtual uint64_t ComputeInputBytes() = 0;
   virtual tensorflow::Stat<int64_t> Run(int min_num_times, float min_secs,
                                         float max_secs, RunType run_type,
@@ -177,6 +225,11 @@ class BenchmarkModel {
 
   virtual TfLiteStatus ResetInputsAndOutputs();
   virtual TfLiteStatus RunImpl() = 0;
+
+  // Create a MemoryUsageMonitor to report peak memory footprint if specified.
+  virtual std::unique_ptr<profiling::memory::MemoryUsageMonitor>
+  MayCreateMemoryUsageMonitor() const;
+
   BenchmarkParams params_;
   BenchmarkListeners listeners_;
 };

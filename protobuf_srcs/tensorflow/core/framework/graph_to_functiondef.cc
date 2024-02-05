@@ -15,15 +15,16 @@ limitations under the License.
 
 #include "tensorflow/core/framework/graph_to_functiondef.h"
 
-#include <unordered_map>
-#include <unordered_set>
-
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
+#include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/graph/graph.h"
+#include "tensorflow/core/graph/graph_node_util.h"
 #include "tensorflow/core/graph/tensor_id.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -71,10 +72,10 @@ class NodeNameMapping {
   // input names (in signature), output names (in signature), and node names
   // (in node_def).
   // This is a superset of values in name_mapping_.
-  std::unordered_map<string, uint64> used_names_;
+  absl::flat_hash_map<string, uint64> used_names_;
   // Mapping from original node name from the graph to the normalized
   // and uniquified version of it.
-  std::unordered_map<string, string> name_mapping_;
+  absl::flat_hash_map<string, string> name_mapping_;
 };
 
 string NodeNameMapping::Normalize(string name) {
@@ -141,7 +142,7 @@ Status NodeNameMapping::UseOutputName(const string& name) {
         "' appears more than once in 'output_names' array.");
   }
   used_names_.emplace(name, 0);
-  return Status::OK();
+  return OkStatus();
 }
 
 string NodeNameMapping::Lookup(const string& name) const {
@@ -153,10 +154,10 @@ string NodeNameMapping::Lookup(const string& name) const {
 Status FillFunctionBody(
     const string& fn_name, const NodeNameMapping& node_names,
     const std::vector<const Node*>& body_nodes,
-    const std::unordered_map<string, string>& tensor_renaming,
+    const absl::flat_hash_map<string, string>& tensor_renaming,
     bool set_stateful_from_nodes, bool copy_placeholder_attrs_from_nodes,
     FunctionDef* fdef) {
-  std::unordered_set<string> func_attr_names;
+  absl::flat_hash_set<string> func_attr_names;
   for (const auto& func_attr : fdef->signature().attr()) {
     func_attr_names.insert(func_attr.name());
   }
@@ -275,17 +276,10 @@ Status FillFunctionBody(
         }
       }
       if (!node_attr_def) {
-#ifdef TENSORFLOW_LITE_PROTOS
-        return errors::Unimplemented(
-            "Placeholder value is not supported for attributes not in OpDef. "
-            "Attribute: ",
-            node_attr_name);
-#else
         return errors::Unimplemented(
             "Placeholder value is not supported for attributes not in OpDef. "
             "Attribute: ",
             node_attr_name, ", OpDef: ", node->op_def().DebugString());
-#endif
       }
       OpDef::AttrDef* attr_def = fdef->mutable_signature()->add_attr();
       attr_def->set_name(func_attr_name);
@@ -294,7 +288,7 @@ Status FillFunctionBody(
       func_attr_names.insert(func_attr_name);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status GraphToFunctionDefHelper(
@@ -311,10 +305,13 @@ Status GraphToFunctionDefHelper(
     if ((*args_or_retvals)[index].node == nullptr) {
       (*args_or_retvals)[index].node = node;
     } else {
-      return errors::InvalidArgument("Multiple '", node->type_string(),
-                                     "' nodes found with index ", index);
+      return errors::InvalidArgument(
+          "Multiple '", node->type_string(), "' nodes found with index ", index,
+          "; originally we already have:\n",
+          (*args_or_retvals)[index].node->DebugString(), "\nNow we have:\n",
+          node->DebugString());
     }
-    return Status::OK();
+    return OkStatus();
   };
 
   std::vector<const Node*> body_nodes;
@@ -353,7 +350,7 @@ Status GraphToFunctionDefHelper(
                                            "' node at index ", i);
           }
         }
-        return Status::OK();
+        return OkStatus();
       };
 
   TF_RETURN_IF_ERROR(validate_args_retvals(inputs, "_Arg"));
@@ -399,7 +396,7 @@ Status GraphToFunctionDef(const Graph& fn_body, const string& fn_name,
   //  - For tensors produced by nodes in function's body:
   //    {flat_tensor_name -> nested_tensor_name}
   //    e.g. {Add:3 -> add_0:z:1}
-  std::unordered_map<string, string> tensor_renaming;
+  absl::flat_hash_map<string, string> tensor_renaming;
 
   // Fill outputs in function's signature.
   // We fill the outputs first to prevent output_names from colliding
@@ -432,6 +429,7 @@ Status GraphToFunctionDef(const Graph& fn_body, const string& fn_name,
     const string& input_name = node_names.GetInputName(node->name());
     argdef->set_name(input_name);
     FunctionDef::ArgAttrs arg_attrs;
+    int64_t resource_arg_unique_id = -1;
     for (const auto& attr : node->attrs()) {
       // Only copy internal attributes. These attributes will be applied to
       // _Arg/Placeholder nodes when this FunctionDef is converted to graph,
@@ -439,10 +437,32 @@ Status GraphToFunctionDef(const Graph& fn_body, const string& fn_name,
       // _Arg/Placeholder nodes.
       if (absl::StartsWith(attr.first, "_")) {
         arg_attrs.mutable_attr()->insert(attr);
+      } else if (attr.first == "shape" && argdef->type() != DT_RESOURCE) {
+        // Preserve known shapes by moving them to the _output_shapes list.
+        // The _Arg shape function knows how to extract them from there.
+        // Don't preserve the shape of a resource arg node, which is a scalar
+        // resource handle.
+        AttrValue value;
+        *(value.mutable_list()->add_shape()) = attr.second.shape();
+        arg_attrs.mutable_attr()->insert({"_output_shapes", value});
+      } else if (attr.first == "value" && node->type_string() == "Const") {
+        // Small eager tensors are captured as const ops rather than
+        // Placeholders. Add a _output_shapes arg_attr with the shape of the
+        // const tensor.
+        AttrValue value;
+        *(value.mutable_list()->add_shape()) =
+            attr.second.tensor().tensor_shape();
+        arg_attrs.mutable_attr()->insert({"_output_shapes", value});
+      }
+      if (attr.first == "_resource_arg_unique_id") {
+        resource_arg_unique_id = attr.second.i();
       }
     }
     if (arg_attrs.attr_size() > 0) {
       (*fdef->mutable_arg_attr())[i] = std::move(arg_attrs);
+    }
+    if (resource_arg_unique_id >= 0) {
+      (*fdef->mutable_resource_arg_unique_id())[idx] = resource_arg_unique_id;
     }
     tensor_renaming[strings::StrCat(node->name(), ":", idx)] = input_name;
   }
@@ -562,7 +582,7 @@ Status GraphToFunctionDef(const Graph& fn_body, const string& fn_name,
     fdef->mutable_signature()->add_control_output(control_output);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status GraphToFunctionDef(

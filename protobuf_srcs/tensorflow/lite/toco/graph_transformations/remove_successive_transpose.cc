@@ -12,6 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <string>
 #include <vector>
 
 #include "tensorflow/core/platform/logging.h"
@@ -31,22 +32,22 @@ bool TransformsToIdentity(std::vector<int> const& perm1,
   // perm1 is the order of the indices after first transpose. When perm1 is
   // reordered according to perm2, if the result is simple increasing sequence
   // i.e., range(0, perm1.size()), then the two transposes cancel each other.
-  for (int i = 0; i < perm1.size(); ++i) {
-    if (perm1[i] < 0 || perm1[i] >= perm1.size() || perm2[i] < 0 ||
-        perm2[i] >= perm1.size()) {
+  for (size_t i = 0; i < perm1.size(); ++i) {
+    if (perm1[i] < 0 || perm1[i] >= static_cast<int>(perm1.size()) ||
+        perm2[i] < 0 || perm2[i] >= static_cast<int>(perm1.size())) {
       return false;
     }
-    if (perm1[perm2[i]] != i) {
+    if (perm1[perm2[i]] != static_cast<int>(i)) {
       return false;
     }
   }
   return true;
 }
 
-void ReplaceOpInputsWith(Model* model, const string& lookfor,
-                         const string& replacewith) {
+void ReplaceOpInputsWith(Model* model, const std::string& lookfor,
+                         const std::string& replacewith) {
   for (const auto& op : model->operators) {
-    for (int i = 0; i < op->inputs.size(); ++i) {
+    for (size_t i = 0; i < op->inputs.size(); ++i) {
       if (op->inputs[i] == lookfor) {
         op->inputs[i] = replacewith;
       }
@@ -56,27 +57,27 @@ void ReplaceOpInputsWith(Model* model, const string& lookfor,
 
 }  // namespace
 
-::tensorflow::Status RemoveSuccesiveTranspose::Run(Model* model,
-                                                   std::size_t op_index,
-                                                   bool* modified) {
+::tensorflow::Status RemoveSuccessiveTranspose::Run(Model* model,
+                                                    std::size_t op_index,
+                                                    bool* modified) {
   *modified = false;
   auto op = model->operators.begin() + op_index;
   if (op->get()->type != OperatorType::kTranspose) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   TransposeOperator* t_op = static_cast<TransposeOperator*>(op->get());
   if (CountOpsWithInput(*model, t_op->outputs[0]) != 1) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   Operator* next = GetOpWithInput(*model, t_op->outputs[0]);
   if (!next || next->type != OperatorType::kTranspose) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   TransposeOperator* t_next = static_cast<TransposeOperator*>(next);
   if (!CountOpsWithInput(*model, t_next->outputs[0])) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   if (TransformsToIdentity(t_op->perm, t_next->perm)) {
@@ -89,7 +90,7 @@ void ReplaceOpInputsWith(Model* model, const string& lookfor,
     *modified = true;
   }
 
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

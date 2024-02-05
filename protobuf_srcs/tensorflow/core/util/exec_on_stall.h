@@ -37,7 +37,7 @@ class ExecuteOnStall {
   // poll_microseconds: The spawned thread will wake and test whether
   //    the destructor has been invoked this frequently.
   ExecuteOnStall(int delay_secs, std::function<void()> f,
-                 int32 poll_microseconds = 100)
+                 int32_t poll_microseconds = 100)
       : disabled_(false),
         joined_(false),
         env_(Env::Default()),
@@ -77,11 +77,11 @@ class ExecuteOnStall {
  private:
   mutex mu_;
   condition_variable cond_var_;
-  bool disabled_ GUARDED_BY(mu_);
-  bool joined_ GUARDED_BY(mu_);
+  bool disabled_ TF_GUARDED_BY(mu_);
+  bool joined_ TF_GUARDED_BY(mu_);
   Env* env_;
   std::function<void()> f_;
-  int64 deadline_;
+  int64_t deadline_;
   int32 poll_microseconds_;
 };
 

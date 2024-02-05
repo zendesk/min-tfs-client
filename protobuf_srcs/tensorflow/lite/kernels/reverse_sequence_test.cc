@@ -12,10 +12,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
+#include <stdint.h>
+
+#include <vector>
+
+#include <gtest/gtest.h>
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -59,7 +62,7 @@ TEST(ReverseSequenceOpTest, FloatSeqDimIsGreater) {
                               {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                                13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 2, 3, 3});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(
       model.GetOutput(),
@@ -74,7 +77,7 @@ TEST(ReverseSequenceOpTest, FloatBatchDimIsGreater) {
                               {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                                13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 4});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({13, 20, 15, 22, 17, 24, 7, 14, 9, 16, 11, 18, 1,
@@ -89,7 +92,7 @@ TEST(ReverseSequenceOpTest, Int32SeqDimIsGreater) {
       model.input(), {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                       13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 2, 3, 3});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(
       model.GetOutput(),
@@ -104,7 +107,7 @@ TEST(ReverseSequenceOpTest, Int32BatchDimIsGreater) {
       model.input(), {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                       13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 4});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({13, 20, 15, 22, 17, 24, 7, 14, 9, 16, 11, 18, 1,
@@ -119,7 +122,7 @@ TEST(ReverseSequenceOpTest, Int64SeqDimIsGreater) {
       model.input(), {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                       13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 2, 3, 3});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(
       model.GetOutput(),
@@ -134,7 +137,7 @@ TEST(ReverseSequenceOpTest, Int64BatchDimIsGreater) {
       model.input(), {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                       13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 4});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({13, 20, 15, 22, 17, 24, 7, 14, 9, 16, 11, 18, 1,
@@ -149,7 +152,7 @@ TEST(ReverseSequenceOpTest, Uint8SeqDimIsGreater) {
       model.input(), {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                       13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 2, 3, 3});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(
       model.GetOutput(),
@@ -164,7 +167,7 @@ TEST(ReverseSequenceOpTest, Uint8BatchDimIsGreater) {
       model.input(), {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                       13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 4});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({13, 20, 15, 22, 17, 24, 7, 14, 9, 16, 11, 18, 1,
@@ -179,7 +182,7 @@ TEST(ReverseSequenceOpTest, Int16SeqDimIsGreater) {
       model.input(), {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                       13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 2, 3, 3});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(
       model.GetOutput(),
@@ -194,7 +197,7 @@ TEST(ReverseSequenceOpTest, Int16BatchDimIsGreater) {
       model.input(), {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                       13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24});
   model.PopulateTensor<int32_t>(model.seq_lengths(), {3, 4});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4, 3, 2));
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({13, 20, 15, 22, 17, 24, 7, 14, 9, 16, 11, 18, 1,

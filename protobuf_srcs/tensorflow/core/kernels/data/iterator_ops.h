@@ -16,15 +16,20 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_DATA_ITERATOR_OPS_H_
 #define TENSORFLOW_CORE_KERNELS_DATA_ITERATOR_OPS_H_
 
-#include "tensorflow/core/common_runtime/function.h"
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/metric_utils.h"
+#include "tensorflow/core/data/tfdataz_metrics.h"
+#include "tensorflow/core/data/unbounded_thread_pool.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/function_handle_cache.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
-#include "tensorflow/core/kernels/data/unbounded_thread_pool.h"
-#include "tensorflow/core/kernels/ops_util.h"
+#include "tensorflow/core/platform/refcount.h"
 
 namespace tensorflow {
 namespace data {
@@ -33,30 +38,37 @@ class IteratorResource : public ResourceBase {
  public:
   IteratorResource(Env* env, const DataTypeVector& output_dtypes,
                    const std::vector<PartialTensorShape>& output_shapes,
-                   const int /*unused: graph_def_version*/,
                    std::unique_ptr<DeviceMgr> device_mgr,
                    std::unique_ptr<FunctionLibraryDefinition> flib_def,
                    std::unique_ptr<ProcessFunctionLibraryRuntime> pflr,
-                   FunctionLibraryRuntime* flr)
-      : unbounded_thread_pool_(env, "tf_data_iterator_resource"),
-        device_mgr_(std::move(device_mgr)),
-        iterator_state_(std::make_shared<State>(
-            std::move(flib_def), std::move(pflr), flr, /*iterator=*/nullptr)),
-        output_dtypes_(output_dtypes),
-        output_shapes_(output_shapes) {
-    VLOG(2) << "constructor";
-  }
+                   FunctionLibraryRuntime* flr);
 
-  ~IteratorResource() override { VLOG(2) << "destructor"; }
+  ~IteratorResource() override;
 
+  // Gets the next output from the iterator managed by this iterator resource.
+  //
+  // If at least one output remains, that output will be stored in
+  // `*out_tensors` and `false` will be stored in `*end_of_sequence`.
+  //
+  // If no more outputs remain, `true` will be stored in `*end_of_sequence`, and
+  // the content of `*out_tensors` will be undefined.
   Status GetNext(OpKernelContext* ctx, std::vector<Tensor>* out_tensors,
                  bool* end_of_sequence);
 
-  Status Save(SerializationContext* ctx, IteratorStateWriter* writer);
+  // Saves a checkpoint of the state of the iterator through the given `writer`.
+  Status Save(OpKernelContext* ctx, ExternalStatePolicy external_state_policy,
+              IteratorStateWriter* writer);
 
+  // Restores the state of the iterator from a checkpoint created by `Save`.
   Status Restore(OpKernelContext* ctx, IteratorStateReader* reader);
 
-  Status SetIteratorFromDataset(OpKernelContext* ctx, DatasetBase* dataset);
+  // Creates an iterator for `dataset`, and associates the iterator with this
+  // iterator resource.
+  //
+  // `SetIteratorFromDataset` should be called before calling `GetNext`, `Save`,
+  // or `Restore`.
+  Status SetIteratorFromDataset(OpKernelContext* ctx,
+                                const DatasetBase* dataset);
 
   string DebugString() const override { return "Iterator resource"; }
 
@@ -67,31 +79,78 @@ class IteratorResource : public ResourceBase {
   }
 
  private:
-  struct State {
+  class State {
+   public:
     State(std::shared_ptr<FunctionLibraryDefinition> flib_def,
           std::shared_ptr<ProcessFunctionLibraryRuntime> pflr,
-          FunctionLibraryRuntime* flr, std::unique_ptr<IteratorBase> iterator)
-        : flib_def(flib_def),
-          flr(flr),
-          pflr(pflr),
-          function_handle_cache(absl::make_unique<FunctionHandleCache>(flr)),
-          iterator(std::move(iterator)) {}
+          FunctionLibraryRuntime* flr,
+          std::unique_ptr<DatasetBaseIterator> iterator)
+        : flib_def_(std::move(flib_def)),
+          flr_(flr),
+          pflr_(std::move(pflr)),
+          function_handle_cache_(std::make_unique<FunctionHandleCache>(flr)),
+          iterator_(std::move(iterator)),
 
-    ~State() { cancellation_manager.StartCancel(); }
+          id_registry_(std::make_shared<MemoryCheckpoint::IdRegistry>()),
+          checkpoint_(MemoryCheckpoint::CreateRootCheckpoint(id_registry_)) {}
 
-    std::shared_ptr<FunctionLibraryDefinition> flib_def;
-    FunctionLibraryRuntime* flr = nullptr;  // not owned.
-    std::shared_ptr<ProcessFunctionLibraryRuntime> pflr;
-    std::unique_ptr<FunctionHandleCache> function_handle_cache;
-    ResourceMgr resource_mgr;
-    CancellationManager cancellation_manager;
-    std::unique_ptr<IteratorBase> iterator;
+    ~State() { cancellation_manager_.StartCancel(); }
+
+    std::shared_ptr<FunctionLibraryDefinition> flib_def() { return flib_def_; }
+
+    FunctionLibraryRuntime* flr() { return flr_; }
+
+    std::shared_ptr<ProcessFunctionLibraryRuntime> pflr() { return pflr_; }
+
+    FunctionHandleCache* function_handle_cache() {
+      return function_handle_cache_.get();
+    }
+
+    ResourceMgr* resource_mgr() { return &resource_mgr_; }
+
+    CancellationManager* cancellation_manager() {
+      return &cancellation_manager_;
+    }
+
+    DatasetBaseIterator* iterator() { return iterator_.get(); }
+
+    const MemoryCheckpoint& checkpoint() const { return checkpoint_; }
+
+    DatasetBase* dataset() { return dataset_.get(); }
+
+    // Downcasts the given `IteratorBase` to a `DatasetBaseIterator`, and uses
+    // it to set the `iterator` and the `dataset` field.
+    void DowncastAndSetIteratorAndDataset(std::unique_ptr<IteratorBase> it,
+                                          const DatasetBase* dataset);
+
+    // Merges the given checkpoint with the checkpoint of this state.
+    void MergeCheckpoint(MemoryCheckpoint* other);
+
+    std::shared_ptr<MemoryCheckpoint::IdRegistry> id_registry() {
+      return id_registry_;
+    }
+
+   private:
+    std::shared_ptr<FunctionLibraryDefinition> flib_def_;
+    FunctionLibraryRuntime* flr_ = nullptr;  // not owned
+    std::shared_ptr<ProcessFunctionLibraryRuntime> pflr_;
+    std::unique_ptr<FunctionHandleCache> function_handle_cache_;
+    ResourceMgr resource_mgr_;
+    CancellationManager cancellation_manager_;
+    std::unique_ptr<DatasetBaseIterator> iterator_;
+    core::RefCountPtr<DatasetBase> dataset_;
+    std::shared_ptr<MemoryCheckpoint::IdRegistry> id_registry_;
+    MemoryCheckpoint checkpoint_;
   };
 
+  IteratorMetricsCollector metrics_collector_;
+  std::shared_ptr<TfDatazMetricsCollector> tf_dataz_metrics_collector_;
   UnboundedThreadPool unbounded_thread_pool_;
+
   mutex mu_;
-  const std::unique_ptr<DeviceMgr> device_mgr_ GUARDED_BY(mu_);
-  std::shared_ptr<State> iterator_state_ GUARDED_BY(mu_);
+  const Env& env_;
+  const std::unique_ptr<DeviceMgr> device_mgr_ TF_GUARDED_BY(mu_);
+  std::shared_ptr<State> iterator_state_ TF_GUARDED_BY(mu_);
   const DataTypeVector output_dtypes_;
   const std::vector<PartialTensorShape> output_shapes_;
 };
@@ -105,7 +164,7 @@ class IteratorHandleOp : public OpKernel {
   // by anyone, but it would break backward compatibility.
   ~IteratorHandleOp() override;
 
-  void Compute(OpKernelContext* context) override LOCKS_EXCLUDED(mu_);
+  void Compute(OpKernelContext* context) override TF_LOCKS_EXCLUDED(mu_);
 
  private:
   // During the first Compute(), resource is either created or looked up using
@@ -115,20 +174,6 @@ class IteratorHandleOp : public OpKernel {
   // inconsistent capacities.
   Status VerifyResource(IteratorResource* resource);
 
-  template <typename To, typename From>  // use like this: down_cast<T*>(foo);
-  static inline To down_cast(From* f) {  // so we only accept pointers
-    static_assert(
-        (std::is_base_of<From, typename std::remove_pointer<To>::type>::value),
-        "target type not derived from source type");
-
-    // We skip the assert and hence the dynamic_cast if RTTI is disabled.
-#if !defined(__GNUC__) || defined(__GXX_RTTI)
-    // Uses RTTI in dbg and fastbuild. asserts are disabled in opt builds.
-    assert(f == nullptr || dynamic_cast<To>(f) != nullptr);
-#endif  // !defined(__GNUC__) || defined(__GXX_RTTI)
-    return static_cast<To>(f);
-  }
-
   FunctionLibraryRuntime* CreatePrivateFLR(
       OpKernelContext* ctx, std::unique_ptr<DeviceMgr>* device_mgr,
       std::unique_ptr<FunctionLibraryDefinition>* flib_def,
@@ -136,7 +181,7 @@ class IteratorHandleOp : public OpKernel {
 
   mutex mu_;
   ContainerInfo cinfo_;  // Written once under mu_ then constant afterwards.
-  IteratorResource* resource_ GUARDED_BY(mu_) = nullptr;
+  IteratorResource* resource_ TF_GUARDED_BY(mu_) = nullptr;
   DataTypeVector output_dtypes_;
   std::vector<PartialTensorShape> output_shapes_;
   const int graph_def_version_;
@@ -165,60 +210,86 @@ class AnonymousIteratorHandleOp : public AnonymousResourceOp<IteratorResource> {
   const int graph_def_version_;
 };
 
-class MakeIteratorOp : public AsyncOpKernel {
+// A hybrid asynchronous-and-synchronous OpKernel with efficient support for
+// both modes.
+//
+// Inherit from this class when the application logic of the kernel (i) is
+// implemented synchronously, (ii) must run on a background thread when the
+// kernel executes in the inter-op threadpool (typically because it depends on
+// inter-op threadpool threads, e.g. for function execution), and (iii) can run
+// synchronously on the calling thread when the caller donates a thread
+// (typically in eager execution). The implementation avoids a thread-hop in
+// case (iii).
+//
+// NOTE: Unlike typical OpKernel subclasses, the application logic is
+// implemented in a method (DoCompute()) that returns Status. Use
+// TF_RETURN_IF_ERROR for error-related control flow rather than
+// OP_REQUIRES_OK().
+class HybridAsyncOpKernel : public AsyncOpKernel {
+ public:
+  HybridAsyncOpKernel(OpKernelConstruction* ctx,
+                      const char* background_worker_name);
+
+  void Compute(OpKernelContext* ctx) final;
+  void ComputeAsync(OpKernelContext* ctx, DoneCallback done) final;
+
+ protected:
+  virtual Status DoCompute(OpKernelContext* ctx) = 0;
+
+ private:
+  BackgroundWorker background_worker_;
+};
+
+class MakeIteratorOp : public HybridAsyncOpKernel {
  public:
   explicit MakeIteratorOp(OpKernelConstruction* ctx)
-      : AsyncOpKernel(ctx),
-        background_worker_(ctx->env(), "tf_data_make_iterator") {}
+      : HybridAsyncOpKernel(ctx, "tf_data_make_iterator") {}
 
-  void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override;
-
- private:
-  BackgroundWorker background_worker_;
+ protected:
+  Status DoCompute(OpKernelContext* ctx) override;
 };
 
-class IteratorGetNextOp : public AsyncOpKernel {
+class IteratorGetNextOp : public HybridAsyncOpKernel {
  public:
   explicit IteratorGetNextOp(OpKernelConstruction* ctx)
-      : AsyncOpKernel(ctx),
-        background_worker_(ctx->env(), "tf_data_iterator_get_next") {}
-
-  void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override;
-
- private:
-  BackgroundWorker background_worker_;
-};
-
-class DeleteIteratorOp : public OpKernel {
- public:
-  explicit DeleteIteratorOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
-
-  void Compute(OpKernelContext* ctx) override;
-};
-
-class IteratorGetNextAsOptionalOp : public AsyncOpKernel {
- public:
-  explicit IteratorGetNextAsOptionalOp(OpKernelConstruction* ctx)
-      : AsyncOpKernel(ctx),
-        background_worker_(ctx->env(),
-                           "tf_data_iterator_get_next_as_optional") {
+      : HybridAsyncOpKernel(ctx, "tf_data_iterator_get_next") {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("output_types", &output_types_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("output_shapes", &output_shapes_));
   }
 
-  void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override;
+  AsyncOpKernel* AsAsync() override;
+
+ protected:
+  Status DoCompute(OpKernelContext* ctx) override;
 
  private:
-  BackgroundWorker background_worker_;
   DataTypeVector output_types_;
   std::vector<PartialTensorShape> output_shapes_;
 };
 
-class IteratorGetNextSyncOp : public OpKernel {
+class DeleteIteratorOp : public HybridAsyncOpKernel {
  public:
-  explicit IteratorGetNextSyncOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+  explicit DeleteIteratorOp(OpKernelConstruction* ctx)
+      : HybridAsyncOpKernel(ctx, "tf_data_delete_iterator") {}
 
-  void Compute(OpKernelContext* ctx) override;
+ protected:
+  Status DoCompute(OpKernelContext* ctx) override;
+};
+
+class IteratorGetNextAsOptionalOp : public HybridAsyncOpKernel {
+ public:
+  explicit IteratorGetNextAsOptionalOp(OpKernelConstruction* ctx)
+      : HybridAsyncOpKernel(ctx, "tf_data_iterator_get_next_as_optional") {
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("output_types", &output_types_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("output_shapes", &output_shapes_));
+  }
+
+ protected:
+  Status DoCompute(OpKernelContext* ctx) override;
+
+ private:
+  DataTypeVector output_types_;
+  std::vector<PartialTensorShape> output_shapes_;
 };
 
 class IteratorToStringHandleOp : public OpKernel {
@@ -238,6 +309,26 @@ class IteratorFromStringHandleOp : public OpKernel {
  private:
   DataTypeVector output_dtypes_;
   std::vector<PartialTensorShape> output_shapes_;
+};
+
+class SerializeIteratorOp : public OpKernel {
+ public:
+  static constexpr const char* const kExternalStatePolicy =
+      "external_state_policy";
+
+  explicit SerializeIteratorOp(OpKernelConstruction* ctx);
+
+  void Compute(OpKernelContext* ctx) override;
+
+ private:
+  ExternalStatePolicy external_state_policy_ = ExternalStatePolicy::POLICY_WARN;
+};
+
+class DeserializeIteratorOp : public OpKernel {
+ public:
+  explicit DeserializeIteratorOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+
+  void Compute(OpKernelContext* ctx) override;
 };
 
 }  // namespace data

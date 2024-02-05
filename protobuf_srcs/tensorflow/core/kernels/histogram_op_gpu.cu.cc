@@ -17,26 +17,16 @@ limitations under the License.
 
 #define EIGEN_USE_GPU
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-#if GOOGLE_CUDA
-#include "third_party/cub/device/device_histogram.cuh"
-#elif TENSORFLOW_USE_ROCM
-#include "rocm/include/hipcub/hipcub.hpp"
-#endif
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/kernels/gpu_prim.h"
 #include "tensorflow/core/kernels/histogram_op.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/gpu_kernel_helper.h"
-
-#if GOOGLE_CUDA
-namespace gpuprim = ::cub;
-#elif TENSORFLOW_USE_ROCM
-namespace gpuprim = ::hipcub;
-#endif
 
 namespace tensorflow {
 
@@ -61,8 +51,12 @@ struct HistogramFixedWidthFunctor<GPUDevice, T, Tout> {
         pinned_allocator));
     auto levels = levels_tensor.flat<T>();
 
-    const double step = static_cast<double>(value_range(1) - value_range(0)) /
-                        static_cast<double>(nbins);
+    // Avoid overflow in step computation.
+    const double step = (nbins == 1) ? 0
+                                     : static_cast<double>(value_range(1)) /
+                                               static_cast<double>(nbins) -
+                                           static_cast<double>(value_range(0)) /
+                                               static_cast<double>(nbins);
     levels(0) = std::numeric_limits<T>::lowest();
     for (int i = 1; i < nbins; i++) {
       levels(i) =
@@ -98,7 +92,8 @@ struct HistogramFixedWidthFunctor<GPUDevice, T, Tout> {
     Tensor temp_storage;
     TF_RETURN_IF_ERROR(context->allocate_temp(
         DataTypeToEnum<int8>::value,
-        TensorShape({static_cast<int64>(temp_storage_bytes)}), &temp_storage));
+        TensorShape({static_cast<int64_t>(temp_storage_bytes)}),
+        &temp_storage));
 
     void* d_temp_storage = temp_storage.flat<int8>().data();
 
@@ -118,7 +113,7 @@ struct HistogramFixedWidthFunctor<GPUDevice, T, Tout> {
           "Could not launch HistogramRange: ", GpuGetErrorString(err), ".");
     }
 
-    return Status::OK();
+    return OkStatus();
   }
 };
 

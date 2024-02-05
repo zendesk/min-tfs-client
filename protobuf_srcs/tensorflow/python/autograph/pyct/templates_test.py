@@ -14,16 +14,12 @@
 # ==============================================================================
 """Tests for templates module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import imp
 
 from absl.testing import parameterized
 import gast
 
-from tensorflow.python.autograph.pyct import compiler
+from tensorflow.python.autograph.pyct import loader
 from tensorflow.python.autograph.pyct import parser
 from tensorflow.python.autograph.pyct import qual_names as qn
 from tensorflow.python.autograph.pyct import templates
@@ -75,7 +71,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
     """
 
     node = templates.replace(template, b=('a', 'c'))[0]
-    result, _, _ = compiler.ast_to_object(node)
+    result, _, _ = loader.load_ast(node)
 
     self.assertEqual((2, 3), result.test_fn(2, 3))
 
@@ -88,7 +84,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
     """
 
     node = templates.replace(template, a='b')[0]
-    result, _, _ = compiler.ast_to_object(node)
+    result, _, _ = loader.load_ast(node)
     self.assertEqual(7, result.test_fn(2))
 
   def test_replace_function_name(self):
@@ -100,7 +96,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
     """
 
     node = templates.replace(template, fname='test_fn')[0]
-    result, _, _ = compiler.ast_to_object(node)
+    result, _, _ = loader.load_ast(node)
     self.assertEqual(7, result.test_fn(2))
 
   def test_replace_code_block(self):
@@ -110,14 +106,30 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
         return a
     """
 
+    class ShouldBeReplaced(object):
+      pass
+
     node = templates.replace(
         template,
         block=[
-            gast.Assign([
-                gast.Name('a', None, None)
-            ], gast.BinOp(gast.Name('a', None, None), gast.Add(), gast.Num(1))),
+            gast.Assign(
+                [
+                    gast.Name(
+                        'a',
+                        ctx=ShouldBeReplaced,
+                        annotation=None,
+                        type_comment=None)
+                ],
+                gast.BinOp(
+                    gast.Name(
+                        'a',
+                        ctx=ShouldBeReplaced,
+                        annotation=None,
+                        type_comment=None), gast.Add(),
+                    gast.Constant(1, kind=None)),
+            ),
         ] * 2)[0]
-    result, _, _ = compiler.ast_to_object(node)
+    result, _, _ = loader.load_ast(node)
     self.assertEqual(3, result.test_fn(1))
 
   def test_replace_attribute(self):
@@ -127,7 +139,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
     """
 
     node = templates.replace(template, foo='b')[0]
-    result, _, _ = compiler.ast_to_object(node)
+    result, _, _ = loader.load_ast(node)
     mod = imp.new_module('test')
     mod.b = 3
     self.assertEqual(3, result.test_fn(mod))
@@ -205,7 +217,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
         template, foo=parser.parse_expression('foo(a[b]).bar'))[0]
     function_call_arg = node.body[0].targets[0].value.args[0]
     self.assertIsInstance(function_call_arg.ctx, gast.Load)
-    self.assertIsInstance(function_call_arg.slice.value.ctx, gast.Load)
+    self.assertIsInstance(function_call_arg.slice.ctx, gast.Load)
 
   def test_replace_call_keyword(self):
     template = """
@@ -217,7 +229,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
 
     source = parser.parse_expression('f(d=3, f=5)')
     node = templates.replace(template, kws=source.keywords)[0]
-    result, _, _ = compiler.ast_to_object(node)
+    result, _, _ = loader.load_ast(node)
     self.assertEqual(9, result.test_fn())
 
     with self.assertRaises(ValueError):
@@ -237,7 +249,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
 
     source = parser.parse_expression('f()(b)')
     node = templates.replace(template, foo=source)[0]
-    result, _, _ = compiler.ast_to_object(node)
+    result, _, _ = loader.load_ast(node)
     self.assertEqual(15, result.test_fn())
 
   def test_replace_name_with_dict(self):
@@ -248,7 +260,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
 
     source = parser.parse_expression('{\'bar\': 3}')
     node = templates.replace(template, foo=source)[0]
-    result, _, _ = compiler.ast_to_object(node)
+    result, _, _ = loader.load_ast(node)
     self.assertEqual(3, result.test_fn())
 
   def test_replace_as_expression(self):

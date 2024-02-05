@@ -17,25 +17,36 @@ limitations under the License.
 #define TENSORFLOW_CORE_FRAMEWORK_NODE_DEF_UTIL_H_
 
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/core/framework/op_def.pb.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
+#include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/lib/gtl/flatmap.h"
 #include "tensorflow/core/lib/hash/hash.h"
+#include "tensorflow/core/platform/hash.h"
 #include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/stringpiece.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/util/padding.h"
 
 namespace tensorflow {
 
-class Node;
-struct NodeDebugInfo;
-
-// We forward declare protos so that kernels don't need to depend on them
-class NodeDef;
-class OpDef;
 class AttrSlice;
+// We forward declare protos so that kernels don't need to depend on them
+class OpDef;
+class AttrValue;
+class NameAttrList;
+class TensorProto;
+class TensorShapeProto;
 
 // Name of the attribute used to encode node colocation constraints.
 //
@@ -47,27 +58,28 @@ extern const char* const kColocationAttrName;
 // String prefix applied to the operation name for colocation constraints.
 extern const char* const kColocationGroupPrefix;
 
+// Constants for host CPU staging op for TPUExecute.
+extern const char* const kTpuExecuteStagingOp;
+extern const char* const kTpuExecuteStagingNodeName;
+
 // Produce a human-readable version of a Node or NodeDef that is more concise
 // than a text-format proto.
-string SummarizeNode(const Node& node);
-string SummarizeNodeDef(const NodeDef& node_def);
-string SummarizeAttrs(const NodeDef& node_def);
-string SummarizeAttrsHelper(AttrSlice attrs, StringPiece device);
+//
+// The parameter `max_inputs_in_summary` specifies how many inputs at most to
+// serialize in the output (in order not to get a string which is overly large).
+// The value `-1` specifies that all inputs will be shown.
+std::string SummarizeNodeDef(const NodeDef& node_def,
+                             int max_inputs_in_summary = -1);
+std::string SummarizeAttrs(const NodeDef& node_def);
+std::string SummarizeAttrsHelper(AttrSlice attrs, StringPiece device);
 
 // Produces a formatted string pattern from the node which can uniquely identify
 // this node upstream to produce an informative error message. The pattern
 // followed is: {{node <node_name>}}
-string FormatNodeForError(const Node& node);
-string FormatNodeDefForError(const NodeDef& node_def);
-string FormatNodeDefForError(
+std::string FormatNodeDefForError(const NodeDef& node_def);
+std::string FormatNodeDefForError(
     StringPiece node_name, bool has_experimental_debug_info,
     const NodeDef_ExperimentalDebugInfo& experimental_debug_info);
-
-// Merges the original node names from the debug information of 'from' to the
-// debug information of 'to'.
-void MergeDebugInfo(const NodeDebugInfo& from, Node* to);
-void MergeDebugInfo(const NodeDebugInfo& from, NodeDef* to);
-void MergeDebugInfo(const NodeDef& from, NodeDef* to);
 
 typedef protobuf::Map<string, AttrValue> AttrValueMap;
 
@@ -77,8 +89,8 @@ void AddNodeAttr(StringPiece name, const AttrValue& value, NodeDef* node_def);
 void AddNodeAttr(StringPiece name, AttrValue&& value, NodeDef* node_def);
 void AddNodeAttr(StringPiece name, StringPiece value, NodeDef* node_def);
 void AddNodeAttr(StringPiece name, const char* value, NodeDef* node_def);
-void AddNodeAttr(StringPiece name, int32 value, NodeDef* node_def);
-void AddNodeAttr(StringPiece name, int64 value, NodeDef* node_def);
+void AddNodeAttr(StringPiece name, int32_t value, NodeDef* node_def);
+void AddNodeAttr(StringPiece name, int64_t value, NodeDef* node_def);
 void AddNodeAttr(StringPiece name, float value, NodeDef* node_def);
 void AddNodeAttr(StringPiece name, double value, NodeDef* node_def);
 void AddNodeAttr(StringPiece name, bool value, NodeDef* node_def);
@@ -97,7 +109,7 @@ void AddNodeAttr(StringPiece name, gtl::ArraySlice<string> value,
                  NodeDef* node_def);
 void AddNodeAttr(StringPiece name, gtl::ArraySlice<int32> value,
                  NodeDef* node_def);
-void AddNodeAttr(StringPiece name, gtl::ArraySlice<int64> value,
+void AddNodeAttr(StringPiece name, gtl::ArraySlice<int64_t> value,
                  NodeDef* node_def);
 void AddNodeAttr(StringPiece name, gtl::ArraySlice<float> value,
                  NodeDef* node_def);
@@ -137,28 +149,31 @@ class AttrSlice {
   AttrSlice();  // Empty
   explicit AttrSlice(const AttrValueMap* a);
 
-  int size() const { return attrs_->size(); }
+  int size() const { return attrs()->size(); }
 
   // Returns the attr with attr_name if found.  Otherwise, returns
   // nullptr.
   const AttrValue* Find(StringPiece attr_name) const;
+  const AttrValue* FindByString(const std::string& attr_name) const;
 
   // Returns the attr_value for attr_name if found. Otherwise, returns a
   // NotFound status.
   Status Find(StringPiece attr_name, const AttrValue** attr_value) const;
+  Status FindByString(const std::string& attr_name,
+                      const AttrValue** attr_value) const;
 
   // Helper class to avoid allocations in EqualAttrs.
   // TODO(irving): Will go away once NodeInfo is used.
   struct Scratch {
-    string a;
-    string b;
+    std::string a;
+    std::string b;
   };
 
   // Check if all attrs and attr values match.  Does not take defaults into
   // account.
   //
   // TODO(irving): There is a bug in this routine inherited from its
-  // OptimizerCSE::EqualAttrs precedecessor.  The same tensor attr can be
+  // OptimizerCSE::EqualAttrs predecessor.  The same tensor attr can be
   // represented in more than one way as an AttrValue, since TensorProto is
   // not 1-1.  This bug will go away once I replace everything with NodeInfo,
   // which stores a Tensor object directly.  The Scratch object will also go
@@ -168,15 +183,21 @@ class AttrSlice {
   // If this AttrSlice has an attached NodeDef, summarize it.  This is for
   // error messages only: we intentionally do not provide direct access to the
   // NodeDef, since it is not always there.
-  string SummarizeNode() const;
+  std::string SummarizeNode() const;
 
   // Iteration over all attrs
-  AttrValueMap::const_iterator begin() const { return attrs_->begin(); }
-  AttrValueMap::const_iterator end() const { return attrs_->end(); }
+  AttrValueMap::const_iterator begin() const { return attrs()->begin(); }
+  AttrValueMap::const_iterator end() const { return attrs()->end(); }
 
-  string DebugString() const;
+  std::string DebugString() const;
 
  private:
+  const AttrValueMap* attrs() const {
+    return ndef_ != nullptr ? &ndef_->attr() : attrs_;
+  }
+
+  Status CheckFind(StringPiece attr_name, const AttrValue* attr_value) const;
+
   const NodeDef* ndef_;
   const AttrValueMap* attrs_;
 };
@@ -188,9 +209,11 @@ bool HasNodeAttr(const NodeDef& node_def, StringPiece attr_name);
 // attr with attr_name is found in node_def, or the attr does not have
 // a matching type, a non-ok status will be returned.
 Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
-                   string* value);  // type: "string"
+                   std::string* value);  // type: "string"
 Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
-                   int64* value);  // type: "int"
+                   tstring* value);  // type: "tstring"
+Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
+                   int64_t* value);  // type: "int"
 Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
                    int32* value);  // type: "int"
 Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
@@ -210,7 +233,9 @@ Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
 Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
                    std::vector<string>* value);  // type "list(string)"
 Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
-                   std::vector<int64>* value);  // type "list(int)"
+                   std::vector<tstring>* value);  // type "list(tstring)"
+Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
+                   std::vector<int64_t>* value);  // type "list(int)"
 Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
                    std::vector<int32>* value);  // type "list(int)"
 Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
@@ -230,6 +255,13 @@ Status GetNodeAttr(
     std::vector<PartialTensorShape>* value);  // type "list(shape)"
 Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
                    std::vector<Tensor>* value);  // type: "list(tensor)"
+
+template <typename T>
+StatusOr<T> GetNodeAttr(const NodeDef& ndef, absl::string_view attr_name) {
+  T val;
+  TF_RETURN_IF_ERROR(GetNodeAttr(ndef, attr_name, &val));
+  return val;
+}
 
 // This version avoids copying the TensorProto.
 // REQUIRES: Must not use *value beyond the lifetime of node_def.
@@ -255,11 +287,11 @@ Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
 // attr with attr_name is found in node_def, or the attr does not have
 // a matching type, false is returned.
 bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
-                    string* value);  // type: "string"
+                    std::string* value);  // type: "string"
 bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
-                    int64* value);  // type: "int"
+                    int64_t* value);  // type: "int"
 bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
-                    std::vector<int64>* value);  // type: "int"
+                    std::vector<int64_t>* value);  // type: "int"
 bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
                     int32* value);  // type: "int"
 bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
@@ -273,6 +305,8 @@ bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
 
 bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
                     std::vector<string>* value);  // type: "list(string)"
+bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
+                    std::vector<tstring>* value);  // type: "list(tstring)"
 bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
                     std::vector<int32>* value);  // type: "list(int)"
 bool TryGetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
@@ -296,7 +330,12 @@ bool TryGetNodeAttr(
 // If no attr with attr_name is found in node_def, or the attr does not have
 // a matching type, a reference to an empty string is returned.
 // REQUIRES: Must not use the returned value beyond the lifetime of node_def.
-const string& GetNodeAttrString(const AttrSlice& attrs, StringPiece attr_name);
+const std::string& GetNodeAttrString(const AttrSlice& attrs,
+                                     StringPiece attr_name);
+
+// Specialization to parse an attribute directly into a Padding enum.
+Status GetNodeAttr(const AttrSlice& attrs, StringPiece attr_name,
+                   Padding* value);
 
 // Computes the input type for a specific node input.
 // REQUIRES: ValidateOpDef(op_def).ok()
@@ -326,6 +365,17 @@ Status InOutTypesForNode(const NodeDef& node_def, const OpDef& op_def,
 Status NumOutputsForNode(const NodeDef& node_def, const OpDef& op_def,
                          int* num_outputs);
 
+// Map a node/op's input/output port_id to arg_id.
+//
+// The port_id refers to the n-th tensor of the node, while the arg_id refers to
+// the n-th arg of the op. These two can be different if an op's arg is a list
+// of tensors.
+//
+// We return -1 for any invalid port_id (i.e., no corresponding arg_id).
+int OpPortIdToArgId(const NodeDef& node,
+                    const protobuf::RepeatedPtrField<OpDef::ArgDef>& args,
+                    int port_id);
+
 // Validates that the NodeDef:
 // * Defines all expected attrs from the OpDef.
 // * All attrs satisfies constraints from the OpDef.
@@ -345,11 +395,12 @@ typedef gtl::FlatMap<StringPiece, std::pair<int, int>, hash<StringPiece>>
     NameRangeMap;
 Status NameRangesForNode(const AttrSlice& attrs, const OpDef& op_def,
                          NameRangeMap* inputs, NameRangeMap* outputs);
-Status NameRangesForNode(const Node& node, const OpDef& op_def,
-                         NameRangeMap* inputs, NameRangeMap* outputs);
-
 // Adds default values to *node_def for unspecified attrs from op_def.
 void AddDefaultsToNodeDef(const OpDef& op_def, NodeDef* node_def);
+
+// Remove attributes from node_def when the value is the default from the
+// op_def.
+void StripDefaultsFromNodeDef(const OpDef& op_def, NodeDef* node_def);
 
 // Validates the syntax of a NodeDef provided externally.
 //
@@ -370,15 +421,31 @@ Status ValidateExternalNodeDefSyntax(const NodeDef& node_def);
 // of the NodeDef instead of the formatted string.
 Status AttachDef(const Status& status, const NodeDef& node_def,
                  bool allow_multiple_formatted_node = false);
-Status AttachDef(const Status& status, const Node& node,
-                 bool allow_multiple_formatted_node = false);
-
 // Appends the given prefix and suffix to the original node name in order to
 // make the name unique. If it's an "Enter" node and uniquify_frame_name is
 // true, use the same way to reset attribute "frame_name".
 Status AddPrefixAndSuffixToNode(StringPiece prefix, StringPiece suffix,
                                 NodeDef* node_def,
                                 bool uniquify_frame_name = true);
+
+// Appends the given prefix to the colocation group name if the name exists
+// in `to_match`.
+Status MaybeAddPrefixToColocationConstraints(
+    const std::unordered_set<string>& match, StringPiece prefix,
+    NodeDef* node_def);
+
+// Updates the colocation constraint name with the one provided in the map (if
+// it exists in the map) for node_def.
+Status MaybeUpdateColocationConstraintsWithMap(
+    const std::map<absl::string_view, absl::string_view>& node_name_map,
+    NodeDef* node_def);
+
+// For replacing a existing node with a NoOp, change the op and clear full type
+// information (since a NoOp has no output). Note that (duplicate control or
+// all) inputs, (regular, output or all) attributes and output properperties are
+// NOT cleared (and should be cleared if appropriate elsewhere).
+void ChangeToNoOp(NodeDef* node_def);
+
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_FRAMEWORK_NODE_DEF_UTIL_H_

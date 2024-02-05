@@ -13,19 +13,15 @@
 # limitations under the License.
 # ==============================================================================
 """Unit tests for local command-line-interface debug wrapper session."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import tempfile
 
 import numpy as np
 
-from tensorflow.python.debug.cli import cli_config
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.core.protobuf import rewriter_config_pb2
 from tensorflow.python.client import session
+from tensorflow.python.debug.cli import cli_config
 from tensorflow.python.debug.cli import cli_shared
 from tensorflow.python.debug.cli import debugger_cli_common
 from tensorflow.python.debug.cli import ui_factory
@@ -36,9 +32,6 @@ from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.lib.io import file_io
-from tensorflow.python.keras import backend
-from tensorflow.python.keras.engine import sequential
-from tensorflow.python.keras.layers import core
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
@@ -46,6 +39,7 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import resource_variable_ops  # pylint: disable=unused-import
 from tensorflow.python.ops import sparse_ops
 from tensorflow.python.ops import state_ops
+from tensorflow.python.ops import variable_v1
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import googletest
 from tensorflow.python.training import monitored_session
@@ -76,7 +70,7 @@ class LocalCLIDebuggerWrapperSessionForTest(
     """
 
     local_cli_wrapper.LocalCLIDebugWrapperSession.__init__(
-        self, sess, dump_root=dump_root, log_usage=False)
+        self, sess, dump_root=dump_root)
 
     self._command_sequence = command_sequence
     self._command_pointer = 0
@@ -119,7 +113,7 @@ class LocalCLIDebuggerWrapperSessionForTest(
             config_file_path=os.path.join(tempfile.mkdtemp(), ".tfdbg_config")))
     self._register_this_run_info(readline_cli)
 
-    while True:
+    while self._command_pointer < len(self._command_sequence):
       command = self._command_sequence[self._command_pointer]
       self._command_pointer += 1
 
@@ -139,10 +133,10 @@ class LocalCLIDebuggerWrapperSessionForTest(
 class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
 
   def setUp(self):
-    self._tmp_dir = tempfile.mktemp()
+    self._tmp_dir = tempfile.mkdtemp()
 
-    self.v = variables.VariableV1(10.0, name="v")
-    self.w = variables.VariableV1(21.0, name="w")
+    self.v = variable_v1.VariableV1(10.0, name="v")
+    self.w = variable_v1.VariableV1(21.0, name="w")
     self.delta = constant_op.constant(1.0, name="delta")
     self.inc_v = state_ops.assign_add(self.v, self.delta, name="inc_v")
 
@@ -178,35 +172,25 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
       file_io.delete_recursively(self._tmp_dir)
 
   def testConstructWrapper(self):
-    local_cli_wrapper.LocalCLIDebugWrapperSession(
-        session.Session(), log_usage=False)
-
-  def testConstructWrapperWithExistingEmptyDumpRoot(self):
-    os.mkdir(self._tmp_dir)
-    self.assertTrue(os.path.isdir(self._tmp_dir))
-
-    local_cli_wrapper.LocalCLIDebugWrapperSession(
-        session.Session(), dump_root=self._tmp_dir, log_usage=False)
+    local_cli_wrapper.LocalCLIDebugWrapperSession(session.Session())
 
   def testConstructWrapperWithExistingNonEmptyDumpRoot(self):
-    os.mkdir(self._tmp_dir)
     dir_path = os.path.join(self._tmp_dir, "foo")
     os.mkdir(dir_path)
     self.assertTrue(os.path.isdir(dir_path))
 
-    with self.assertRaisesRegexp(
+    with self.assertRaisesRegex(
         ValueError, "dump_root path points to a non-empty directory"):
       local_cli_wrapper.LocalCLIDebugWrapperSession(
-          session.Session(), dump_root=self._tmp_dir, log_usage=False)
+          session.Session(), dump_root=self._tmp_dir)
 
   def testConstructWrapperWithExistingFileDumpRoot(self):
-    os.mkdir(self._tmp_dir)
     file_path = os.path.join(self._tmp_dir, "foo")
     open(file_path, "a").close()  # Create the file
     self.assertTrue(os.path.isfile(file_path))
-    with self.assertRaisesRegexp(ValueError, "dump_root path points to a file"):
+    with self.assertRaisesRegex(ValueError, "dump_root path points to a file"):
       local_cli_wrapper.LocalCLIDebugWrapperSession(
-          session.Session(), dump_root=file_path, log_usage=False)
+          session.Session(), dump_root=file_path)
 
   def testRunsUnderDebugMode(self):
     wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
@@ -345,7 +329,7 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
     self.assertEqual(0, len(wrapped_sess.observers["debug_dumps"]))
     self.assertEqual([], wrapped_sess.observers["tf_errors"])
 
-  def testRunMixingDebugModeAndMultpleTimes(self):
+  def testRunMixingDebugModeAndMultipleTimes(self):
     wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
         [["run", "-n"], ["run", "-t", "2"], ["run"], ["run"]],
         self.sess, dump_root=self._tmp_dir)
@@ -367,7 +351,7 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
   def testDebuggingMakeCallableTensorRunnerWorks(self):
     wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
         [["run"], ["run"]], self.sess, dump_root=self._tmp_dir)
-    v = variables.VariableV1(42)
+    v = variable_v1.VariableV1(42)
     tensor_runner = wrapped_sess.make_callable(v)
     self.sess.run(v.initializer)
 
@@ -391,7 +375,7 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
   def testDebuggingMakeCallableOperationRunnerWorks(self):
     wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
         [["run"], ["run"]], self.sess, dump_root=self._tmp_dir)
-    v = variables.VariableV1(10.0)
+    v = variable_v1.VariableV1(10.0)
     inc_v = state_ops.assign_add(v, 1.0)
     op_runner = wrapped_sess.make_callable(inc_v.op)
     self.sess.run(v.initializer)
@@ -412,7 +396,7 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
     self.assertEqual(1, len(wrapped_sess.observers["debug_dumps"]))
 
   def testDebuggingMakeCallableFromOptionsWithZeroFeedWorks(self):
-    variable_1 = variables.VariableV1(
+    variable_1 = variable_v1.VariableV1(
         10.5, dtype=dtypes.float32, name="variable_1")
     a = math_ops.add(variable_1, variable_1, "callable_a")
     math_ops.add(a, a, "callable_b")
@@ -491,7 +475,7 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
       self.assertIn("callable_b", node_names)
 
   def testDebugMakeCallableFromOptionsWithCustomOptionsAndMetadataWorks(self):
-    variable_1 = variables.VariableV1(
+    variable_1 = variable_v1.VariableV1(
         10.5, dtype=dtypes.float32, name="variable_1")
     a = math_ops.add(variable_1, variable_1, "callable_a")
     math_ops.add(a, a, "callable_b")
@@ -535,16 +519,6 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
     self.assertEqual(1, len(wrapped_sess.observers["tf_errors"]))
     tf_error = wrapped_sess.observers["tf_errors"][0]
     self.assertEqual("y", tf_error.op.name)
-
-  def testRuntimeErrorBeforeGraphExecutionIsRaised(self):
-    # Use an impossible device name to cause an error before graph execution.
-    with ops.device("/device:GPU:1337"):
-      w = variables.VariableV1([1.0] * 10, name="w")
-
-    wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
-        [["run"]], self.sess, dump_root=self._tmp_dir)
-    with self.assertRaisesRegexp(errors.OpError, r".*[Dd]evice.*1337.*"):
-      wrapped_sess.run(w)
 
   def testRunTillFilterPassesShouldLaunchCLIAtCorrectRun(self):
     wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
@@ -814,7 +788,7 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
   def testCallingShouldStopMethodOnNonWrappedNonMonitoredSessionErrors(self):
     wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
         [["run"], ["run"]], self.sess)
-    with self.assertRaisesRegexp(
+    with self.assertRaisesRegex(
         ValueError,
         r"The wrapped session .* does not have a method .*should_stop.*"):
       wrapped_sess.should_stop()
@@ -831,40 +805,6 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
 
     run_output = wrapped_sess.run([])
     self.assertEqual([], run_output)
-
-  def testDebuggingKerasFitWithSkippedRunsWorks(self):
-    wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
-        [["run"], ["run"], ["run", "-t", "10"]], self.sess)
-
-    backend.set_session(wrapped_sess)
-
-    model = sequential.Sequential()
-    model.add(core.Dense(4, input_shape=[2], activation="relu"))
-    model.add(core.Dense(1))
-    model.compile(loss="mse", optimizer="sgd")
-
-    x = np.zeros([8, 2])
-    y = np.zeros([8, 1])
-    model.fit(x, y, epochs=2)
-
-    self.assertEqual(2, len(wrapped_sess.observers["debug_dumps"]))
-
-  def testDebuggingKerasFitWithProfilingWorks(self):
-    wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
-        [["run", "-p"]] * 10, self.sess)
-
-    backend.set_session(wrapped_sess)
-
-    model = sequential.Sequential()
-    model.add(core.Dense(4, input_shape=[2], activation="relu"))
-    model.add(core.Dense(1))
-    model.compile(loss="mse", optimizer="sgd")
-
-    x = np.zeros([8, 2])
-    y = np.zeros([8, 1])
-    model.fit(x, y, epochs=2)
-
-    self.assertEqual(0, len(wrapped_sess.observers["debug_dumps"]))
 
   def testRunsWithEmptyNestedFetchWorks(self):
     wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(

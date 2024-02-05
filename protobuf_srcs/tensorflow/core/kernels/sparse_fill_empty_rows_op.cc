@@ -22,179 +22,147 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/kernels/fill_empty_rows_functor.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/util/sparse/sparse_tensor.h"
 
 namespace tensorflow {
 
 using CPUDevice = Eigen::ThreadPoolDevice;
+using GPUDevice = Eigen::GpuDevice;
 
-template <typename T>
+namespace {
+
+template <typename Device, typename T, typename Tindex>
+void SparseFillEmptyRowsOpImpl(OpKernelContext* context,
+                               AsyncOpKernel::DoneCallback done = nullptr) {
+  // Note that setting this empty lambda as the default parameter value directly
+  // can cause strange compiler/linker errors, so we do it like this instead.
+  if (!done) {
+    done = [] {};
+  }
+
+  const int kIndicesInput = 0;
+  const int kValuesInput = 1;
+  const int kDenseShapeInput = 2;
+  const int kDefaultValueInput = 3;
+
+  const Tensor& indices_t = context->input(kIndicesInput);
+  const Tensor& values_t = context->input(kValuesInput);
+  const Tensor& dense_shape_t = context->input(kDenseShapeInput);
+  const Tensor& default_value_t = context->input(kDefaultValueInput);
+
+  OP_REQUIRES_ASYNC(
+      context, TensorShapeUtils::IsVector(dense_shape_t.shape()),
+      errors::InvalidArgument("dense_shape must be a vector, saw: ",
+                              dense_shape_t.shape().DebugString()),
+      done);
+  OP_REQUIRES_ASYNC(context, TensorShapeUtils::IsMatrix(indices_t.shape()),
+                    errors::InvalidArgument("indices must be a matrix, saw: ",
+                                            indices_t.shape().DebugString()),
+                    done);
+  OP_REQUIRES_ASYNC(context, TensorShapeUtils::IsVector(values_t.shape()),
+                    errors::InvalidArgument("values must be a vector, saw: ",
+                                            values_t.shape().DebugString()),
+                    done);
+  OP_REQUIRES_ASYNC(
+      context, indices_t.dim_size(0) == values_t.dim_size(0),
+      errors::InvalidArgument("The length of `values` (", values_t.dim_size(0),
+                              ") must match the first dimension of `indices` (",
+                              indices_t.dim_size(0), ")."),
+      done);
+  OP_REQUIRES_ASYNC(
+      context, indices_t.dim_size(1) == dense_shape_t.dim_size(0),
+      errors::InvalidArgument("The length of `dense_shape` (",
+                              dense_shape_t.dim_size(0),
+                              ") must match the second dimension of `indices` ",
+                              "(", indices_t.dim_size(1), ")."),
+      done);
+  OP_REQUIRES_ASYNC(
+      context, TensorShapeUtils::IsScalar(default_value_t.shape()),
+      errors::InvalidArgument("default_value must be a scalar, saw: ",
+                              default_value_t.shape().DebugString()),
+      done);
+  // TODO(ebrevdo): add shape checks between values, indices,
+  // Also add check that dense rank > 0.
+  OP_REQUIRES_ASYNC(context, dense_shape_t.NumElements() != 0,
+                    errors::InvalidArgument("Dense shape cannot be empty."),
+                    done);
+
+  using FunctorType =
+      functor::FillEmptyRows<Device, T, Tindex, /*RaggedOperands=*/false>;
+  OP_REQUIRES_OK_ASYNC(context,
+                       FunctorType()(context, default_value_t, indices_t,
+                                     values_t, dense_shape_t, done),
+                       done);
+}
+
+}  // namespace
+
+template <typename Device, typename T, typename Tindex>
 class SparseFillEmptyRowsOp : public OpKernel {
  public:
   explicit SparseFillEmptyRowsOp(OpKernelConstruction* context)
       : OpKernel(context) {}
 
   void Compute(OpKernelContext* context) override {
-    const Tensor* indices_t;
-    const Tensor* values_t;
-    const Tensor* dense_shape_t;
-    const Tensor* default_value_t;
-    OP_REQUIRES_OK(context, context->input("indices", &indices_t));
-    OP_REQUIRES_OK(context, context->input("values", &values_t));
-    OP_REQUIRES_OK(context, context->input("dense_shape", &dense_shape_t));
-    OP_REQUIRES_OK(context, context->input("default_value", &default_value_t));
-
-    const CPUDevice& d = context->eigen_device<CPUDevice>();
-
-    OP_REQUIRES(context, TensorShapeUtils::IsVector(dense_shape_t->shape()),
-                errors::InvalidArgument("dense_shape must be a vector, saw: ",
-                                        dense_shape_t->shape().DebugString()));
-    OP_REQUIRES(context, TensorShapeUtils::IsMatrix(indices_t->shape()),
-                errors::InvalidArgument("indices must be a matrix, saw: ",
-                                        indices_t->shape().DebugString()));
-    OP_REQUIRES(context, TensorShapeUtils::IsVector(values_t->shape()),
-                errors::InvalidArgument("values must be a vector, saw: ",
-                                        values_t->shape().DebugString()));
-    OP_REQUIRES(
-        context, TensorShapeUtils::IsScalar(default_value_t->shape()),
-        errors::InvalidArgument("default_value must be a scalar, saw: ",
-                                default_value_t->shape().DebugString()));
-    // TODO(ebrevdo): add shape checks between values, indices,
-    // dense_shape.  Also add check that dense rank > 0.
-
-    const T& default_value = default_value_t->scalar<T>()();
-    const auto indices = indices_t->matrix<int64>();
-    const auto values = values_t->vec<T>();
-    const auto dense_shape = dense_shape_t->vec<int64>();
-
-    const int64 N = indices_t->shape().dim_size(0);
-    const int64 dense_rows = dense_shape(0);
-
-    Tensor* empty_row_indicator_t;
-    OP_REQUIRES_OK(context, context->allocate_output("empty_row_indicator",
-                                                     TensorShape({dense_rows}),
-                                                     &empty_row_indicator_t));
-    auto empty_row_indicator = empty_row_indicator_t->vec<bool>();
-    Tensor* reverse_index_map_t;
-    OP_REQUIRES_OK(
-        context, context->allocate_output("reverse_index_map", TensorShape({N}),
-                                          &reverse_index_map_t));
-    auto reverse_index_map = reverse_index_map_t->vec<int64>();
-
-    int rank = indices_t->shape().dim_size(1);
-
-    if (dense_rows == 0) {
-      OP_REQUIRES(
-          context, N == 0,
-          errors::InvalidArgument("Received SparseTensor with dense_shape[0] = "
-                                  "0 but indices.shape[0] = ",
-                                  N));
-      Tensor* output_indices_t;
-      TensorShape output_indices_shape({0, rank});
-      OP_REQUIRES_OK(context, context->allocate_output("output_indices",
-                                                       output_indices_shape,
-                                                       &output_indices_t));
-      Tensor* output_values_t;
-      OP_REQUIRES_OK(context,
-                     context->allocate_output("output_values", TensorShape({0}),
-                                              &output_values_t));
-
-      // Exit early, nothing more to do.
-      return;
-    }
-
-    Tensor scratch_t;
-    OP_REQUIRES_OK(context,
-                   context->allocate_temp(DT_INT64, TensorShape({dense_rows}),
-                                          &scratch_t));
-    auto scratch = scratch_t.vec<int64>();
-    scratch.device(d) = scratch.constant(0);
-    for (int i = 0; i < N; ++i) {
-      const int64 row = indices(i, 0);
-      OP_REQUIRES(context, row >= 0 && row < dense_rows,
-                  errors::InvalidArgument("indices(", i, ", 0) is invalid: ",
-                                          row, " >= ", dense_rows));
-      ++scratch(indices(i, 0));
-    }
-    for (int row = 0; row < dense_rows; ++row) {
-      // Scratch here describes the number of elements in this dense row
-      empty_row_indicator(row) = (scratch(row) == 0);
-      // In filled version, each row has at least one element.
-      scratch(row) = std::max(scratch(row), int64{1});
-      // Update scratch to represent the number of elements up to and
-      // including dense_row + 1:
-      //  scratch(0) == #{elements of row 0}
-      //  scratch(1) == #{elements of row 1} + #{elements of row 0}
-      //  ..
-      //  scratch(i) == starting index for elements in row i + 1.
-      if (row > 0) {
-        scratch(row) += scratch(row - 1);
-      }
-    }
-    Tensor* output_indices_t;
-    const int64 N_full = scratch(dense_rows - 1);
-    TensorShape output_indices_shape({N_full, rank});
-    OP_REQUIRES_OK(context, context->allocate_output("output_indices",
-                                                     output_indices_shape,
-                                                     &output_indices_t));
-    auto output_indices = output_indices_t->matrix<int64>();
-    output_indices.device(d) = output_indices.constant(0);
-
-    Tensor* output_values_t;
-    OP_REQUIRES_OK(
-        context, context->allocate_output(
-                     "output_values", TensorShape({N_full}), &output_values_t));
-    auto output_values = output_values_t->vec<T>();
-    output_values.device(d) = output_values.constant(default_value);
-
-    Tensor filled_count_t;
-    OP_REQUIRES_OK(context,
-                   context->allocate_temp(DT_INT64, TensorShape({dense_rows}),
-                                          &filled_count_t));
-    auto filled_count = filled_count_t.vec<int64>();
-    filled_count.device(d) = filled_count.constant(0);
-
-    // Fill in values for rows that are not missing
-    for (int64 i = 0; i < N; ++i) {
-      const int64 row = indices(i, 0);
-      int64& offset = filled_count(row);
-      const int64 output_i = ((row == 0) ? 0 : scratch(row - 1)) + offset;
-      offset++;  // Increment the filled count for this row.
-      std::copy_n(&indices(i, 0), rank, &output_indices(output_i, 0));
-      output_values(output_i) = values(i);
-      // We'll need this reverse index map to backprop correctly.
-      reverse_index_map(i) = output_i;
-    }
-
-    // Fill in values for rows that are missing
-    for (int64 row = 0; row < dense_rows; ++row) {
-      const int64 row_count = filled_count(row);
-      if (row_count == 0) {  // We haven't filled this row
-        const int64 starting_index = (row == 0) ? 0 : scratch(row - 1);
-        // Remaining index values were set to zero already.
-        // The value at this index was set to default_value already.
-        // Just need to set the row index in the right location.
-        output_indices(starting_index, 0) = row;
-      }
-    }
+    SparseFillEmptyRowsOpImpl<Device, T, Tindex>(context);
   }
 };
 
-#define REGISTER_KERNELS(type)                            \
-  REGISTER_KERNEL_BUILDER(Name("SparseFillEmptyRows")     \
-                              .Device(DEVICE_CPU)         \
-                              .TypeConstraint<type>("T"), \
-                          SparseFillEmptyRowsOp<type>)
+#define REGISTER_KERNELS(D, T, Tindex)                   \
+  REGISTER_KERNEL_BUILDER(Name("SparseFillEmptyRows")    \
+                              .Device(DEVICE_##D)        \
+                              .HostMemory("dense_shape") \
+                              .TypeConstraint<T>("T"),   \
+                          SparseFillEmptyRowsOp<D##Device, T, Tindex>)
 
-TF_CALL_ALL_TYPES(REGISTER_KERNELS);
+#define REGISTER_CPU_KERNELS(T) REGISTER_KERNELS(CPU, T, int64)
+TF_CALL_ALL_TYPES(REGISTER_CPU_KERNELS);
+#undef REGISTER_CPU_KERNELS
+
 #undef REGISTER_KERNELS
 
-template <typename T>
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+// The GPU implementation is async because it requires waiting for a
+// host->device memcpy before the output is allocated (similar to
+// SegmentSumGPUOp).
+template <typename T, typename Tindex>
+class SparseFillEmptyRowsGPUOp : public AsyncOpKernel {
+ public:
+  explicit SparseFillEmptyRowsGPUOp(OpKernelConstruction* context)
+      : AsyncOpKernel(context) {}
+
+  void ComputeAsync(OpKernelContext* context, DoneCallback done) override {
+    SparseFillEmptyRowsOpImpl<GPUDevice, T, Tindex>(context, done);
+  }
+};
+
+#define REGISTER_KERNELS(T, Tindex)                      \
+  REGISTER_KERNEL_BUILDER(Name("SparseFillEmptyRows")    \
+                              .Device(DEVICE_GPU)        \
+                              .HostMemory("dense_shape") \
+                              .TypeConstraint<T>("T"),   \
+                          SparseFillEmptyRowsGPUOp<T, Tindex>)
+
+
+#define REGISTER_KERNELS_TINDEX(T) REGISTER_KERNELS(T, int64)
+TF_CALL_POD_TYPES(REGISTER_KERNELS_TINDEX)
+#undef REGISTER_KERNELS_TINDEX
+
+#undef REGISTER_KERNELS
+
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+
+template <typename Device, typename T, typename Tindex>
 class SparseFillEmptyRowsGradOp : public OpKernel {
  public:
   explicit SparseFillEmptyRowsGradOp(OpKernelConstruction* context)
@@ -207,18 +175,18 @@ class SparseFillEmptyRowsGradOp : public OpKernel {
                    context->input("reverse_index_map", &reverse_index_map_t));
     OP_REQUIRES_OK(context, context->input("grad_values", &grad_values_t));
 
-    const CPUDevice& d = context->eigen_device<CPUDevice>();
-
     OP_REQUIRES(
         context, TensorShapeUtils::IsVector(reverse_index_map_t->shape()),
         errors::InvalidArgument("reverse_index_map must be a vector, saw: ",
                                 reverse_index_map_t->shape().DebugString()));
+    OP_REQUIRES(context, TensorShapeUtils::IsVector(grad_values_t->shape()),
+                errors::InvalidArgument("grad_values must be a vector, saw: ",
+                                        grad_values_t->shape().DebugString()));
 
-    const auto reverse_index_map = reverse_index_map_t->vec<int64>();
+    const auto reverse_index_map = reverse_index_map_t->vec<Tindex>();
     const auto grad_values = grad_values_t->vec<T>();
 
-    const int64 N = reverse_index_map_t->shape().dim_size(0);
-    const int64 N_full = grad_values_t->shape().dim_size(0);
+    const Tindex N = reverse_index_map_t->shape().dim_size(0);
 
     Tensor* d_values_t;
     OP_REQUIRES_OK(context, context->allocate_output(
@@ -228,39 +196,31 @@ class SparseFillEmptyRowsGradOp : public OpKernel {
     OP_REQUIRES_OK(context,
                    context->allocate_output("d_default_value", TensorShape({}),
                                             &d_default_value_t));
-    T& d_default_value = d_default_value_t->scalar<T>()();
-    d_default_value = T();
+    auto d_default_value = d_default_value_t->scalar<T>();
 
-    Tensor visited_t;
-    OP_REQUIRES_OK(context, context->allocate_temp(
-                                DT_BOOL, TensorShape({N_full}), &visited_t));
-    auto visited = visited_t.vec<bool>();
-    visited.device(d) = visited.constant(false);
-
-    for (int i = 0; i < N; ++i) {
-      // Locate the index of the output of the forward prop associated
-      // with this location in the input of the forward prop.  Copy
-      // the gradient into it.  Mark it as visited.
-      d_values(i) = grad_values(reverse_index_map(i));
-      visited(reverse_index_map(i)) = true;
-    }
-    for (int j = 0; j < N_full; ++j) {
-      // The default value gradient gets the accumulated remainder of
-      // the backprop values (since the default value was used to fill
-      // in these slots in the forward calculation).
-      if (!visited(j)) {
-        d_default_value += grad_values(j);
-      }
-    }
+    OP_REQUIRES_OK(context, functor::FillEmptyRowsGrad<Device, T, Tindex>()(
+                                context, reverse_index_map, grad_values,
+                                d_values, d_default_value));
   }
 };
 
-#define REGISTER_KERNELS(type)                            \
+#define REGISTER_KERNELS(D, T, Tindex)                    \
   REGISTER_KERNEL_BUILDER(Name("SparseFillEmptyRowsGrad") \
-                              .Device(DEVICE_CPU)         \
-                              .TypeConstraint<type>("T"), \
-                          SparseFillEmptyRowsGradOp<type>)
+                              .Device(DEVICE_##D)         \
+                              .TypeConstraint<T>("T"),    \
+                          SparseFillEmptyRowsGradOp<D##Device, T, Tindex>)
 
-TF_CALL_NUMBER_TYPES(REGISTER_KERNELS);
+#define REGISTER_CPU_KERNELS(T) REGISTER_KERNELS(CPU, T, int64)
+TF_CALL_NUMBER_TYPES(REGISTER_CPU_KERNELS);
+#undef REGISTER_CPU_KERNELS
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+#define REGISTER_GPU_KERNELS(T) REGISTER_KERNELS(GPU, T, int64)
+TF_CALL_REAL_NUMBER_TYPES(REGISTER_GPU_KERNELS);
+#undef REGISTER_GPU_KERNELS
+
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
 #undef REGISTER_KERNELS
 }  // namespace tensorflow

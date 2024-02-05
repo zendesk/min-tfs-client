@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for maximum."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
 from tensorflow.lite.testing.zip_test_utils import make_zip_of_tests
@@ -29,8 +25,11 @@ def make_maximum_tests(options):
 
   test_parameters = [{
       "input_dtype": [tf.float32],
-      "input_shape_1": [[], [3], [1, 100], [4, 2, 3], [5, 224, 224, 3]],
-      "input_shape_2": [[], [3], [1, 100], [4, 2, 3], [5, 224, 224, 3]],
+      "input_shape_1": [[], [3], [1, 100], [4, 2, 3], [5, 224, 224, 3],
+                        [5, 32, 32, 3, 1], [5, 32, 32, 3, 1]],
+      "input_shape_2": [[], [3], [1, 100], [4, 2, 3], [5, 224, 224, 3],
+                        [5, 32, 32, 3, 3], [5, 32, 32, 3, 1]],
+      "fully_quantize": [False, True],
   }]
 
   def build_graph(parameters):
@@ -48,11 +47,18 @@ def make_maximum_tests(options):
     return [input_tensor_1, input_tensor_2], [out]
 
   def build_inputs(parameters, sess, inputs, outputs):
+    """Builds the inputs for the model above."""
     values = [
-        create_tensor_data(parameters["input_dtype"],
-                           parameters["input_shape_1"]),
-        create_tensor_data(parameters["input_dtype"],
-                           parameters["input_shape_2"])
+        create_tensor_data(
+            parameters["input_dtype"],
+            parameters["input_shape_1"],
+            min_value=-1,
+            max_value=1),
+        create_tensor_data(
+            parameters["input_dtype"],
+            parameters["input_shape_2"],
+            min_value=-1,
+            max_value=1)
     ]
     return values, sess.run(outputs, feed_dict=dict(zip(inputs, values)))
 
@@ -61,4 +67,4 @@ def make_maximum_tests(options):
       test_parameters,
       build_graph,
       build_inputs,
-      expected_tf_failures=8)
+      expected_tf_failures=44)

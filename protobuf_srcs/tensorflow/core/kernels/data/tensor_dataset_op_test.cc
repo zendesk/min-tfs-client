@@ -14,7 +14,12 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/tensor_dataset_op.h"
 
-#include "tensorflow/core/kernels/data/dataset_test_base.h"
+#include <string>
+#include <utility>
+
+#include "tensorflow/core/data/dataset_test_base.h"
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/serialization_utils.h"
 
 namespace tensorflow {
 namespace data {
@@ -37,13 +42,14 @@ class TensorDatasetParams : public DatasetParams {
       input_names->emplace_back(
           absl::StrCat(TensorDatasetOp::kComponents, "_", i));
     }
-    return Status::OK();
+    return OkStatus();
   }
 
   Status GetAttributes(AttributeVector* attr_vector) const override {
-    *attr_vector = {{TensorDatasetOp::kToutput_types, output_dtypes_},
-                    {TensorDatasetOp::kOutputShapes, output_shapes_}};
-    return Status::OK();
+    *attr_vector = {{"Toutput_types", output_dtypes_},
+                    {"output_shapes", output_shapes_},
+                    {"metadata", ""}};
+    return OkStatus();
   }
 
   string dataset_type() const override { return TensorDatasetOp::kDatasetType; }
@@ -70,15 +76,18 @@ class TensorDatasetParams : public DatasetParams {
   std::vector<Tensor> components_;
 };
 
-class TensorDatasetOpTest : public DatasetOpsTestBaseV2 {};
+class TensorDatasetOpTest : public DatasetOpsTestBase {};
+
+std::vector<Tensor> PlainTensors() {
+  return {CreateTensor<int64_t>(TensorShape({}), {1}),
+          CreateTensor<int64_t>(TensorShape({1, 3}), {1, 2, 3}),
+          CreateTensor<double>(TensorShape({}), {37.0}),
+          CreateTensor<tstring>(TensorShape({1, 2}), {"a", "b"})};
+}
 
 // Test case 1: test a dataset that represents a single tuple of plain tensors.
 TensorDatasetParams PlainTensorDatasetParams() {
-  return {/*components=*/
-          {CreateTensor<int64>(TensorShape({}), {1}),
-           CreateTensor<int64>(TensorShape({1, 3}), {1, 2, 3}),
-           CreateTensor<double>(TensorShape({}), {37.0}),
-           CreateTensor<tstring>(TensorShape({1, 2}), {"a", "b"})},
+  return {/*components=*/PlainTensors(),
           /*node_name=*/kNodeName};
 }
 
@@ -91,18 +100,13 @@ TensorDatasetParams NestedTensorDatasetParams() {
            CreateTensor<Variant>(
                TensorShape({}),
                {CreateTensor<tstring>(TensorShape({1, 2}), {"a", "b"})}),
-           CreateTensor<int64>(TensorShape({1, 3}), {1, 2, 3})},
+           CreateTensor<int64_t>(TensorShape({1, 3}), {1, 2, 3})},
           /*node_name=*/kNodeName};
 }
 
 std::vector<GetNextTestCase<TensorDatasetParams>> GetNextTestCases() {
   return {{/*dataset_params=*/PlainTensorDatasetParams(),
-           /*expected_outputs=*/{CreateTensor<int64>(TensorShape({}), {1}),
-                                 CreateTensor<int64>(TensorShape({1, 3}),
-                                                     {1, 2, 3}),
-                                 CreateTensor<double>(TensorShape({}), {37.0}),
-                                 CreateTensor<tstring>(TensorShape({1, 2}),
-                                                       {"a", "b"})}},
+           /*expected_outputs=*/PlainTensors()},
           {/*dataset_params=*/NestedTensorDatasetParams(),
            /*expected_outputs=*/
            {CreateTensor<Variant>(TensorShape({}),
@@ -111,7 +115,7 @@ std::vector<GetNextTestCase<TensorDatasetParams>> GetNextTestCases() {
             CreateTensor<Variant>(
                 TensorShape({}),
                 {CreateTensor<tstring>(TensorShape({1, 2}), {"a", "b"})}),
-            CreateTensor<int64>(TensorShape({1, 3}), {1, 2, 3})}}};
+            CreateTensor<int64_t>(TensorShape({1, 3}), {1, 2, 3})}}};
 }
 
 class ParameterizedGetNextTest : public TensorDatasetOpTest,
@@ -124,10 +128,9 @@ TEST_P(ParameterizedGetNextTest, GetNext) {
 
   bool end_of_sequence = false;
   std::vector<Tensor> out_tensors;
-  while (!end_of_sequence) {
-    TF_EXPECT_OK(iterator_->GetNext(iterator_ctx_.get(), &out_tensors,
-                                    &end_of_sequence));
-  }
+  TF_EXPECT_OK(
+      iterator_->GetNext(iterator_ctx_.get(), &out_tensors, &end_of_sequence));
+  ASSERT_FALSE(end_of_sequence);
   EXPECT_EQ(out_tensors.size(), test_case.expected_outputs.size());
   for (int i = 0; i < out_tensors.size(); ++i) {
     if (out_tensors[i].dtype() == DT_VARIANT) {
@@ -141,6 +144,10 @@ TEST_P(ParameterizedGetNextTest, GetNext) {
       TF_EXPECT_OK(ExpectEqual(out_tensors[i], test_case.expected_outputs[i]));
     }
   }
+  TF_EXPECT_OK(
+      iterator_->GetNext(iterator_ctx_.get(), &out_tensors, &end_of_sequence));
+  EXPECT_TRUE(end_of_sequence);
+  EXPECT_TRUE(out_tensors.empty());
 }
 
 INSTANTIATE_TEST_CASE_P(TensorDatasetOpTest, ParameterizedGetNextTest,
@@ -201,10 +208,7 @@ IteratorSaveAndRestoreTestCases() {
   return {{/*dataset_params=*/PlainTensorDatasetParams(),
            /*breakpoints=*/{0, 1, 2},
            /*expected_outputs=*/
-           {CreateTensor<int64>(TensorShape({}), {1}),
-            CreateTensor<int64>(TensorShape({1, 3}), {1, 2, 3}),
-            CreateTensor<double>(TensorShape({}), {37.0}),
-            CreateTensor<tstring>(TensorShape({1, 2}), {"a", "b"})}},
+           PlainTensors()},
           {/*dataset_params=*/NestedTensorDatasetParams(),
            /*breakpoints=*/{0, 1, 2},
            /*expected_outputs=*/
@@ -214,7 +218,7 @@ IteratorSaveAndRestoreTestCases() {
             CreateTensor<Variant>(
                 TensorShape({}),
                 {CreateTensor<tstring>(TensorShape({1, 2}), {"a", "b"})}),
-            CreateTensor<int64>(TensorShape({1, 3}), {1, 2, 3})}}};
+            CreateTensor<int64_t>(TensorShape({1, 3}), {1, 2, 3})}}};
 }
 
 class ParameterizedIteratorSaveAndRestoreTest
@@ -234,11 +238,11 @@ TEST_P(ParameterizedIteratorSaveAndRestoreTest, SaveAndRestore) {
   const std::vector<int>& breakpoints = test_case.breakpoints;
   int cardinality = 1;
   for (int breakpoint : breakpoints) {
-    VariantTensorData data;
-    VariantTensorDataWriter writer(&data);
+    VariantTensorDataWriter writer;
     TF_EXPECT_OK(iterator_->Save(serialization_ctx.get(), &writer));
-    TF_EXPECT_OK(writer.Flush());
-    VariantTensorDataReader reader(&data);
+    std::vector<const VariantTensorData*> data;
+    writer.GetData(&data);
+    VariantTensorDataReader reader(data);
     TF_EXPECT_OK(RestoreIterator(iterator_ctx_.get(), &reader,
                                  test_case.dataset_params.iterator_prefix(),
                                  *dataset_, &iterator_));
@@ -276,6 +280,19 @@ TEST_P(ParameterizedIteratorSaveAndRestoreTest, SaveAndRestore) {
 INSTANTIATE_TEST_CASE_P(TensorDatasetOpTest,
                         ParameterizedIteratorSaveAndRestoreTest,
                         ::testing::ValuesIn(IteratorSaveAndRestoreTestCases()));
+
+TEST_F(TensorDatasetOpTest, Splitting) {
+  auto params = PlainTensorDatasetParams();
+  TF_ASSERT_OK(InitializeRuntime(params));
+  TF_EXPECT_OK(CheckSplitProviderFullIteration(
+      params, /*expected_outputs=*/PlainTensors()));
+  TF_EXPECT_OK(CheckSplitProviderShardedIteration(
+      params, /*num_shards=*/3, /*shard_index=*/2,
+      /*expected_outputs=*/CreateTensors<int64_t>(TensorShape({}), {})));
+  TF_EXPECT_OK(CheckSplitProviderShardedIteration(
+      params, /*num_shards=*/3, /*shard_index=*/0,
+      /*expected_outputs=*/PlainTensors()));
+}
 
 }  // namespace
 }  // namespace data

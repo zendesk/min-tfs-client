@@ -14,10 +14,6 @@
 # ==============================================================================
 """Provides an API for generating Event protocol buffers."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os.path
 import time
 import warnings
@@ -291,8 +287,65 @@ class FileWriter(SummaryToEventTransformer):
 
   When constructed with a `tf.compat.v1.Session` parameter, a `FileWriter`
   instead forms a compatibility layer over new graph-based summaries
-  (`tf.contrib.summary`) to facilitate the use of new summary writing with
+  to facilitate the use of new summary writing with
   pre-existing code that expects a `FileWriter` instance.
+
+  This class is not thread-safe.
+
+  @compatibility(TF2)
+  This API is not compatible with eager execution or `tf.function`. To migrate
+  to TF2, please use `tf.summary.create_file_writer` instead for summary
+  management. To specify the summary step, you can manage the context with
+  `tf.summary.SummaryWriter`, which is returned by
+  `tf.summary.create_file_writer()`. Or, you can also use the `step` argument
+  of summary functions such as `tf.summary.histogram`.
+  See the usage example shown below.
+
+  For a comprehensive `tf.summary` migration guide, please follow
+  [Migrating tf.summary usage to
+  TF 2.0](https://www.tensorflow.org/tensorboard/migrate#in_tf_1x).
+
+  #### How to Map Arguments
+
+  | TF1 Arg Name        | TF2 Arg Name    | Note                              |
+  | :---------------- | :---------------- | :-------------------------------- |
+  | `logdir`          | `logdir`          | -                                 |
+  | `graph`           | Not supported     | -                                 |
+  | `max_queue`       | `max_queue`       | -                                 |
+  | `flush_secs`      | `flush_millis`    | The unit of time is changed       |
+  :                     :                 : from seconds to milliseconds.     :
+  | `graph_def`       | Not supported     | -                                 |
+  | `filename_suffix` | `filename_suffix` | -                                 |
+  | `name`            | `name`            | -                                 |
+
+  #### TF1 & TF2 Usage Example
+
+  TF1:
+
+  ```python
+  dist = tf.compat.v1.placeholder(tf.float32, [100])
+  tf.compat.v1.summary.histogram(name="distribution", values=dist)
+  writer = tf.compat.v1.summary.FileWriter("/tmp/tf1_summary_example")
+  summaries = tf.compat.v1.summary.merge_all()
+
+  sess = tf.compat.v1.Session()
+  for step in range(100):
+    mean_moving_normal = np.random.normal(loc=step, scale=1, size=[100])
+    summ = sess.run(summaries, feed_dict={dist: mean_moving_normal})
+    writer.add_summary(summ, global_step=step)
+  ```
+
+  TF2:
+
+  ```python
+  writer = tf.summary.create_file_writer("/tmp/tf2_summary_example")
+  for step in range(100):
+    mean_moving_normal = np.random.normal(loc=step, scale=1, size=[100])
+    with writer.as_default(step=step):
+      tf.summary.histogram(name='distribution', data=mean_moving_normal)
+  ```
+
+  @end_compatibility
   """
 
   def __init__(self,
@@ -326,15 +379,11 @@ class FileWriter(SummaryToEventTransformer):
     ```
 
     The `session` argument to the constructor makes the returned `FileWriter` a
-    compatibility layer over new graph-based summaries (`tf.contrib.summary`).
+    compatibility layer over new graph-based summaries (`tf.summary`).
     Crucially, this means the underlying writer resource and events file will
-    be shared with any other `FileWriter` using the same `session` and `logdir`,
-    and with any `tf.contrib.summary.SummaryWriter` in this session using the
-    the same shared resource name (which by default scoped to the logdir). If
-    no such resource exists, one will be created using the remaining arguments
-    to this constructor, but if one already exists those arguments are ignored.
+    be shared with any other `FileWriter` using the same `session` and `logdir`.
     In either case, ops will be added to `session.graph` to control the
-    underlying file writer resource. See `tf.contrib.summary` for more details.
+    underlying file writer resource.
 
     Args:
       logdir: A string. Directory where event file will be written.
@@ -351,14 +400,17 @@ class FileWriter(SummaryToEventTransformer):
       RuntimeError: If called with eager execution enabled.
 
     @compatibility(eager)
-    `FileWriter` is not compatible with eager execution. To write TensorBoard
-    summaries under eager execution, use `tf.contrib.summary` instead.
+      `v1.summary.FileWriter` is not compatible with eager execution.
+      To write TensorBoard summaries under eager execution,
+      use `tf.summary.create_file_writer` or
+      a `with v1.Graph().as_default():` context.
     @end_compatibility
     """
     if context.executing_eagerly():
       raise RuntimeError(
-          "tf.summary.FileWriter is not compatible with eager execution. "
-          "Use tf.contrib.summary instead.")
+          "v1.summary.FileWriter is not compatible with eager execution. "
+          "Use `tf.summary.create_file_writer`,"
+          "or a `with v1.Graph().as_default():` context")
     if session is not None:
       event_writer = EventFileWriterV2(
           session, logdir, max_queue, flush_secs, filename_suffix)

@@ -11,39 +11,45 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/parallel_interleave_dataset_op.h"
 
-#include "tensorflow/core/kernels/data/dataset_test_base.h"
+#include <algorithm>
+#include <memory>
+
+#include "tensorflow/core/data/dataset_test_base.h"
+#include "tensorflow/core/graph/graph_def_builder.h"
 
 namespace tensorflow {
 namespace data {
 namespace {
 
 constexpr char kNodeName[] = "parallel_interleave_dataset";
-constexpr int kOpVersion = 2;
+constexpr int kOpVersion = 4;
+constexpr char kParallelInterleaveDatasetV4[] = "ParallelInterleaveDatasetV4";
 
 class ParallelInterleaveDatasetParams : public DatasetParams {
  public:
   template <typename T>
-  ParallelInterleaveDatasetParams(T input_dataset_params,
-                                  std::vector<Tensor> other_arguments,
-                                  int64 cycle_length, int64 block_length,
-                                  int64 num_parallel_calls,
-                                  FunctionDefHelper::AttrValueWrapper func,
-                                  std::vector<FunctionDef> func_lib,
-                                  DataTypeVector type_arguments,
-                                  DataTypeVector output_dtypes,
-                                  std::vector<PartialTensorShape> output_shapes,
-                                  bool sloppy, string node_name)
+  ParallelInterleaveDatasetParams(
+      T input_dataset_params, std::vector<Tensor> other_arguments,
+      int64_t cycle_length, int64_t block_length,
+      int64_t buffer_output_elements, int64_t prefetch_input_elements,
+      int64_t num_parallel_calls, FunctionDefHelper::AttrValueWrapper func,
+      std::vector<FunctionDef> func_lib, DataTypeVector type_arguments,
+      const DataTypeVector& output_dtypes,
+      const std::vector<PartialTensorShape>& output_shapes,
+      const std::string& deterministic, const std::string& node_name)
       : DatasetParams(std::move(output_dtypes), std::move(output_shapes),
                       std::move(node_name)),
         other_arguments_(std::move(other_arguments)),
         cycle_length_(cycle_length),
         block_length_(block_length),
+        buffer_output_elements_(buffer_output_elements),
+        prefetch_input_elements_(prefetch_input_elements),
         num_parallel_calls_(num_parallel_calls),
         func_(std::move(func)),
         func_lib_(std::move(func_lib)),
         type_arguments_(std::move(type_arguments)),
-        sloppy_(sloppy) {
-    input_dataset_params_.push_back(absl::make_unique<T>(input_dataset_params));
+        deterministic_(deterministic) {
+    input_dataset_params_.push_back(std::make_unique<T>(input_dataset_params));
     op_version_ = kOpVersion;
     name_utils::IteratorPrefixParams params;
     params.op_version = op_version_;
@@ -55,11 +61,15 @@ class ParallelInterleaveDatasetParams : public DatasetParams {
   std::vector<Tensor> GetInputTensors() const override {
     auto input_tensors = other_arguments_;
     input_tensors.emplace_back(
-        CreateTensor<int64>(TensorShape({}), {cycle_length_}));
+        CreateTensor<int64_t>(TensorShape({}), {cycle_length_}));
     input_tensors.emplace_back(
-        CreateTensor<int64>(TensorShape({}), {block_length_}));
+        CreateTensor<int64_t>(TensorShape({}), {block_length_}));
     input_tensors.emplace_back(
-        CreateTensor<int64>(TensorShape({}), {num_parallel_calls_}));
+        CreateTensor<int64_t>(TensorShape({}), {buffer_output_elements_}));
+    input_tensors.emplace_back(
+        CreateTensor<int64_t>(TensorShape({}), {prefetch_input_elements_}));
+    input_tensors.emplace_back(
+        CreateTensor<int64_t>(TensorShape({}), {num_parallel_calls_}));
     return input_tensors;
   }
 
@@ -71,18 +81,22 @@ class ParallelInterleaveDatasetParams : public DatasetParams {
     }
     input_names->emplace_back(ParallelInterleaveDatasetOp::kCycleLength);
     input_names->emplace_back(ParallelInterleaveDatasetOp::kBlockLength);
+    input_names->emplace_back(
+        ParallelInterleaveDatasetOp::kBufferOutputElements);
+    input_names->emplace_back(
+        ParallelInterleaveDatasetOp::kPrefetchInputElements);
     input_names->emplace_back(ParallelInterleaveDatasetOp::kNumParallelCalls);
-    return Status::OK();
+    return OkStatus();
   }
 
   Status GetAttributes(AttributeVector* attr_vector) const override {
-    *attr_vector = {
-        {ParallelInterleaveDatasetOp::kFunc, func_},
-        {ParallelInterleaveDatasetOp::kTarguments, type_arguments_},
-        {ParallelInterleaveDatasetOp::kOutputShapes, output_shapes_},
-        {ParallelInterleaveDatasetOp::kOutputTypes, output_dtypes_},
-        {ParallelInterleaveDatasetOp::kSloppy, sloppy_}};
-    return Status::OK();
+    *attr_vector = {{"f", func_},
+                    {"deterministic", deterministic_},
+                    {"Targuments", type_arguments_},
+                    {"output_shapes", output_shapes_},
+                    {"output_types", output_dtypes_},
+                    {"metadata", ""}};
+    return OkStatus();
   }
 
   string dataset_type() const override {
@@ -93,16 +107,18 @@ class ParallelInterleaveDatasetParams : public DatasetParams {
 
  private:
   std::vector<Tensor> other_arguments_;
-  int64 cycle_length_;
-  int64 block_length_;
-  int64 num_parallel_calls_;
+  int64_t cycle_length_;
+  int64_t block_length_;
+  int64_t buffer_output_elements_;
+  int64_t prefetch_input_elements_;
+  int64_t num_parallel_calls_;
   FunctionDefHelper::AttrValueWrapper func_;
   std::vector<FunctionDef> func_lib_;
   DataTypeVector type_arguments_;
-  bool sloppy_;
+  std::string deterministic_;
 };
 
-class ParallelInterleaveDatasetOpTest : public DatasetOpsTestBaseV2 {};
+class ParallelInterleaveDatasetOpTest : public DatasetOpsTestBase {};
 
 FunctionDefHelper::AttrValueWrapper MakeTensorSliceDatasetFunc(
     const DataTypeVector& output_types,
@@ -113,18 +129,18 @@ FunctionDefHelper::AttrValueWrapper MakeTensorSliceDatasetFunc(
                  {"output_shapes", output_shapes}});
 }
 
-// test case 1: cycle_length = 1, block_length = 1, num_parallel_calls = 1,
-// sloppy = false
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams1() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{3, 3, 1},
-                                          {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
       /*node_name=*/"tensor_slice");
   return ParallelInterleaveDatasetParams(
       tensor_slice_dataset_params,
       /*other_arguments=*/{},
       /*cycle_length=*/1,
       /*block_length=*/1,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
       /*num_parallel_calls=*/1,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -134,22 +150,22 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams1() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_INT64},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/false,
+      /*deterministic=*/DeterminismPolicy::kDeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 2: cycle_length = 2, block_length = 1, num_parallel_calls = 2,
-// sloppy = false
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams2() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{3, 3, 1},
-                                          {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
       /*node_name=*/"tensor_slice");
   return ParallelInterleaveDatasetParams(
       tensor_slice_dataset_params,
       /*other_arguments=*/{},
       /*cycle_length=*/2,
       /*block_length=*/1,
+      /*buffer_output_elements=*/1,
+      /*prefetch_input_elements=*/0,
       /*num_parallel_calls=*/2,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -159,22 +175,22 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams2() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_INT64},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/false,
+      /*deterministic=*/DeterminismPolicy::kDeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 3: cycle_length = 3, block_length = 1, num_parallel_calls = 2,
-// sloppy = true
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams3() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{3, 3, 1},
-                                          {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
       /*node_name=*/"tensor_slice");
   return ParallelInterleaveDatasetParams(
       tensor_slice_dataset_params,
       /*other_arguments=*/{},
       /*cycle_length=*/3,
       /*block_length=*/1,
+      /*buffer_output_elements=*/1,
+      /*prefetch_input_elements=*/1,
       /*num_parallel_calls=*/2,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -184,23 +200,22 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams3() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_INT64},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 4: cycle_length = 5, block_length = 1, num_parallel_calls = 4,
-// sloppy = true
-
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams4() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{3, 3, 1},
-                                          {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
       /*node_name=*/"tensor_slice");
   return ParallelInterleaveDatasetParams(
       tensor_slice_dataset_params,
       /*other_arguments=*/{},
       /*cycle_length=*/5,
       /*block_length=*/1,
+      /*buffer_output_elements=*/1,
+      /*prefetch_input_elements=*/0,
       /*num_parallel_calls=*/4,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -210,12 +225,10 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams4() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_INT64},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 5: cycle_length = 2, block_length = 2, num_parallel_calls = 1,
-// sloppy = false
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams5() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
       /*components=*/{CreateTensor<tstring>(
@@ -226,6 +239,8 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams5() {
       /*other_arguments=*/{},
       /*cycle_length=*/2,
       /*block_length=*/2,
+      /*buffer_output_elements=*/2,
+      /*prefetch_input_elements=*/2,
       /*num_parallel_calls=*/1,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -235,12 +250,10 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams5() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_STRING},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 6: cycle_length = 2, block_length = 3, num_parallel_calls = 2,
-// sloppy = true
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams6() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
       /*components=*/{CreateTensor<tstring>(
@@ -251,6 +264,8 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams6() {
       /*other_arguments=*/{},
       /*cycle_length=*/2,
       /*block_length=*/3,
+      /*buffer_output_elements=*/100,
+      /*prefetch_input_elements=*/100,
       /*num_parallel_calls=*/2,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -260,12 +275,10 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams6() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_STRING},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 7: cycle_length = 3, block_length = 2, num_parallel_calls = 2,
-// sloppy = false
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams7() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
       /*components=*/{CreateTensor<tstring>(
@@ -276,6 +289,8 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams7() {
       /*other_arguments=*/{},
       /*cycle_length=*/3,
       /*block_length=*/2,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
       /*num_parallel_calls=*/2,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -285,12 +300,10 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams7() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_STRING},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/false,
+      /*deterministic=*/DeterminismPolicy::kDeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 8: cycle_length = 3, block_length = 3, num_parallel_calls = 3,
-// sloppy = true
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams8() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
       /*components=*/{CreateTensor<tstring>(
@@ -301,6 +314,8 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams8() {
       /*other_arguments=*/{},
       /*cycle_length=*/3,
       /*block_length=*/3,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
       /*num_parallel_calls=*/3,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -310,12 +325,10 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams8() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_STRING},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 9: cycle_length = 4, block_length = 4, num_parallel_calls = 4,
-// sloppy = true
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams9() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
       /*components=*/{CreateTensor<tstring>(
@@ -326,6 +339,8 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams9() {
       /*other_arguments=*/{},
       /*cycle_length=*/4,
       /*block_length=*/4,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
       /*num_parallel_calls=*/4,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -335,12 +350,10 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams9() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_STRING},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 10: cycle_length = 3, block_length = 3,
-// num_parallel_calls = kAutotune, sloppy = true
 ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams10() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
       /*components=*/{CreateTensor<tstring>(
@@ -351,6 +364,8 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams10() {
       /*other_arguments=*/{},
       /*cycle_length=*/4,
       /*block_length=*/4,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
       /*num_parallel_calls=*/model::kAutotune,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -360,11 +375,36 @@ ParallelInterleaveDatasetParams ParallelInterleaveDatasetParams10() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_STRING},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
-ParallelInterleaveDatasetParams LongCycleDeteriministicParams() {
+ParallelInterleaveDatasetParams DatasetGraphDefParams() {
+  auto tensor_slice_dataset_params = TensorSliceDatasetParams(
+      /*components=*/{CreateTensor<tstring>(
+          TensorShape{3, 3, 1}, {"a", "b", "c", "d", "e", "f", "g", "h", "i"})},
+      /*node_name=*/"tensor_slice");
+  return ParallelInterleaveDatasetParams(
+      tensor_slice_dataset_params,
+      /*other_arguments=*/{},
+      /*cycle_length=*/model::kAutotune,
+      /*block_length=*/1,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
+      /*num_parallel_calls=*/model::kAutotune,
+      /*func=*/
+      MakeTensorSliceDatasetFunc(
+          DataTypeVector({DT_STRING}),
+          std::vector<PartialTensorShape>({PartialTensorShape({1})})),
+      /*func_lib=*/{test::function::MakeTensorSliceDataset()},
+      /*type_arguments=*/{},
+      /*output_dtypes=*/{DT_STRING},
+      /*output_shapes=*/{PartialTensorShape({1})},
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
+      /*node_name=*/kNodeName);
+}
+
+ParallelInterleaveDatasetParams LongCycleDeterministicParams() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
       /*components=*/{CreateTensor<tstring>(
           TensorShape{3, 3, 1}, {"a", "b", "c", "d", "e", "f", "g", "h", "i"})},
@@ -374,6 +414,8 @@ ParallelInterleaveDatasetParams LongCycleDeteriministicParams() {
       /*other_arguments=*/{},
       /*cycle_length=*/11,
       /*block_length=*/1,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
       /*num_parallel_calls=*/2,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -383,23 +425,23 @@ ParallelInterleaveDatasetParams LongCycleDeteriministicParams() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_STRING},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/false,
+      /*deterministic=*/DeterminismPolicy::kDeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 11: cycle_length = 0, block_length = 1, num_parallel_calls = 2,
-// sloppy = true
 ParallelInterleaveDatasetParams
 ParallelInterleaveDatasetParamsWithInvalidCycleLength() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{3, 3, 1},
-                                          {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
       /*node_name=*/"tensor_slice");
   return ParallelInterleaveDatasetParams(
       tensor_slice_dataset_params,
       /*other_arguments=*/{},
       /*cycle_length=*/0,
       /*block_length=*/1,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
       /*num_parallel_calls=*/2,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -409,23 +451,23 @@ ParallelInterleaveDatasetParamsWithInvalidCycleLength() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_INT64},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 12: cycle_length = 1, block_length = -1, num_parallel_calls = 2,
-// sloppy = true
 ParallelInterleaveDatasetParams
 ParallelInterleaveDatasetParamsWithInvalidBlockLength() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{3, 3, 1},
-                                          {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
       /*node_name=*/"tensor_slice");
   return ParallelInterleaveDatasetParams(
       tensor_slice_dataset_params,
       /*other_arguments=*/{},
       /*cycle_length=*/1,
       /*block_length=*/-1,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
       /*num_parallel_calls=*/2,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -435,23 +477,23 @@ ParallelInterleaveDatasetParamsWithInvalidBlockLength() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_INT64},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
-// test case 13: cycle_length = 1, block_length = 1, num_parallel_calls = -5,
-// sloppy = true
 ParallelInterleaveDatasetParams
 ParallelInterleaveDatasetParamsWithInvalidNumParallelCalls() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{3, 3, 1},
-                                          {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
       /*node_name=*/"tensor_slice");
   return ParallelInterleaveDatasetParams(
       tensor_slice_dataset_params,
       /*other_arguments=*/{},
       /*cycle_length=*/1,
       /*block_length=*/1,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
       /*num_parallel_calls=*/-5,
       /*func=*/
       MakeTensorSliceDatasetFunc(
@@ -461,7 +503,59 @@ ParallelInterleaveDatasetParamsWithInvalidNumParallelCalls() {
       /*type_arguments=*/{},
       /*output_dtypes=*/{DT_INT64},
       /*output_shapes=*/{PartialTensorShape({1})},
-      /*sloppy=*/true,
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
+      /*node_name=*/kNodeName);
+}
+
+ParallelInterleaveDatasetParams
+ParallelInterleaveDatasetParamsWithInvalidBufferOutputElements() {
+  auto tensor_slice_dataset_params = TensorSliceDatasetParams(
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*node_name=*/"tensor_slice");
+  return ParallelInterleaveDatasetParams(
+      tensor_slice_dataset_params,
+      /*other_arguments=*/{},
+      /*cycle_length=*/1,
+      /*block_length=*/1,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
+      /*num_parallel_calls=*/-5,
+      /*func=*/
+      MakeTensorSliceDatasetFunc(
+          DataTypeVector({DT_INT64}),
+          std::vector<PartialTensorShape>({PartialTensorShape({1})})),
+      /*func_lib=*/{test::function::MakeTensorSliceDataset()},
+      /*type_arguments=*/{},
+      /*output_dtypes=*/{DT_INT64},
+      /*output_shapes=*/{PartialTensorShape({1})},
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
+      /*node_name=*/kNodeName);
+}
+
+ParallelInterleaveDatasetParams
+ParallelInterleaveDatasetParamsWithInvalidPrefetchInputElements() {
+  auto tensor_slice_dataset_params = TensorSliceDatasetParams(
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*node_name=*/"tensor_slice");
+  return ParallelInterleaveDatasetParams(
+      tensor_slice_dataset_params,
+      /*other_arguments=*/{},
+      /*cycle_length=*/1,
+      /*block_length=*/1,
+      /*buffer_output_elements=*/model::kAutotune,
+      /*prefetch_input_elements=*/model::kAutotune,
+      /*num_parallel_calls=*/-5,
+      /*func=*/
+      MakeTensorSliceDatasetFunc(
+          DataTypeVector({DT_INT64}),
+          std::vector<PartialTensorShape>({PartialTensorShape({1})})),
+      /*func_lib=*/{test::function::MakeTensorSliceDataset()},
+      /*type_arguments=*/{},
+      /*output_dtypes=*/{DT_INT64},
+      /*output_shapes=*/{PartialTensorShape({1})},
+      /*deterministic=*/DeterminismPolicy::kNondeterministic,
       /*node_name=*/kNodeName);
 }
 
@@ -469,23 +563,23 @@ std::vector<GetNextTestCase<ParallelInterleaveDatasetParams>>
 GetNextTestCases() {
   return {{/*dataset_params=*/ParallelInterleaveDatasetParams1(),
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape{1},
-                                {{0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}}),
+           CreateTensors<int64_t>(
+               TensorShape{1}, {{0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}}),
            /*compare_order=*/true},
           {/*dataset_params=*/ParallelInterleaveDatasetParams2(),
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape{1},
-                                {{0}, {3}, {1}, {4}, {2}, {5}, {6}, {7}, {8}}),
+           CreateTensors<int64_t>(
+               TensorShape{1}, {{0}, {3}, {1}, {4}, {2}, {5}, {6}, {7}, {8}}),
            /*compare_order=*/true},
           {/*dataset_params=*/ParallelInterleaveDatasetParams3(),
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape{1},
-                                {{0}, {3}, {6}, {1}, {4}, {7}, {2}, {5}, {8}}),
+           CreateTensors<int64_t>(
+               TensorShape{1}, {{0}, {3}, {6}, {1}, {4}, {7}, {2}, {5}, {8}}),
            /*compare_order=*/false},
           {/*dataset_params=*/ParallelInterleaveDatasetParams4(),
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape{1},
-                                {{0}, {3}, {6}, {1}, {4}, {7}, {2}, {5}, {8}}),
+           CreateTensors<int64_t>(
+               TensorShape{1}, {{0}, {3}, {6}, {1}, {4}, {7}, {2}, {5}, {8}}),
            /*compare_order=*/false},
           {/*dataset_params=*/ParallelInterleaveDatasetParams5(),
            /*expected_outputs=*/
@@ -529,7 +623,7 @@ GetNextTestCases() {
                {{"a"}, {"b"}, {"c"}, {"d"}, {"e"}, {"f"}, {"g"}, {"h"}, {"i"}}),
            /*compare_order=*/false},
           {/*dataset_params=*/
-           LongCycleDeteriministicParams(),
+           LongCycleDeterministicParams(),
            /*expected_outputs=*/
            CreateTensors<tstring>(
                TensorShape{1},
@@ -538,7 +632,102 @@ GetNextTestCases() {
 }
 
 ITERATOR_GET_NEXT_TEST_P(ParallelInterleaveDatasetOpTest,
-                         ParallelInterleaveDatasetParams, GetNextTestCases())
+                         ParallelInterleaveDatasetParams, GetNextTestCases());
+
+// TODO(b/241923343): The next 2 tests are brittle because they directly inspect
+// the GraphDefs to check the value of `cycle_length` when the
+// `ParallelInterleave` is serialized to a graph. Revisit this test when we
+// replace the `MaxParallelism()` call to set `cycle_length` respecting the
+// private threadpool size.
+//
+// Test that the computed cycle length is serialized rather than the input cycle
+// length when the experiment is off.
+TEST_F(ParallelInterleaveDatasetOpTest,
+       InputCycleLengthNotPreservedInGraphDef) {
+  auto dataset_params = DatasetGraphDefParams();
+  TF_ASSERT_OK(InitializeRuntime(dataset_params));
+  std::unique_ptr<TestDataset> dataset;
+  TF_ASSERT_OK(MakeDataset(dataset_params, &dataset));
+  GraphDefBuilder b;
+  DatasetBase::DatasetGraphDefBuilder db(&b);
+  SerializationContext serialization_ctx((SerializationContext::Params()));
+  Node* output_node = nullptr;
+  TF_ASSERT_OK(
+      db.AddInputDataset(&serialization_ctx, dataset->dataset(), &output_node));
+
+  GraphDef graph_def;
+  TF_ASSERT_OK(b.ToGraphDef(&graph_def));
+  const NodeDef* parallel_interleave_node_def = nullptr;
+  for (const auto& node : graph_def.node()) {
+    if (node.op() == kParallelInterleaveDatasetV4) {
+      parallel_interleave_node_def = &node;
+      break;
+    }
+  }
+  ASSERT_NE(nullptr, parallel_interleave_node_def);
+  EXPECT_EQ(6, parallel_interleave_node_def->input_size());
+
+  const int32_t kCycleLengthInput = 1;
+  auto node_iter = std::find_if(
+      graph_def.node().begin(), graph_def.node().end(),
+      [&](const NodeDef& node) {
+        return node.name() ==
+               parallel_interleave_node_def->input(kCycleLengthInput);
+      });
+  ASSERT_NE(node_iter, graph_def.node().end());
+  EXPECT_NE(model::kAutotune,
+            node_iter->attr().at("value").tensor().int64_val(0));
+}
+
+// Test that the input cycle length is serialized rather than the computed cycle
+// length when the experiment is on.
+TEST_F(ParallelInterleaveDatasetOpTest, InputCycleLengthPreservedInGraphDef) {
+  setenv("TF_JOB_NAME", "test_job", /*overwrite=*/1);
+  setenv("TF_TASK_ID", "0", /*overwrite=*/1);
+  setenv("TF_DATA_EXPERIMENT_OPT_IN", "serialize_input_cycle_length",
+         /*overwrite=*/1);
+  auto dataset_params = DatasetGraphDefParams();
+  TF_ASSERT_OK(InitializeRuntime(dataset_params));
+  std::unique_ptr<TestDataset> dataset;
+  TF_ASSERT_OK(MakeDataset(dataset_params, &dataset));
+  GraphDefBuilder b;
+  DatasetBase::DatasetGraphDefBuilder db(&b);
+  SerializationContext serialization_ctx((SerializationContext::Params()));
+  Node* output_node = nullptr;
+  TF_ASSERT_OK(
+      db.AddInputDataset(&serialization_ctx, dataset->dataset(), &output_node));
+
+  GraphDef graph_def;
+  TF_ASSERT_OK(b.ToGraphDef(&graph_def));
+  const NodeDef* parallel_interleave_node_def = nullptr;
+  for (const auto& node : graph_def.node()) {
+    if (node.op() == kParallelInterleaveDatasetV4) {
+      parallel_interleave_node_def = &node;
+      break;
+    }
+  }
+  ASSERT_NE(nullptr, parallel_interleave_node_def);
+  EXPECT_EQ(6, parallel_interleave_node_def->input_size());
+
+  const int32_t kCycleLengthInput = 1;
+  auto node_iter = std::find_if(
+      graph_def.node().begin(), graph_def.node().end(),
+      [&](const NodeDef& node) {
+        return node.name() ==
+               parallel_interleave_node_def->input(kCycleLengthInput);
+      });
+  ASSERT_NE(node_iter, graph_def.node().end());
+  if (GetExperiments().contains("serialize_input_cycle_length")) {
+    EXPECT_EQ(model::kAutotune,
+              node_iter->attr().at("value").tensor().int64_val(0));
+  } else {
+    EXPECT_NE(model::kAutotune,
+              node_iter->attr().at("value").tensor().int64_val(0));
+  }
+  unsetenv("TF_JOB_NAME");
+  unsetenv("TF_TASK_ID");
+  unsetenv("TF_DATA_EXPERIMENT_OPT_IN");
+}
 
 TEST_F(ParallelInterleaveDatasetOpTest, DatasetNodeName) {
   auto dataset_params = ParallelInterleaveDatasetParams1();
@@ -622,26 +811,26 @@ IteratorSaveAndRestoreTestCases() {
   return {{/*dataset_params=*/ParallelInterleaveDatasetParams1(),
            /*breakpoints=*/{0, 4, 11},
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape{1},
-                                {{0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}}),
+           CreateTensors<int64_t>(
+               TensorShape{1}, {{0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}}),
            /*compare_order=*/true},
           {/*dataset_params=*/ParallelInterleaveDatasetParams2(),
            /*breakpoints=*/{0, 4, 11},
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape{1},
-                                {{0}, {3}, {1}, {4}, {2}, {5}, {6}, {7}, {8}}),
+           CreateTensors<int64_t>(
+               TensorShape{1}, {{0}, {3}, {1}, {4}, {2}, {5}, {6}, {7}, {8}}),
            /*compare_order=*/true},
           {/*dataset_params=*/ParallelInterleaveDatasetParams3(),
            /*breakpoints=*/{0, 4, 11},
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape{1},
-                                {{0}, {3}, {6}, {1}, {4}, {7}, {2}, {5}, {8}}),
+           CreateTensors<int64_t>(
+               TensorShape{1}, {{0}, {3}, {6}, {1}, {4}, {7}, {2}, {5}, {8}}),
            /*compare_order=*/false},
           {/*dataset_params=*/ParallelInterleaveDatasetParams4(),
            /*breakpoints=*/{0, 4, 11},
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape{1},
-                                {{0}, {3}, {6}, {1}, {4}, {7}, {2}, {5}, {8}}),
+           CreateTensors<int64_t>(
+               TensorShape{1}, {{0}, {3}, {6}, {1}, {4}, {7}, {2}, {5}, {8}}),
            /*compare_order=*/false},
           {/*dataset_params=*/ParallelInterleaveDatasetParams5(),
            /*breakpoints=*/{0, 4, 11},
@@ -700,10 +889,13 @@ TEST_F(ParallelInterleaveDatasetOpTest, InvalidArguments) {
   std::vector<ParallelInterleaveDatasetParams> invalid_params = {
       ParallelInterleaveDatasetParamsWithInvalidCycleLength(),
       ParallelInterleaveDatasetParamsWithInvalidBlockLength(),
-      ParallelInterleaveDatasetParamsWithInvalidNumParallelCalls()};
+      ParallelInterleaveDatasetParamsWithInvalidNumParallelCalls(),
+      ParallelInterleaveDatasetParamsWithInvalidBufferOutputElements(),
+      ParallelInterleaveDatasetParamsWithInvalidPrefetchInputElements(),
+  };
   for (auto& dataset_params : invalid_params) {
     EXPECT_EQ(Initialize(dataset_params).code(),
-              tensorflow::error::INVALID_ARGUMENT);
+              absl::StatusCode::kInvalidArgument);
   }
 }
 

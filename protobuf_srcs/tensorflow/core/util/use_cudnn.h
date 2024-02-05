@@ -18,27 +18,22 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_UTIL_USE_CUDNN_H_
 #define TENSORFLOW_CORE_UTIL_USE_CUDNN_H_
 
-#include "tensorflow/core/platform/types.h"
+#include <cstdint>
+
+#include "tsl/util/use_cudnn.h"
 
 namespace tensorflow {
 
-// FP16ConvMode: The mode to set the internal compute type for cudnn convolution
-// when the input data type is float16. Two types of modes are supported:
-//   kAccurate: Always use float32 as the internal compute type.
-//   kFast: Include both float32 and float16 compute type in the autotune.
-enum class FP16ConvMode {
-  kAccurate = 1,
-  kFast = 2,
-};
+using tsl::CudnnDisableConv1x1Optimization;
+using tsl::CudnnRnnUseAutotune;
+using tsl::CudnnUseAutotune;
+using tsl::CudnnUseFrontend;
+using tsl::CudnnUseRuntimeFusion;
+using tsl::DebugCudnnRnn;
+using tsl::DebugCudnnRnnAlgo;
+using tsl::DebugCudnnRnnUseTensorOps;
+using tsl::ShouldCudnnGroupedConvolutionBeUsed;
 
-bool CanUseCudnn();
-bool CudnnUseAutotune();
-bool CudnnRnnUseAutotune();
-bool CudnnDisableConv1x1Optimization();
-FP16ConvMode CudnnConvComputeMode();
-bool DebugCudnnRnn();
-bool DebugCudnnRnnUseTensorOps();
-int64 DebugCudnnRnnAlgo();
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_UTIL_USE_CUDNN_H_

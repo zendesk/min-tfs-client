@@ -17,19 +17,19 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/graph_info.h"
 #include "tensorflow/lite/memory_planner.h"
 #include "tensorflow/lite/simple_memory_arena.h"
+#include "tensorflow/lite/util.h"
 
 namespace tflite {
 
-// Memory allocation tuning
 constexpr const int kDefaultArenaAlignment = 64;
-constexpr const int kDefaultTensorAlignment = 64;
-
 struct AllocationInfo;
 
 // A memory planner that makes all the allocations using arenas.
@@ -45,51 +45,69 @@ struct AllocationInfo;
 // execution. Since dynamic tensors don't have sizes until after the
 // corresponding operation is executed, this class supports incremental
 // planning.
-//
-// TODO(b/127354079): Remove the constrain below when the issue is fixed.
-// WARNING: MemoryPlanner's behavior must be deterministic. If the first N
-// nodes are unchanged, it must produce exactly the same allocation plan for
-// the first N nodes.
 class ArenaPlanner : public MemoryPlanner {
  public:
   // Ownership of 'context' is not taken and it must remain util the
-  // ArenaPlanner is destroyed. If 'preserve_inputs' is true the inputs to the
-  // graph will not share memory with any other tensor, effectively preserving
-  // them until the end of inference.
+  // ArenaPlanner is destroyed. The inputs to the graph will not share
+  // memory with any other tensor, effectively preserving them until the end
+  // of inference.
   ArenaPlanner(TfLiteContext* context, std::unique_ptr<GraphInfo> graph_info,
-               bool preserve_inputs, bool preserve_intermediates,
-               int tensor_alignment = kDefaultTensorAlignment);
+               bool preserve_all_tensors, int tensor_alignment,
+               int subgraph_index = 0);
   ~ArenaPlanner() override;
   ArenaPlanner(const ArenaPlanner&) = delete;
   ArenaPlanner& operator=(const ArenaPlanner&) = delete;
 
   TfLiteStatus ResetAllocations() override;
+  TfLiteStatus ResetAllocationsAfter(int node) override;
   TfLiteStatus PlanAllocations() override;
   TfLiteStatus ExecuteAllocations(int first_node, int last_node) override;
   TfLiteStatus ReleaseNonPersistentMemory() override;
   TfLiteStatus AcquireNonPersistentMemory() override;
+  bool HasNonPersistentMemory() override;
+  void DumpDebugInfo(const std::vector<int>& execution_plan) const override;
+  void GetAllocInfo(size_t* arena_size,
+                    size_t* arena_persist_size) const override;
 
   // Returns the base arena location for a given allocation type.
   std::intptr_t BasePointer(TfLiteAllocationType type);
 
  private:
+  // Check whether the input tensor's memory may be shared the output tensor.
+  // tensor_changed: true if the output tensor modifies the tensor data. For
+  // example, `Reshape` doesn't modify data but Add does.
+  bool InputTensorCanBeShared(const TfLiteTensor& input,
+                              const TfLiteTensor& output, int input_id,
+                              int output_id, bool tensor_changed);
+
+  // Identify tensors which can share memory with another.
+  void IdentifyInPlaceTensors();
+
   // Make sure all the arenas have reserved enough memory to store all their
   // tensors.
-  TfLiteStatus Commit();
+  TfLiteStatus Commit(bool* arena_reallocated);
+
+  // Sorts tensors_to_allocate` using by the following ordering:
+  // - Tensors that have lifespan through the whole model inference time go
+  // first;
+  // - Other tensors (e.g. intermediate and temporary ones) are sorted from
+  // largest to smallest. For equal sized tensors, the tensor which is used
+  // first goes first.
+  void CreateTensorAllocationVector(std::vector<int32_t>* tensors_to_allocate);
+
+  // Returns vector containing the indices of all tensors allocated between
+  // `first_node` and `last_node`.
+  std::vector<int32_t> GetTensorsToAllocate(int first_node, int last_node);
 
   // Traverse the allocation queue and reserve space in the appropriate arena
   // for all tensors affected by ops in the interval [first_node, last_node].
-  TfLiteStatus CalculateAllocations(int first_node, int last_node);
+  TfLiteStatus CalculateAllocations(int first_node, int last_node,
+                                    std::vector<int32_t>* tensors_allocated);
 
   // Assign absolute memory location to a tensor, based on its relative
   // position inside the corresponding arena buffer.
-  TfLiteStatus ResolveTensorAllocation(int tensor_index);
-
-  // Register an allocation for the given tensor.
-  TfLiteStatus CalculateTensorAllocation(int tensor_index);
-
-  // Register a deallocation for the given tensor.
-  TfLiteStatus CalculateTensorDeallocation(int tensor_index);
+  TfLiteStatus ResolveTensorAllocation(int32_t tensor_index,
+                                       TfLiteTensor* tensors);
 
   // Register an allocation for all internal (temporary) tensors of
   // 'node_index'.
@@ -99,15 +117,26 @@ class ArenaPlanner : public MemoryPlanner {
   // 'node_index'.
   TfLiteStatus CalculateDeallocationOfInternalTensors(int node_index);
 
+  // Return the index of the tensor owing `tensor_index's` buffer.
+  int FindSharedTensor(int tensor_index);
+
   TfLiteContext* context_;
   std::unique_ptr<GraphInfo> graph_info_;
 
   // Stores allocation data for all tensors.
-  std::vector<ArenaAlloc> allocs_;
+  std::vector<ArenaAllocWithUsageInterval> allocs_;
 
-  // A chronological list of instructions to allocate and deallocate tensors,
-  // reflecting the way they are used in the graph.
-  std::vector<AllocationInfo> alloc_queue_;
+  // Map of Tensors allocated by each node.
+  // NOLINTNEXTLINE - absl::flat_hash_set increases binary size by 106kB.
+  std::vector<std::unordered_set<int32_t>> nodes_to_tensors_;
+
+  // First node, that uses the tensor. It needs to be allocated before
+  // execution of the node's operation.
+  std::vector<int32_t> alloc_node_;
+
+  // Last node, that uses the tensor. It can be deallocated after execution of
+  // the node's operation.
+  std::vector<int32_t> dealloc_node_;
 
   // Raw memory buffer that is allocated for all temporary and graph outputs
   // that are declared kTfLiteArenaRw.
@@ -117,17 +146,24 @@ class ArenaPlanner : public MemoryPlanner {
   // declared as kTfLiteArenaRwPersistent.
   SimpleMemoryArena persistent_arena_;
 
-  // Ensure that the memory self-allocated for inputs is never reused by the
-  // allocator. This allows for example, multiple runs without getting
-  // unpredictable results.
-  bool preserve_inputs_;
-
   // If true, then no overlapping of memory areas is done, meaning intermediate
-  // results can be queried after running (modulo running delegates).
-  bool preserve_intermediates_;
+  // tensors and temporary tensors can be queried after running.
+  // (modulo running delegates)
+  bool preserve_all_tensors_;
 
   // Number of bytes that tensor buffers should be aligned to.
   int tensor_alignment_;
+
+  // Index of the last node whose tensors were allocated.
+  int last_active_node_;
+
+  // Holds index of original tensor if the tensor is sharing underlined
+  // data with another tensor.
+  // NOLINTNEXTLINE - absl::flat_hash_map increases binary size by 106kB.
+  std::unordered_map<int32_t, int32_t> actual_tensor_id_;
+
+  // Store number of references to each tensor.
+  std::vector<int> refcounts_;
 };
 
 }  // namespace tflite

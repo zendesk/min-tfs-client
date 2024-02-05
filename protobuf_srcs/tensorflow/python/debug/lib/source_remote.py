@@ -14,10 +14,6 @@
 # ==============================================================================
 """Communicating tracebacks and source code with debug server."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import socket
 
 import grpc
@@ -116,7 +112,7 @@ def _send_call_tracebacks(destinations,
     origin_stack: The traceback stack for the origin of the execution call. For
       graph execution, this is the traceback of the `tf.Session.run()`
       invocation. For eager execution, this is the traceback of the Python
-      line that executes the eager opertion.
+      line that executes the eager operation.
     is_eager_execution: (`bool`) whether an eager execution call (i.e., not a
       `tf.Session.run` or derived methods) is being sent.
     call_key: The key of the execution call, as a string. For graph execution,

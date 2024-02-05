@@ -73,22 +73,9 @@ limitations under the License.
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "tensorflow/c/c_api_macros.h"
 #include "tensorflow/c/tf_datatype.h"
 #include "tensorflow/c/tf_status.h"
-
-#ifdef SWIG
-#define TF_CAPI_EXPORT
-#else
-#if defined(_WIN32)
-#ifdef TF_COMPILE_LIBRARY
-#define TF_CAPI_EXPORT __declspec(dllexport)
-#else
-#define TF_CAPI_EXPORT __declspec(dllimport)
-#endif  // TF_COMPILE_LIBRARY
-#else
-#define TF_CAPI_EXPORT __attribute__((visibility("default")))
-#endif  // _WIN32
-#endif  // SWIG
 
 #ifdef __cplusplus
 extern "C" {
@@ -279,6 +266,11 @@ TF_CAPI_EXPORT
 extern void TF_ShapeInferenceContextSetOutput(TF_ShapeInferenceContext* ctx,
                                               int i, TF_ShapeHandle* handle,
                                               TF_Status* status);
+
+// Returns a newly-allocated scalar shape handle. The returned handle should
+// be freed with TF_DeleteShapeHandle.
+TF_CAPI_EXPORT extern TF_ShapeHandle* TF_ShapeInferenceContextScalar(
+    TF_ShapeInferenceContext* ctx);
 
 // Returns a newly-allocate shape handle representing a vector of the given
 // size. The returned handle should be freed with TF_DeleteShapeHandle.

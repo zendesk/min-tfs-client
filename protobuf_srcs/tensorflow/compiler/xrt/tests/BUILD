@@ -1,15 +1,14 @@
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_cuda_cc_test")
 load(
-    "//tensorflow/core/platform:default/build_config_root.bzl",
+    "//tensorflow/core/platform:build_config_root.bzl",
     "tf_cuda_tests_tags",
 )
 
 package(
-    default_visibility = [
-        "//learning/brain:__subpackages__",
-        "//tensorflow/compiler:__subpackages__",
-    ],
-    licenses = ["notice"],  # Apache 2.0
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    default_visibility = ["//learning/brain:__subpackages__"],
+    licenses = ["notice"],
 )
 
 cc_library(
@@ -25,18 +24,7 @@ cc_library(
         "//tensorflow/cc:scope",
         "//tensorflow/compiler/tf2xla:common",
         "//tensorflow/compiler/tf2xla:xla_compiler",
-        "//tensorflow/compiler/xla:literal",
-        "//tensorflow/compiler/xla:literal_util",
-        "//tensorflow/compiler/xla:shape_util",
-        "//tensorflow/compiler/xla:xla_data_proto",
-        "//tensorflow/compiler/xla/client:client_library",
-        "//tensorflow/compiler/xla/client:local_client",
-        "//tensorflow/compiler/xla/client:xla_builder",
-        "//tensorflow/compiler/xla/client:xla_computation",
-        "//tensorflow/compiler/xla/client/lib:arithmetic",
-        "//tensorflow/compiler/xla/client/lib:constants",
-        "//tensorflow/compiler/xla/service:platform_util",
-        "//tensorflow/compiler/xrt:xrt_proto",
+        "//tensorflow/compiler/xrt:xrt_proto_cc",
         "//tensorflow/compiler/xrt:xrt_server",
         "//tensorflow/compiler/xrt/cc:xrt_ops",
         "//tensorflow/core:core_cpu_internal",
@@ -45,8 +33,18 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:tensorflow_opensource",
         "//tensorflow/core:test",
-        "//tensorflow/core:test_main",
         "@com_google_absl//absl/strings",
+        "@local_xla//xla:literal",
+        "@local_xla//xla:literal_util",
+        "@local_xla//xla:shape_util",
+        "@local_xla//xla:xla_data_proto_cc",
+        "@local_xla//xla/client:client_library",
+        "@local_xla//xla/client:local_client",
+        "@local_xla//xla/client:xla_builder",
+        "@local_xla//xla/client:xla_computation",
+        "@local_xla//xla/client/lib:arithmetic",
+        "@local_xla//xla/client/lib:constants",
+        "@local_xla//xla/service:platform_util",
     ],
 )
 
@@ -72,7 +70,9 @@ tf_cuda_cc_test(
         "--xla_test_device=XLA_GPU",
         "--xla_platform=GPU",
     ],
-    tags = tf_cuda_tests_tags(),
+    tags = tf_cuda_tests_tags() + [
+        "no_cuda_asan",  # TODO(b/171319142): re-enable.
+    ],
     deps = [
         ":raw_api_test_lib",
         "//tensorflow/compiler/jit:xla_gpu_device",

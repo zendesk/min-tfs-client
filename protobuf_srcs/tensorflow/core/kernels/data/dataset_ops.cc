@@ -12,21 +12,22 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-
 #include "tensorflow/core/kernels/data/dataset_ops.h"
 
+#include <memory>
+#include <vector>
+
+// On mobile we do not provide this functionality because not all of its
+// dependencies are available there.
+#if !defined(IS_MOBILE_PLATFORM)
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/common_runtime/graph_runner.h"
 #include "tensorflow/core/common_runtime/process_function_library_runtime.h"
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/serialization_utils.h"
 #include "tensorflow/core/framework/dataset.h"
-#include "tensorflow/core/framework/dataset_stateful_op_whitelist.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/graph/graph_constructor.h"
-#include "tensorflow/core/graph/graph_def_builder.h"
-#include "tensorflow/core/grappler/graph_topology_view.h"
-#include "tensorflow/core/grappler/utils/traversal.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
 #include "tensorflow/core/util/device_name_utils.h"
 
 namespace tensorflow {
@@ -40,28 +41,30 @@ namespace data {
 /* static */ constexpr const char* const DatasetFromGraphOp::kGraphDef;
 /* static */ constexpr const char* const DatasetFromGraphOp::kHandle;
 
+namespace {
+constexpr char kPyFunc[] = "PyFunc";
+constexpr char kCardinalityOptions[] = "cardinality_options";
+}  // namespace
+
 // See documentation in ../../ops/dataset_ops.cc for a high-level
 // description of the following op.
 DatasetToGraphOp::DatasetToGraphOp(OpKernelConstruction* ctx)
     : OpKernel(ctx), op_version_(ctx->def().op() == kDatasetToGraph ? 1 : 2) {
   if (op_version_ == 2) {
     if (ctx->HasAttr(kExternalStatePolicy)) {
-      int64 state_change_option;
-      OP_REQUIRES_OK(ctx,
-                     ctx->GetAttr(kExternalStatePolicy, &state_change_option));
-      external_state_policy_ =
-          SerializationContext::ExternalStatePolicy(state_change_option);
+      int64_t external_state_policy;
+      OP_REQUIRES_OK(
+          ctx, ctx->GetAttr(kExternalStatePolicy, &external_state_policy));
+      external_state_policy_ = ExternalStatePolicy(external_state_policy);
     }
   } else {
     if (ctx->HasAttr(kAllowStateful)) {
       bool allow_stateful;
       OP_REQUIRES_OK(ctx, ctx->GetAttr(kAllowStateful, &allow_stateful));
       if (allow_stateful) {
-        external_state_policy_ =
-            SerializationContext::ExternalStatePolicy::kWarn;
+        external_state_policy_ = ExternalStatePolicy::POLICY_WARN;
       } else {
-        external_state_policy_ =
-            SerializationContext::ExternalStatePolicy::kFail;
+        external_state_policy_ = ExternalStatePolicy::POLICY_FAIL;
       }
     }
   }
@@ -75,23 +78,27 @@ DatasetToGraphOp::DatasetToGraphOp(OpKernelConstruction* ctx)
 void DatasetToGraphOp::Compute(OpKernelContext* ctx) {
   DatasetBase* dataset;
   OP_REQUIRES_OK(ctx, GetDatasetFromVariantTensor(ctx->input(0), &dataset));
-  SerializationContext::Params params;
+  if (dataset->options().optional_external_state_policy_case() ==
+      Options::kExternalStatePolicy) {
+    external_state_policy_ = dataset->options().external_state_policy();
+  }
+  SerializationContext::Params params(ctx);
   params.external_state_policy = external_state_policy_;
 
   GraphDef graph_def;
-  Status s = AsGraphDef(ctx, dataset, SerializationContext(params), &graph_def);
+  Status s = AsGraphDef(dataset, SerializationContext(params), &graph_def);
   if (!s.ok()) {
     ctx->CtxFailure(errors::FailedPrecondition(
-        "Failed to clone the input pipeline because the input pipeline graph "
-        "could not be serialized: ",
-        s.error_message()));
+        "Failed to serialize the input pipeline graph: ", s.message()));
     return;
   }
   if (strip_device_assignment_) {
     auto library = graph_def.mutable_library();
     for (auto& function : (*library->mutable_function())) {
       for (auto& node : (*function.mutable_node_def())) {
-        if (!node.device().empty()) {
+        // We do not strip the device assignment from `PyFunc` ops because they
+        // need to be pinned to a host that is known to have Python interpreter.
+        if (!node.device().empty() && node.op() != kPyFunc) {
           *node.mutable_device() = DeviceNameUtils::LocalName(node.device());
         }
       }
@@ -103,18 +110,27 @@ void DatasetToGraphOp::Compute(OpKernelContext* ctx) {
   result->scalar<tstring>()() = graph_def.SerializeAsString();
 }
 
+DatasetCardinalityOp::DatasetCardinalityOp(OpKernelConstruction* ctx)
+    : OpKernel(ctx), cardinality_options_(new CardinalityOptions) {
+  if (ctx->HasAttr(kCardinalityOptions)) {
+    string options_serialized;
+    OP_REQUIRES_OK(ctx, ctx->GetAttr(kCardinalityOptions, &options_serialized));
+    if (!options_serialized.empty())
+      cardinality_options_->ParseFromString(options_serialized);
+  }
+}
+
 void DatasetCardinalityOp::Compute(OpKernelContext* ctx) {
   DatasetBase* dataset;
   OP_REQUIRES_OK(ctx, GetDatasetFromVariantTensor(ctx->input(0), &dataset));
   Tensor* result;
   OP_REQUIRES_OK(ctx, ctx->allocate_output(0, TensorShape({}), &result));
-  result->scalar<int64>()() = dataset->Cardinality();
+  result->scalar<int64_t>()() = dataset->Cardinality(*cardinality_options_);
 }
 
 void DatasetFromGraphOp::Compute(OpKernelContext* ctx) {
   tstring graph_def_string;
-  OP_REQUIRES_OK(ctx,
-                 ParseScalarArgument(ctx, kGraphDef, &graph_def_string));
+  OP_REQUIRES_OK(ctx, ParseScalarArgument(ctx, kGraphDef, &graph_def_string));
   GraphDef graph_def;
   OP_REQUIRES(ctx, graph_def.ParseFromString(graph_def_string),
               errors::InvalidArgument("Could not parse GraphDef"));
@@ -164,3 +180,4 @@ REGISTER_KERNEL_BUILDER(Name("DatasetFromGraph").Device(DEVICE_CPU),
 
 }  // namespace data
 }  // namespace tensorflow
+#endif  // !IS_MOBILE_PLATFORM

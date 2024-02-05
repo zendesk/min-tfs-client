@@ -13,12 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <map>
+#include <stddef.h>
+#include <stdint.h>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include <map>
+#include <memory>
+#include <vector>
+
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
 namespace tflite {
@@ -38,11 +44,14 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
 
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 2);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output_unique_tensor =
-      GetOutput(context, node, kOutputUniqueTensor);
-  TfLiteTensor* output_index_tensor =
-      GetOutput(context, node, kOutputIndexTensor);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output_unique_tensor;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, kOutputUniqueTensor,
+                                           &output_unique_tensor));
+  TfLiteTensor* output_index_tensor;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, kOutputIndexTensor,
+                                           &output_index_tensor));
 
   // The op only supports 1D input.
   TF_LITE_ENSURE_EQ(context, NumDimensions(input), 1);
@@ -64,7 +73,9 @@ TfLiteStatus EvalImpl(TfLiteContext* context, const TfLiteTensor* input,
   // Note that we prefer to use map than unordered_map as it showed less
   // increase in the binary size.
   std::map<T, int> unique_values;
-  TfLiteTensor* output_indexes = GetOutput(context, node, 1);
+  TfLiteTensor* output_indexes;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 1, &output_indexes));
+  std::vector<T> output_values;
   I* indexes = GetTensorData<I>(output_indexes);
   const T* data = GetTensorData<T>(input);
   const int num_elements = NumElements(input);
@@ -77,10 +88,12 @@ TfLiteStatus EvalImpl(TfLiteContext* context, const TfLiteTensor* input,
       const int unique_index = unique_values.size();
       unique_values[data[i]] = unique_index;
       indexes[i] = unique_index;
+      output_values.push_back(data[i]);
     }
   }
   // Allocate output tensor.
-  TfLiteTensor* unique_output = GetOutput(context, node, 0);
+  TfLiteTensor* unique_output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &unique_output));
   std::unique_ptr<TfLiteIntArray, void (*)(TfLiteIntArray*)> shape(
       TfLiteIntArrayCreate(NumDimensions(input)), TfLiteIntArrayFree);
   shape->data[0] = unique_values.size();
@@ -88,8 +101,8 @@ TfLiteStatus EvalImpl(TfLiteContext* context, const TfLiteTensor* input,
       context->ResizeTensor(context, unique_output, shape.release()));
   // Set the values in the output tensor.
   T* output_unique_values = GetTensorData<T>(unique_output);
-  for (int i = 0; i < unique_values.size(); ++i) {
-    output_unique_values[i] = data[indexes[i]];
+  for (int i = 0; i < output_values.size(); ++i) {
+    output_unique_values[i] = output_values[i];
   }
   return kTfLiteOk;
 }
@@ -99,7 +112,7 @@ TfLiteStatus EvalImpl(TfLiteContext* context, const TfLiteTensor* input,
                       TfLiteNode* node) {
   auto* params = reinterpret_cast<TfLiteUniqueParams*>(node->builtin_data);
   if (params == nullptr) {
-    context->ReportError(context, "Null params passed");
+    TF_LITE_KERNEL_LOG(context, "Null params passed");
     return kTfLiteError;
   }
   switch (params->index_out_type) {
@@ -108,7 +121,7 @@ TfLiteStatus EvalImpl(TfLiteContext* context, const TfLiteTensor* input,
     case kTfLiteInt64:
       return EvalImpl<T, int64_t>(context, input, node);
     default:
-      context->ReportError(
+      TF_LITE_KERNEL_LOG(
           context,
           "Unique index output array can only be Int32 or In64, requested: %s",
           TfLiteTypeGetName(params->index_out_type));
@@ -119,8 +132,11 @@ TfLiteStatus EvalImpl(TfLiteContext* context, const TfLiteTensor* input,
 }  // namespace
 
 TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output_index_tensor = GetOutput(context, node, 1);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output_index_tensor;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, 1, &output_index_tensor));
   TF_LITE_ENSURE_EQ(context, NumElements(output_index_tensor),
                     NumElements(input));
 
@@ -144,8 +160,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
       TF_LITE_ENSURE_STATUS(EvalImpl<uint8_t>(context, input, node));
       break;
     default:
-      context->ReportError(context, "Currently Unique doesn't support type: %s",
-                           TfLiteTypeGetName(input->type));
+      TF_LITE_KERNEL_LOG(context, "Currently Unique doesn't support type: %s",
+                         TfLiteTypeGetName(input->type));
       return kTfLiteError;
   }
   return kTfLiteOk;

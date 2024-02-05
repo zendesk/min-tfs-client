@@ -17,7 +17,7 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_TF2XLA_FUNCTIONALIZE_CONTROL_FLOW_UTIL_H_
 
 #include "absl/strings/str_join.h"
-#include "tensorflow/compiler/xla/status_macros.h"
+#include "xla/status_macros.h"
 #include "tensorflow/core/graph/control_flow.h"
 #include "tensorflow/core/graph/graph.h"
 
@@ -25,6 +25,8 @@ limitations under the License.
 // or used by other graph optimization passes.
 
 namespace tensorflow {
+
+using NodeFilter = std::function<bool(const Node*)>;
 
 // Information about a loop argument.
 struct WhileLoopArg {
@@ -60,13 +62,22 @@ struct WhileLoopFrame {
 
   // Set of nodes that belong to the loop frame.
   std::unordered_set<Node*> nodes;
+
+  // After `ExtractWhileLoopFrames` this is true if for all control flow nodes
+  // of this frame `node_filter` returns true, i.e., the frame should be
+  // functionalized, and false otherwise.
+  bool should_be_functionalized = true;
 };
 
 // Extracts v1 while loops within a graph and creates a map of
 // <ControlFLowInfo.name, WhileLoopFrame>.
+// If `node_filter` is defined, then we keep track of frames that should be
+// functionalized according to the filter (see comment for
+// `FunctionalizeControlFlow` for more details about node filters).
 Status ExtractWhileLoopFrames(
     const std::vector<ControlFlowInfo>& cf_info, const Graph* graph,
-    std::unordered_map<string, WhileLoopFrame>* frames);
+    std::unordered_map<string, WhileLoopFrame>* frames,
+    const NodeFilter& node_filter = {});
 
 // Check that the graph has no cycle containing the given node.
 Status CheckNodeNotInCycle(const Node* node, const int num_nodes);
@@ -79,10 +90,10 @@ struct NodeCmpByNameResourcesLast {
 };
 
 // Returns the Node* created from the NodeDef in the Graph.
-xla::StatusOr<Node*> AddNodeDefToGraph(const NodeDef& node_def, Graph* graph);
+StatusOr<Node*> AddNodeDefToGraph(const NodeDef& node_def, Graph* graph);
 
 // Build a retval node of given type and index.
-xla::StatusOr<Node*> BuildRetvalNode(Graph* graph, DataType type, int index);
+StatusOr<Node*> BuildRetvalNode(Graph* graph, DataType type, int index);
 
 // Returns a textual representation of the names of the nodes in the input.
 template <typename T>

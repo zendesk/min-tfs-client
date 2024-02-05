@@ -15,8 +15,12 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2tensorrt/utils/py_utils.h"
 
+#include <string>
+
 #if GOOGLE_CUDA && GOOGLE_TENSORRT
-#include "tensorflow/stream_executor/platform/dso_loader.h"
+#include "tensorflow/compiler/tf2tensorrt/common/utils.h"
+#include "tensorflow/compiler/tf2tensorrt/convert/op_converter_registry.h"
+#include "xla/stream_executor/platform/dso_loader.h"
 #include "third_party/tensorrt/NvInfer.h"
 #endif
 
@@ -25,43 +29,27 @@ namespace tensorrt {
 
 bool IsGoogleTensorRTEnabled() {
 #if GOOGLE_CUDA && GOOGLE_TENSORRT
+#if TF_USE_TENSORRT_STATIC
+  LOG(INFO) << "TensorRT libraries are statically linked, skip dlopen check";
+  return true;
+#else   // TF_USE_TENSORRT_STATIC
   auto handle_or = se::internal::DsoLoader::TryDlopenTensorRTLibraries();
   if (!handle_or.ok()) {
-    LOG(WARNING) << "Cannot dlopen some TensorRT libraries. If you would like "
-                    "to use Nvidia GPU with TensorRT, please make sure the "
-                    "missing libraries mentioned above are installed properly.";
-    return false;
-  } else {
-    return true;
+    LOG_WARNING_WITH_PREFIX << "Could not find TensorRT";
   }
-#else
+  return handle_or.ok();
+#endif  // TF_USE_TENSORRT_STATIC
+#else   // GOOGLE_CUDA && GOOGLE_TENSORRT
   return false;
-#endif
+#endif  // GOOGLE_CUDA && GOOGLE_TENSORRT
 }
 
-void GetLinkedTensorRTVersion(int* major, int* minor, int* patch) {
+std::vector<std::string> GetRegisteredOpConverters() {
 #if GOOGLE_CUDA && GOOGLE_TENSORRT
-  *major = NV_TENSORRT_MAJOR;
-  *minor = NV_TENSORRT_MINOR;
-  *patch = NV_TENSORRT_PATCH;
+  auto* registry = tensorflow::tensorrt::convert::GetOpConverterRegistry();
+  return registry->ListRegisteredOps();
 #else
-  *major = 0;
-  *minor = 0;
-  *patch = 0;
-#endif
-}
-
-void GetLoadedTensorRTVersion(int* major, int* minor, int* patch) {
-#if GOOGLE_CUDA && GOOGLE_TENSORRT
-  int ver = getInferLibVersion();
-  *major = ver / 1000;
-  ver = ver - *major * 1000;
-  *minor = ver / 100;
-  *patch = ver - *minor * 100;
-#else
-  *major = 0;
-  *minor = 0;
-  *patch = 0;
+  return {"undef"};
 #endif
 }
 

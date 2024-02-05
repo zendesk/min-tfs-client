@@ -14,10 +14,6 @@
 # ==============================================================================
 """Upgrader for Python scripts from 1.* to 2.0 TensorFlow using SAFETY mode."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.tools.compatibility import all_renames_v2
 from tensorflow.tools.compatibility import ast_edits
 from tensorflow.tools.compatibility import module_deprecations_v2
@@ -47,19 +43,12 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
 
     # List module renames. If changed, please update max_submodule_depth.
     self.import_renames = {
-        "tensorflow.google":
-            ast_edits.ImportRename(
-                "tensorflow.google.compat.v1",
-                excluded_prefixes=[
-                    "tensorflow.google.compat.v1",
-                    "tensorflow.google.compat.v2",
-                ],
-            ),
         "tensorflow":
             ast_edits.ImportRename(
                 "tensorflow.compat.v1",
                 excluded_prefixes=[
                     "tensorflow.contrib", "tensorflow.flags",
+                    "tensorflow.compat",
                     "tensorflow.compat.v1", "tensorflow.compat.v2",
                     "tensorflow.google"
                 ],

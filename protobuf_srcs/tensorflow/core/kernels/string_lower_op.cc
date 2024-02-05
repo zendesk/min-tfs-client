@@ -18,7 +18,7 @@ limitations under the License.
 #include <string>
 
 #include "absl/strings/ascii.h"
-#include "unicode/unistr.h"  // TF:icu
+#include "unicode/unistr.h"  // from @icu
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -49,13 +49,13 @@ class StringLowerOp : public OpKernel {
     auto output = output_tensor->flat<tstring>();
 
     if (encoding_.empty()) {
-      for (int64 i = 0; i < input.size(); ++i) {
+      for (int64_t i = 0; i < input.size(); ++i) {
         StringPiece entry(input(i));
         output(i) = absl::AsciiStrToLower(entry);
       }
     } else {
       // The validation of utf-8 has already been done in GetAttr above.
-      for (int64 i = 0; i < input.size(); ++i) {
+      for (int64_t i = 0; i < input.size(); ++i) {
         icu::UnicodeString us(input(i).c_str(), "UTF-8");
         us.toLower();
         us.toUTF8String(output(i));

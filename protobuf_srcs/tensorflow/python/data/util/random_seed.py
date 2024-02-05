@@ -14,10 +14,6 @@
 # ==============================================================================
 """Utilities for generating Tensor-valued random seeds."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -29,9 +25,8 @@ from tensorflow.python.ops import math_ops
 def get_seed(seed):
   """Returns the local seeds an operation should use given an op-specific seed.
 
-  See `tf.compat.v1.get_seed` for more details. This wrapper adds support for
-  the case
-  where `seed` may be a tensor.
+  See `random_seed.get_seed` for more details. This wrapper adds support for
+  the case where `seed` may be a tensor.
 
   Args:
     seed: An integer or a `tf.int64` scalar tensor.

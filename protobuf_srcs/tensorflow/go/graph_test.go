@@ -82,6 +82,73 @@ func TestGraphWriteToAndImport(t *testing.T) {
 	}
 }
 
+func TestGraphInputMapping(t *testing.T) {
+	// Construct a graph
+	g := NewGraph()
+	v, err := NewTensor(int64(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := Placeholder(g, "input", v.DataType())
+	if err != nil {
+		t.Fatal(err)
+	}
+	neg, err := Neg(g, "neg", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Serialize the graph
+	buf := new(bytes.Buffer)
+	if _, err := g.WriteTo(buf); err != nil {
+		t.Fatal(err)
+	}
+
+	g = NewGraph()
+	v, err = NewTensor(int64(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := Placeholder(g, "replacement", v.DataType())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	options := GraphImportOptions{
+		Prefix: "imported",
+	}
+	options.AddInputMapping("input", 0, replacement)
+	// Import it into the same graph, with a prefix and replacement
+	if err := g.ImportWithOptions(buf.Bytes(), options); err != nil {
+		t.Error(err)
+	}
+	if err := hasOperations(g, "replacement", "imported/neg"); err != nil {
+		t.Error(err)
+	}
+
+	sess, err := NewSession(g, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	neg = g.Operation("imported/neg").Output(0)
+
+	outputs, err := sess.Run(
+		map[Output]*Tensor{replacement: v},
+		[]Output{neg},
+		nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 {
+		t.Fatal(len(outputs))
+	}
+	if outputs[0].Value().(int64) != -1 {
+		t.Fatalf("Got %v, wanted int64 -1", outputs[0].Value())
+	}
+}
+
 func TestGraphAddGradients(t *testing.T) {
 	g := NewGraph()
 	x1, err := Placeholder(g, "x1", Float)
@@ -192,6 +259,9 @@ func TestGraphAddGradientsSums(t *testing.T) {
 		Name:  "y1",
 		Input: []Input{y0},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	y1 := op1.Output(0)
 
 	grad, err := g.AddGradients("", []Output{y0, y1}, []Output{x}, nil)
@@ -226,6 +296,10 @@ func TestGraphAddGradientsSums(t *testing.T) {
 func TestGraphAddGradientsWithInitialValues(t *testing.T) {
 	g := NewGraph()
 	x, err := Placeholder(g, "x", Float)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	op0, err := g.AddOperation(OpSpec{
 		Type:  "Square",
 		Name:  "y0",

@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/nccl/collective_communicator.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/public/session_options.h"
 
@@ -29,6 +30,12 @@ namespace tensorflow {
 namespace {
 
 #define NUM_DEVS 3
+
+TEST(MaybeCreateNcclCommunicatorm, ZeroGpus) {
+  ConfigProto cp;
+  (*cp.mutable_device_count())["GPU"] = 0;
+  EXPECT_EQ(nullptr, MaybeCreateNcclCommunicator(cp));
+}
 
 class CollectiveExecutorMgrTest : public ::testing::Test {
  protected:
@@ -40,14 +47,16 @@ class CollectiveExecutorMgrTest : public ::testing::Test {
     device_count->insert({"CPU", NUM_DEVS});
     std::vector<std::unique_ptr<Device>> devices;
     TF_CHECK_OK(DeviceFactory::AddDevices(options, task_name, &devices));
-    device_mgr_ = absl::make_unique<StaticDeviceMgr>(std::move(devices));
+    device_mgr_ = std::make_unique<StaticDeviceMgr>(std::move(devices));
     std::unique_ptr<DeviceResolverInterface> drl(
         new DeviceResolverLocal(device_mgr_.get()));
     std::unique_ptr<ParamResolverInterface> prl(
         new CollectiveParamResolverLocal(cp, device_mgr_.get(), drl.get(),
+                                         /*nccl_communicator*/ nullptr,
                                          task_name));
     cme_.reset(new CollectiveExecutorMgr(cp, device_mgr_.get(), std::move(drl),
-                                         std::move(prl)));
+                                         std::move(prl),
+                                         MaybeCreateNcclCommunicator(cp)));
   }
 
   std::unique_ptr<CollectiveExecutorMgr> cme_;
@@ -80,7 +89,7 @@ TEST_F(CollectiveExecutorMgrTest, StepSequenceRelated) {
                                    });
   ss_note.WaitForNotification();
   EXPECT_FALSE(ss_status.ok());
-  EXPECT_EQ(ss_status.error_message(),
+  EXPECT_EQ(ss_status.message(),
             "CollectiveExecutorMgr does not implement RefreshStepIdSequence.");
   Notification gs_note;
   Status gs_status;
@@ -93,7 +102,7 @@ TEST_F(CollectiveExecutorMgrTest, StepSequenceRelated) {
                              });
   gs_note.WaitForNotification();
   EXPECT_FALSE(gs_status.ok());
-  EXPECT_EQ(gs_status.error_message(),
+  EXPECT_EQ(gs_status.message(),
             "CollectiveExecutorMgr does not implement GetStepSequence.");
 }
 

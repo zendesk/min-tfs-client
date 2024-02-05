@@ -43,13 +43,16 @@ struct SimpleBinaryFunctor<GPUDevice, Functor> {
   void operator()(const GPUDevice& d, typename Functor::tout_type out,
                   typename Functor::tin_type in1,
                   typename Functor::tin_type in2) {
-    To32Bit(out).device(d) =
-        To32Bit(in1).binaryExpr(in2, typename Functor::func());
+    MaybeWith32BitIndexing<GPUDevice>(
+        [&](auto out32, auto in1_32) {
+          out32.device(d) = in1_32.binaryExpr(in2, typename Functor::func());
+        },
+        out, in1);
   }
 };
 
 // Macros to explicitly instantiate kernels on GPU for multiple types
-// (T0, T1, etc.) for SimpleBiaryFunctor (e.g., functor::tanh_grad).
+// (T0, T1, etc.) for SimpleBinaryFunctor (e.g., functor::tanh_grad).
 #define DEFINE_SIMPLE_BINARY1(F, T) \
   template struct SimpleBinaryFunctor<GPUDevice, F<T> >
 #define DEFINE_SIMPLE_BINARY2(F, T0, T1) \

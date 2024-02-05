@@ -15,26 +15,24 @@
 # pylint: disable=unidiomatic-typecheck
 """Utility to lift subgraphs."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 
 from tensorflow.python.framework import func_graph
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import op_selector
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.util import compat
 from tensorflow.python.util import object_identity
+from tensorflow.python.util.tf_export import tf_export
 
 
 UnliftableError = op_selector.UnliftableError
 
 
 def _as_operation(op_or_tensor):
-  if isinstance(op_or_tensor, ops.Tensor):
+  if isinstance(op_or_tensor, tensor_lib.Tensor):
     return op_or_tensor.op
   return op_or_tensor
 
@@ -202,6 +200,7 @@ def _copy_source(s, graph, op_map, handle_captures, inverse_captures,
   op_map[s.op] = copied_placeholder.op
 
 
+@tf_export("__internal__.lift_to_graph", v1=[])
 def lift_to_graph(tensors,
                   graph,
                   sources=None,
@@ -246,7 +245,7 @@ def lift_to_graph(tensors,
 
   # Check that the initializer does not depend on any placeholders.
   sources = object_identity.ObjectIdentitySet(sources or [])
-  visited_ops = set([x.op for x in sources])
+  visited_ops = set(x.op for x in sources)
   op_outputs = collections.defaultdict(set)
 
   # First we extract the subgraph between init_tensors and sources.
@@ -276,7 +275,7 @@ def lift_to_graph(tensors,
       for inp in op_selector.graph_inputs(op):
         # Don't lift the TPUReplicateMetadata nodes out of the function, because
         # it has no registered kernels.
-        if inp.name == "TPUReplicateMetadata":
+        if inp.type == "TPUReplicateMetadata":
           continue
         unvisited_ops.add(inp)
         if (all(x in marked_ops for x in op_outputs[inp]) and
@@ -288,6 +287,13 @@ def lift_to_graph(tensors,
       # this case we want to keep copying and there's no topological ordering;
       # we'll do ugly post-hoc mutations instead.
       ops_to_visit.append(next(iter(unvisited_ops)))
+
+  # When the topological sort fails due to loops, it can result in exceptions
+  # later when copying a node which inputs haven't been copied yet. We can
+  # improve that pseudo-topological order slightly by putting the ops without
+  # inputs, such as constants, at the start of the topological order (i.e at
+  # the end of ops_to_copy).
+  ops_to_copy.sort(key=(lambda op: len(op_selector.graph_inputs(op)) == 0))
 
   # When lifting from one FuncGraph to another, we will need to capture the
   # relevant tensors as well.
@@ -351,7 +357,7 @@ def lift_to_graph(tensors,
       for mutation in control_mutations:
         # Don't lift the TPUReplicateMetadata nodes out of the function, because
         # it has no registered kernels.
-        if mutation.old_graph_op.name == "TPUReplicateMetadata":
+        if mutation.old_graph_op.type == "TPUReplicateMetadata":
           continue
         mutation.copied_op._add_control_input(op_map[mutation.old_graph_op])
     # pylint: enable=protected-access

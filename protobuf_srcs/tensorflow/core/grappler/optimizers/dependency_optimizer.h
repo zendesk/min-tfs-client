@@ -40,9 +40,6 @@ class DependencyOptimizer : public GraphOptimizer {
   Status Optimize(Cluster* cluster, const GrapplerItem& item,
                   GraphDef* optimized_graph) override;
 
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimized_graph, double result) override;
-
  private:
   // Returns true if bypassing node does not increase the number of edges or
   // number of edges crossing a device boundary.
@@ -71,8 +68,9 @@ class DependencyOptimizer : public GraphOptimizer {
   // Main driver of dependency optimizations.
   Status OptimizeDependencies();
   // Replaces multiple cross-device control edges from the same device with a
-  // single control edge.
-  void GroupCrossDeviceControlEdges();
+  // single control edge.  If `host_granularity` is true then group control
+  // edges from all devices on the same host.
+  void GroupCrossDeviceControlEdges(bool host_granularity);
 
   bool fetch_nodes_known_;
   std::unordered_set<string> nodes_to_preserve_;

@@ -16,37 +16,19 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PLATFORM_TEST_H_
 #define TENSORFLOW_CORE_PLATFORM_TEST_H_
 
-#include <memory>
-#include <vector>
-
+#include <gtest/gtest.h>  // IWYU pragma: export
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/platform.h"
 #include "tensorflow/core/platform/types.h"
-
-// As of September 2016, we continue to attempt to avoid the use of gmock aka
-// googlemock included in the test framework
-// (https://github.com/google/googletest) to discourage over-eager use of mocks
-// that lead to cumbersome class hierarchies and tests that might end up not
-// testing real code in important ways.
-#include <gtest/gtest.h>
+#include "tsl/platform/test.h"
 
 namespace tensorflow {
+
 namespace testing {
-
-// Return a temporary directory suitable for temporary testing files.
-string TmpDir();
-
-// Returns the path to TensorFlow in the directory containing data
-// dependencies.
-string TensorFlowSrcRoot();
-
-// Return a random number generator seed to use in randomized tests.
-// Returns the same value for the lifetime of the process.
-int RandomSeed();
-
-// Returns an unused port number, for use in multi-process testing.
-// NOTE: This function is not thread-safe.
-int PickUnusedPortOrDie();
+using tsl::testing::PickUnusedPortOrDie;
+using tsl::testing::RandomSeed;
+using tsl::testing::TensorFlowSrcRoot;
+using tsl::testing::TmpDir;
 
 }  // namespace testing
 }  // namespace tensorflow

@@ -15,7 +15,7 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/fake_input.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -31,7 +31,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-class QuantizedBatchNormOpTest : public OpsTestBase {};
+using QuantizedBatchNormOpTest = OpsTestBase;
 
 TEST_F(QuantizedBatchNormOpTest, Simple) {
   TF_EXPECT_OK(NodeDefBuilder("quantized_batch_norm_op",

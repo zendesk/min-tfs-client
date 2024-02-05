@@ -14,17 +14,14 @@
 # ==============================================================================
 """Tests for sync_replicas_optimizer.py."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import time
 
 from tensorflow.python.framework import constant_op
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.framework.test_util import create_local_cluster
-from tensorflow.python.ops import variables
+from tensorflow.python.ops import variable_v1
 from tensorflow.python.platform import test
 from tensorflow.python.training import adam
 from tensorflow.python.training import gradient_descent
@@ -41,18 +38,18 @@ def get_workers(num_workers, replicas_to_aggregate, workers):
     is_chief = (worker_id == 0)
     with graph.as_default():
       with ops.device("/job:ps/task:0"):
-        global_step = variables.VariableV1(
+        global_step = variable_v1.VariableV1(
             0, name="global_step", trainable=False)
-        var_0 = variables.VariableV1(0.0, name="v0")
+        var_0 = variable_v1.VariableV1(0.0, name="v0")
       with ops.device("/job:ps/task:1"):
-        var_1 = variables.VariableV1(1.0, name="v1")
-        var_sparse = variables.VariableV1([[3.0], [4.0]], name="v_sparse")
+        var_1 = variable_v1.VariableV1(1.0, name="v1")
+        var_sparse = variable_v1.VariableV1([[3.0], [4.0]], name="v_sparse")
 
       with ops.device("/job:worker/task:" + str(worker_id)):
         grads_0 = constant_op.constant(0.1 + worker_id * 0.2)
         grads_1 = constant_op.constant(0.9 + worker_id * 0.2)
         # This is to test against sparse gradients.
-        grads_sparse = ops.IndexedSlices(
+        grads_sparse = indexed_slices.IndexedSlices(
             constant_op.constant(
                 [0.1 + worker_id * 0.2], shape=[1, 1]),
             constant_op.constant([1]),
@@ -89,7 +86,8 @@ class SyncReplicasOptimizerTest(test.TestCase):
   def _run(self, train_op, sess):
     sess.run(train_op)
 
-  @test_util.run_v1_only("b/120545219")
+  @test_util.run_v1_only(
+      "This exercises tensor lookup via names which is not supported in V2.")
   def test2Workers(self):
     num_workers = 2
     replicas_to_aggregate = 2
@@ -180,7 +178,8 @@ class SyncReplicasOptimizerTest(test.TestCase):
                         sessions[1].run(var_1_g_1))
 
   # 3 workers and one of them is backup.
-  @test_util.run_v1_only("b/120545219")
+  @test_util.run_v1_only(
+      "This exercises tensor lookup via names which is not supported in V2.")
   def test3Workers1Backup(self):
     num_workers = 3
     replicas_to_aggregate = 2
@@ -197,7 +196,7 @@ class SyncReplicasOptimizerTest(test.TestCase):
     local_step_1 = graphs[1].get_tensor_by_name("sync_rep_local_step:0")
     global_step = graphs[1].get_tensor_by_name("global_step:0")
 
-    # The steps should also be initilized.
+    # The steps should also be initialized.
     self.assertAllEqual(0, sessions[1].run(global_step))
     self.assertAllEqual(0, sessions[1].run(local_step_1))
 
@@ -265,11 +264,12 @@ class SyncReplicasOptimizerHookTest(test.TestCase):
         replicas_to_aggregate=1,
         total_num_replicas=1)
     hook = opt.make_session_run_hook(True)
-    with self.assertRaisesRegexp(ValueError,
-                                 "apply_gradient should be called"):
+    with self.assertRaisesRegex(ValueError, "apply_gradient should be called"):
       hook.begin()
 
-  @test_util.run_v1_only("b/120545219")
+  @test_util.run_v1_only(
+      "train.SyncReplicasOptimizer and train.GradientDescentOptimizer "
+      "are V1 only APIs.")
   def testCanCreatedBeforeMinimizeCalled(self):
     """This behavior is required to be integrated with Estimators."""
     opt = training.SyncReplicasOptimizer(
@@ -277,19 +277,20 @@ class SyncReplicasOptimizerHookTest(test.TestCase):
         replicas_to_aggregate=1,
         total_num_replicas=1)
     hook = opt.make_session_run_hook(True)
-    v = variables.VariableV1([0.])
-    global_step = variables.VariableV1(0, name="global_step", trainable=False)
+    v = variable_v1.VariableV1([0.])
+    global_step = variable_v1.VariableV1(0, name="global_step", trainable=False)
     opt.minimize(v, global_step=global_step)
     hook.begin()
 
-  @test_util.run_v1_only("b/120545219")
+  @test_util.run_v1_only(
+      "train.SyncReplicasOptimizer and train.AdamOptimizer are V1 only APIs.")
   def testFetchVariableList(self):
     opt = training.SyncReplicasOptimizer(
         opt=adam.AdamOptimizer(0.01),
         replicas_to_aggregate=1,
         total_num_replicas=1)
-    v = variables.VariableV1([0.], name="fetch_variable_test")
-    global_step = variables.VariableV1(0, name="global_step", trainable=False)
+    v = variable_v1.VariableV1([0.], name="fetch_variable_test")
+    global_step = variable_v1.VariableV1(0, name="global_step", trainable=False)
     opt.minimize(v, global_step=global_step)
     opt_variables = opt.variables()
     beta1_power, beta2_power = opt._opt._get_beta_accumulators()

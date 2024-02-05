@@ -31,21 +31,21 @@ namespace toco {
   const auto fakequant_it = model->operators.begin() + op_index;
   auto* fakequant_base_op = fakequant_it->get();
   if (fakequant_base_op->type != OperatorType::kFakeQuant) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   auto* fakequant_op = static_cast<FakeQuantOperator*>(fakequant_base_op);
 
   if (!fakequant_op->minmax) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   const auto& output_array = model->GetArray(fakequant_op->outputs[0]);
   if (!output_array.minmax) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   // Drop min/max inputs
-  for (int i = 1; i < fakequant_op->inputs.size(); i++) {
+  for (int i = 1, end = fakequant_op->inputs.size(); i < end; i++) {
     if (CountOpsWithInput(*model, fakequant_op->inputs[i]) == 1) {
       model->EraseArray(fakequant_op->inputs[i]);
     }
@@ -53,7 +53,7 @@ namespace toco {
   fakequant_op->inputs.resize(1);
 
   *modified = RemoveTrivialPassthroughOp(this, model, op_index);
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

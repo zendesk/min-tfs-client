@@ -16,18 +16,22 @@ limitations under the License.
 #include "tensorflow/core/platform/rocm_rocdl_path.h"
 
 #include "tensorflow/core/lib/core/status_test_util.h"
-#include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/platform/test.h"
+
+#if !defined(PLATFORM_GOOGLE) && TENSORFLOW_USE_ROCM
+#include "rocm/rocm_config.h"
+#endif
 
 namespace tensorflow {
 
 #if TENSORFLOW_USE_ROCM
 TEST(RocmRocdlPathTest, ROCDLPath) {
-  VLOG(2) << "ROCm-Deivce-Libs root = " << RocdlRoot();
+  VLOG(2) << "ROCm-Device-Libs root = " << RocdlRoot();
   std::vector<string> rocdl_files;
   TF_EXPECT_OK(Env::Default()->GetMatchingPaths(
-      io::JoinPath(RocdlRoot(), "*.amdgcn.bc"), &rocdl_files));
+      io::JoinPath(RocdlRoot(), "*.bc"), &rocdl_files));
   EXPECT_LT(0, rocdl_files.size());
 }
 #endif

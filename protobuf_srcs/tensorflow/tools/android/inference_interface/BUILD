@@ -5,17 +5,17 @@ load("@build_bazel_rules_android//android:rules.bzl", "android_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "if_android",
-    "tf_cc_binary",
+    "tf_cc_binary",  # @unused
     "tf_copts",
 )
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:public"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 exports_files([
-    "LICENSE",
     "jni/version_script.lds",
 ])
 
@@ -34,7 +34,7 @@ cc_library(
     copts = tf_copts(),
     visibility = ["//visibility:public"],
     deps = [
-        "//tensorflow/core:android_tensorflow_lib_lite",
+        "//tensorflow/core:portable_tensorflow_lib_lite",
         "//tensorflow/java/src/main/native",
     ],
     alwayslink = 1,
@@ -44,6 +44,9 @@ cc_library(
 android_library(
     name = "android_tensorflow_inference_java",
     srcs = glob(["java/**/*.java"]) + ["//tensorflow/java:java_sources"],
+    javacopts = [
+        "-XepOpt:CheckReturnValue:CheckAllConstructors=false",  # b/226969262
+    ],
     tags = [
         "manual",
         "notap",
@@ -83,7 +86,12 @@ cc_binary(
     ],
     deps = [
         ":android_tensorflow_inference_jni",
-        "//tensorflow/core:android_tensorflow_lib",
+        "//tensorflow/core:portable_tensorflow_lib",
         LINKER_SCRIPT,
     ],
+)
+
+cc_library(
+    name = "android_tensorflow_inference_native",
+    srcs = if_android([":libtensorflow_inference.so"]),
 )

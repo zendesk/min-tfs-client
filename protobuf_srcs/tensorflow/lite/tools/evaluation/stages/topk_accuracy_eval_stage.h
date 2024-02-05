@@ -15,6 +15,7 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_TOOLS_EVALUATION_STAGES_TOPK_ACCURACY_EVAL_STAGE_H_
 #define TENSORFLOW_LITE_TOOLS_EVALUATION_STAGES_TOPK_ACCURACY_EVAL_STAGE_H_
 
+#include <string>
 #include <vector>
 
 #include "tensorflow/lite/tools/evaluation/evaluation_stage.h"
@@ -39,7 +40,7 @@ class TopkAccuracyEvalStage : public EvaluationStage {
 
   EvaluationStageMetrics LatestMetrics() override;
 
-  ~TopkAccuracyEvalStage() {}
+  ~TopkAccuracyEvalStage() override {}
 
   // Call before Init().
   // model_output_shape is not owned, so this class does not free the
@@ -62,7 +63,7 @@ class TopkAccuracyEvalStage : public EvaluationStage {
 
  private:
   // Updates accuracy_counts_ based on comparing top k labels and the
-  // groundtruth one. Using string comparision since there are some duplicate
+  // groundtruth one. Using string comparison since there are some duplicate
   // labels in the imagenet dataset.
   void UpdateCounts(const std::vector<int>& topk_indices);
 

@@ -17,6 +17,7 @@ limitations under the License.
 #include "tensorflow/cc/ops/image_ops.h"
 #include "tensorflow/cc/ops/nn_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/kernel_benchmark_testlib.h"
 #include "tensorflow/core/framework/fake_input.h"
 #include "tensorflow/core/framework/node_def_builder.h"
@@ -25,6 +26,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/conv_ops_gpu.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/kernels/ops_util.h"
+#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/public/session.h"
@@ -88,10 +90,17 @@ class DepthwiseConvOpTest : public OpsTestBase {
     const Tensor& output = *GetOutput(0);
     // TODO(csigg): This should happen as part of GetOutput.
     TF_EXPECT_OK(device_->Sync());
-    test::ExpectTensorNear<T>(expected, output, 1e-5);
+    if (dtype == DT_BFLOAT16) {
+      test::ExpectClose(expected, output, 1e-2, 1e-2);
+    } else {
+      test::ExpectTensorNear<T>(expected, output, 1e-5);
+    }
   }
 };
 
+TEST_F(DepthwiseConvOpTest, DepthwiseConvBFloat16Cpu) {
+  Run<bfloat16>(Device::CPU);
+}
 TEST_F(DepthwiseConvOpTest, DepthwiseConvFloatCpu) { Run<float>(Device::CPU); }
 TEST_F(DepthwiseConvOpTest, DepthwiseConvDoubleCpu) {
   Run<double>(Device::CPU);
@@ -100,7 +109,7 @@ TEST_F(DepthwiseConvOpTest, DepthwiseConvHalfCpu) {
   Run<Eigen::half>(Device::CPU);
 }
 
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 TEST_F(DepthwiseConvOpTest, DepthwiseConvFloatGpu) { Run<float>(Device::GPU); }
 TEST_F(DepthwiseConvOpTest, DepthwiseConvDoubleGpu) {
   Run<double>(Device::GPU);

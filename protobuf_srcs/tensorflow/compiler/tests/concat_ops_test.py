@@ -14,16 +14,14 @@
 # ==============================================================================
 """Functional tests for XLA Concat Op."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.compiler.tests import xla_test
+from tensorflow.python import pywrap_sanitizers
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack  # pylint: disable=g-direct-tensorflow-import
 from tensorflow.python.ops import gen_array_ops
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import math_ops
@@ -76,6 +74,19 @@ class ConcatTest(xla_test.XLATestCase):
     self.assertAllEqual(result[:2, :], p1)
     self.assertAllEqual(result[2:, :], p2)
 
+  def testAxisInt64(self):
+    with self.session():
+      p1 = np.random.rand(2, 3).astype("i")
+      p2 = np.random.rand(2, 3).astype("i")
+      x1 = constant_op.constant(p1)
+      x2 = constant_op.constant(p2)
+      axis = constant_op.constant(0, dtype=dtypes.int64)
+      with self.test_scope():
+        c = array_ops.concat([x1, x2], axis)
+      result = self.evaluate(c)
+    self.assertAllEqual(result[:2, :], p1)
+    self.assertAllEqual(result[2:, :], p2)
+
   def _testRandom(self, dtype):
     # Random dims of rank 5
     shape = np.random.randint(1, 5, size=5)
@@ -121,9 +132,9 @@ class ConcatTest(xla_test.XLATestCase):
                               cur_offset + params[p[i]].shape[concat_dim])
       cur_offset += params[p[i]].shape[concat_dim]
       if dtype == dtype_feed:
-        self.assertAllEqual(result[ind], params[p[i]])
+        self.assertAllEqual(result[tuple(ind)], params[p[i]])
       else:
-        self.assertAllClose(result[ind], params[p[i]], 0.01)
+        self.assertAllClose(result[tuple(ind)], params[p[i]], 0.01)
 
   def testRandom(self):
     self._testRandom(dtypes.float32)
@@ -267,7 +278,7 @@ class ConcatTest(xla_test.XLATestCase):
                 # TODO(irving): Make tf.concat handle map, then drop list().
                 xs = list(map(constant_op.constant, [x0, x1]))
                 c = array_ops.concat(xs, axis)
-                self.assertAllEqual(c.eval(), correct)
+                self.assertAllEqual(c, correct)
                 # Check gradients
                 dc = np.random.randn(*c.get_shape().as_list())
                 dxs = self.evaluate(gradients_impl.gradients(c, xs, dc))
@@ -280,14 +291,14 @@ class ConcatTest(xla_test.XLATestCase):
       with self.test_scope():
         concat_list_t = array_ops.concat([c1, c2], 0)
         concat_tuple_t = array_ops.concat((c1, c2), 0)
-      self.assertAllEqual(concat_list_t.eval(), self.evaluate(concat_tuple_t))
+      self.assertAllEqual(concat_list_t, self.evaluate(concat_tuple_t))
 
   def testConcatNoScalars(self):
     with self.session():
       with self.test_scope():
         scalar = constant_op.constant(7)
         dim = array_ops.placeholder(dtypes.int32)
-        with self.assertRaisesRegexp(
+        with self.assertRaisesRegex(
             ValueError, r"Can't concatenate scalars \(use tf\.stack instead\)"):
           array_ops.concat([scalar, scalar, scalar], dim)
 
@@ -297,6 +308,11 @@ class ConcatTest(xla_test.XLATestCase):
     if "CPU" in self.device:
       self.skipTest("This test can time out on CPU, so we will just allow "
                     "other backends to catch this specific error.")
+    if (pywrap_sanitizers.is_asan_enabled() or
+        pywrap_sanitizers.is_tsan_enabled() or
+        pywrap_sanitizers.is_msan_enabled() or
+        pywrap_sanitizers.is_ubsan_enabled()):
+      self.skipTest("This test can time out on *SAN.")
     with self.session():
       with self.test_scope():
         for concat_dim in range(2):
@@ -327,7 +343,7 @@ class ConcatTest(xla_test.XLATestCase):
             index[concat_dim] = slice(
                 cur_offset, cur_offset + params[p[i]].shape[concat_dim])
             cur_offset += params[p[i]].shape[concat_dim]
-            self.assertAllEqual(result[index], params[p[i]])
+            self.assertAllEqual(result[tuple(index)], params[p[i]])
 
 
 class ConcatOffsetTest(xla_test.XLATestCase):
@@ -352,7 +368,7 @@ class PackTest(xla_test.XLATestCase):
         s0 = constant_op.constant([2, 3, 5], dtypes.int32)
         s1 = constant_op.constant([2, 7, 5], dtypes.int32)
         s2 = constant_op.constant([2, 20, 5], dtypes.int32)
-        packed = array_ops.stack([s0, s1, s2])
+        packed = array_ops_stack.stack([s0, s1, s2])
         ans = self.evaluate(packed)
         self.assertAllEqual(ans, [[2, 3, 5], [2, 7, 5], [2, 20, 5]])
 
@@ -362,7 +378,7 @@ class PackTest(xla_test.XLATestCase):
         s0 = constant_op.constant(2, dtypes.int32)
         s1 = constant_op.constant(3, dtypes.int32)
         s2 = constant_op.constant(5, dtypes.int32)
-        packed = array_ops.stack([s0, s1, s2])
+        packed = array_ops_stack.stack([s0, s1, s2])
         ans = self.evaluate(packed)
         self.assertAllEqual(ans, [2, 3, 5])
 
@@ -372,7 +388,7 @@ class PackTest(xla_test.XLATestCase):
         s0 = constant_op.constant([[]], dtypes.int32)
         s1 = constant_op.constant([[]], dtypes.int32)
         s2 = constant_op.constant([[]], dtypes.int32)
-        packed = array_ops.stack([s0, s1, s2])
+        packed = array_ops_stack.stack([s0, s1, s2])
         ans = self.evaluate(packed)
         self.assertAllEqual(ans, [[[]], [[]], [[]]])
 

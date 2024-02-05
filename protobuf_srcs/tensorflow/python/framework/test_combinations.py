@@ -37,15 +37,11 @@ results.
 
 The execution of generated tests can be customized in a number of ways:
 -  The test can be skipped if it is not running in the correct environment.
--  The arguments that are passed to the test can be additionaly transformed.
+-  The arguments that are passed to the test can be additionally transformed.
 -  The test can be run with specific Python context managers.
-These behaviors can customized by providing instances of `TestCombination` to
+These behaviors can be customized by providing instances of `TestCombination` to
 `generate()`.
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from collections import OrderedDict
 import contextlib
@@ -54,12 +50,13 @@ import types
 import unittest
 
 from absl.testing import parameterized
-import six
 
 from tensorflow.python.util import tf_inspect
+from tensorflow.python.util.tf_export import tf_export
 
 
-class TestCombination(object):
+@tf_export("__internal__.test.combinations.TestCombination", v1=[])
+class TestCombination:
   """Customize the behavior of `generate()` and the tests that it executes.
 
   Here is sequence of steps for executing a test combination:
@@ -79,7 +76,7 @@ class TestCombination(object):
     If the environment doesn't satisfy the dependencies of the test
     combination, then it can be skipped.
 
-    Arguments:
+    Args:
       kwargs:  Arguments that are passed to the test combination.
 
     Returns:
@@ -101,7 +98,7 @@ class TestCombination(object):
     The test combination will run under all context managers that all
     `TestCombination` instances return.
 
-    Arguments:
+    Args:
       kwargs:  Arguments and their values that are passed to the test
         combination.
 
@@ -112,22 +109,40 @@ class TestCombination(object):
     return []
 
 
-class ParameterModifier(object):
-  """Customizes the behavior of a particular parameter."""
+@tf_export("__internal__.test.combinations.ParameterModifier", v1=[])
+class ParameterModifier:
+  """Customizes the behavior of a particular parameter.
+
+  Users should override `modified_arguments()` to modify the parameter they
+  want, eg: change the value of certain parameter or filter it from the params
+  passed to the test case.
+
+  See the sample usage below, it will change any negative parameters to zero
+  before it gets passed to test case.
+  ```
+  class NonNegativeParameterModifier(ParameterModifier):
+
+    def modified_arguments(self, kwargs, requested_parameters):
+      updates = {}
+      for name, value in kwargs.items():
+        if value < 0:
+          updates[name] = 0
+      return updates
+  ```
+  """
 
   DO_NOT_PASS_TO_THE_TEST = object()
 
   def __init__(self, parameter_name=None):
     """Construct a parameter modifier that may be specific to a parameter.
 
-    Arguments:
+    Args:
       parameter_name:  A `ParameterModifier` instance may operate on a class of
         parameters or on a parameter with a particular name.  Only
         `ParameterModifier` instances that are of a unique type or were
         initialized with a unique `parameter_name` will be executed.
         See `__eq__` and `__hash__`.
     """
-    object.__init__(self)
     self._parameter_name = parameter_name
 
   def modified_arguments(self, kwargs, requested_parameters):
@@ -136,7 +151,7 @@ class ParameterModifier(object):
     This makes it possible to adjust user-provided arguments before passing
     them to the test method.
 
-    Arguments:
+    Args:
       kwargs:  The combined arguments for the test.
       requested_parameters: The set of parameters that are defined in the
         signature of the test method.
@@ -169,8 +184,39 @@ class ParameterModifier(object):
       return id(self.__class__)
 
 
+@tf_export("__internal__.test.combinations.OptionalParameter", v1=[])
 class OptionalParameter(ParameterModifier):
-  """A parameter that is optional in `combine()` and in the test signature."""
+  """A parameter that is optional in `combine()` and in the test signature.
+
+  `OptionalParameter` is usually used with `TestCombination` in the
+  `parameter_modifiers()`. It allows `TestCombination` to skip certain
+  parameters when passing them to `combine()`, since the `TestCombination` might
+  consume the param and create some context based on the value it gets.
+
+  See the sample usage below:
+
+  ```
+  class EagerGraphCombination(TestCombination):
+
+    def context_managers(self, kwargs):
+      mode = kwargs.pop("mode", None)
+      if mode is None:
+        return []
+      elif mode == "eager":
+        return [context.eager_mode()]
+      elif mode == "graph":
+        return [ops.Graph().as_default(), context.graph_mode()]
+      else:
+        raise ValueError(
+            "'mode' has to be either 'eager' or 'graph', got {}".format(mode))
+
+    def parameter_modifiers(self):
+      return [test_combinations.OptionalParameter("mode")]
+  ```
+
+  When the test case is generated, the param "mode" will not be passed to the
+  test method, since it is consumed by the `EagerGraphCombination`.
+  """
 
   def modified_arguments(self, kwargs, requested_parameters):
     if self._parameter_name in requested_parameters:
@@ -220,7 +266,7 @@ def generate(combinations, test_combinations=()):
     if isinstance(test_method_or_class, type):
       class_object = test_method_or_class
       class_object._test_method_ids = test_method_ids = {}
-      for name, test_method in six.iteritems(class_object.__dict__.copy()):
+      for name, test_method in class_object.__dict__.copy().items():
         if (name.startswith(unittest.TestLoader.testMethodPrefix) and
             isinstance(test_method, types.FunctionType)):
           delattr(class_object, name)
@@ -231,7 +277,7 @@ def generate(combinations, test_combinations=()):
                   _augment_with_special_arguments(
                       test_method, test_combinations=test_combinations),
                   named_combinations, parameterized._NAMED, name))
-          for method_name, method in six.iteritems(methods):
+          for method_name, method in methods.items():
             setattr(class_object, method_name, method)
 
       return class_object
@@ -316,6 +362,7 @@ def _augment_with_special_arguments(test_method, test_combinations):
   return decorated
 
 
+@tf_export("__internal__.test.combinations.combine", v1=[])
 def combine(**kwargs):
   """Generate combinations based on its keyword arguments.
 
@@ -353,6 +400,7 @@ def combine(**kwargs):
   ]
 
 
+@tf_export("__internal__.test.combinations.times", v1=[])
 def times(*combined):
   """Generate a product of N sets of combinations.
 
@@ -386,11 +434,11 @@ def times(*combined):
   return combined_results
 
 
-class NamedObject(object):
+@tf_export("__internal__.test.combinations.NamedObject", v1=[])
+class NamedObject:
   """A class that translates an object into a good test name."""
 
   def __init__(self, name, obj):
-    object.__init__(self)
     self._name = name
     self._obj = obj
 
@@ -399,6 +447,9 @@ class NamedObject(object):
 
   def __call__(self, *args, **kwargs):
     return self._obj(*args, **kwargs)
+
+  def __iter__(self):
+    return self._obj.__iter__()
 
   def __repr__(self):
     return self._name

@@ -14,14 +14,11 @@
 # ==============================================================================
 """Tests for tensorflow.ops.tf.gather_nd."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.compiler.tests import xla_test
 from tensorflow.python.framework import errors
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.platform import test
 
@@ -45,6 +42,7 @@ class GatherNdTest(xla_test.XLATestCase):
               np.array([8, 1, 2, 3, 7, 5], dtype=dtype),
               np.array([[4], [4], [0]], np.int32)))
 
+  @test_util.disable_mlir_bridge("Error handling")
   def testEmptyIndicesAndParamsOKButJustEmptyParamsFails(self):
     with self.session():
       params = np.ones((3, 3), dtype=np.float32)

@@ -14,10 +14,6 @@
 #==============================================================================
 """Contains utility functions used by summary ops."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import contextlib
 import re
 
@@ -94,7 +90,8 @@ def summary_scope(name, family=None, default_name=None, values=None):
   family = clean_tag(family)
   # Use family name in the scope to ensure uniqueness of scope/tag.
   scope_base_name = name if family is None else '{}/{}'.format(family, name)
-  with ops.name_scope(scope_base_name, default_name, values) as scope:
+  with ops.name_scope(
+      scope_base_name, default_name, values, skip_on_eager=False) as scope:
     if family is None:
       tag = scope.rstrip('/')
     else:

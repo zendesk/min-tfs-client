@@ -13,7 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include <iostream>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/memory/memory.h"
@@ -33,27 +35,27 @@ namespace toco {
   auto op_it = model->operators.begin() + op_index;
   auto src_op = op_it->get();
   if (src_op->type != OperatorType::kLstmCell) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   // Already a compact LstmCell. Do not need to merge cell inputs.
   const auto* src_lstm_op = static_cast<LstmCellOperator*>(src_op);
   if (src_lstm_op->kernel_type != LstmCellOperator::KERNEL_FULL ||
       src_lstm_op->inputs.size() != kExtendedLstmInputCount) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   // Identify prev_activ_input, prev_state_input as required Op inputs,
   // using the rnn_states in the model flag.
-  string prev_activ_input;
+  std::string prev_activ_input;
   if (!GetMatchingRnnArray(model, src_op->outputs[kOutputTensor],
                            &prev_activ_input)) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
-  string prev_state_input;
+  std::string prev_state_input;
   if (!GetMatchingRnnArray(model, src_op->outputs[kCellStateTensor],
                            &prev_state_input)) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   // Get LstmCell's cell, input, output size.
@@ -72,9 +74,10 @@ namespace toco {
   CHECK_EQ(num_cell, num_output);
 
   // Create tensorflow_graphdef style's one big weight tensor.
-  const string base_name(FindLongestCommonPrefix(
+  const std::string base_name(FindLongestCommonPrefix(
       src_op->outputs[kOutputTensor], src_op->outputs[kCellStateTensor]));
-  string merged_weights = AvailableArrayName(*model, base_name + "weights");
+  std::string merged_weights =
+      AvailableArrayName(*model, base_name + "weights");
   auto& array = model->GetOrCreateArray(merged_weights);
   array.data_type = ArrayDataType::kFloat;
   int weights_dim1 = 4 * num_cell;
@@ -117,7 +120,7 @@ namespace toco {
       num_cell * 3, num_input);
 
   // Create tensorflow_graphdef style's one big bias tensor.
-  string merged_biases = AvailableArrayName(*model, base_name + "biases");
+  std::string merged_biases = AvailableArrayName(*model, base_name + "biases");
   auto& bias_array = model->GetOrCreateArray(merged_biases);
   bias_array.data_type = ArrayDataType::kFloat;
   bias_array.copy_shape(Shape({weights_dim1}));
@@ -139,7 +142,7 @@ namespace toco {
                       num_cell * 3, 0);
 
   // Emplace a new LSTM cell operator (use basic 5 inputs kernel).
-  auto lstm_cell_op = absl::make_unique<LstmCellOperator>();
+  auto lstm_cell_op = std::make_unique<LstmCellOperator>();
   lstm_cell_op->kernel_type = LstmCellOperator::KERNEL_BASIC;
 
   // Compact LstmCell's 5 inputs.
@@ -160,7 +163,7 @@ namespace toco {
   lstm_cell_op->outputs[LstmCellOperator::ACTIV_TEMP] =
       src_op->outputs[kOutputStateTensor];
   // Create a new temp array for the fourth output.
-  const string& concat_temp_array_name =
+  const std::string& concat_temp_array_name =
       AvailableArrayName(*model, base_name + "concat_temp");
   model->GetOrCreateArray(concat_temp_array_name);
   lstm_cell_op->outputs[LstmCellOperator::CONCAT_TEMP] = concat_temp_array_name;
@@ -172,7 +175,7 @@ namespace toco {
   DeleteOpAndArrays(model, src_op);
 
   *modified = true;
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

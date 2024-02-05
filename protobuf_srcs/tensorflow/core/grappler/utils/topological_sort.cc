@@ -81,7 +81,8 @@ Status ComputeTopologicalOrder(
     int ready_node = (*ready_nodes)[front];
     for (int fanout : graph_view.GetFanout(ready_node)) {
       ++num_ready_inputs[fanout];
-      if (num_ready_inputs[fanout] == graph_view.GetFanin(fanout).size()) {
+      const int max_size = graph_view.GetFanin(fanout).size();
+      if (num_ready_inputs[fanout] == max_size) {
         ready_nodes->push_back(fanout);
         ++back;
       }
@@ -90,10 +91,21 @@ Status ComputeTopologicalOrder(
   }
 
   if (back != graph_view.num_nodes()) {
+    if (VLOG_IS_ON(1)) {
+      VLOG(1) << "The graph couldn't be sorted in topological order. Stalled "
+                 "at node = "
+              << graph.node(back).DebugString();
+      for (int i = 0; i < graph_view.num_nodes(); ++i) {
+        const int max_size = graph_view.GetFanin(i).size();
+        if (num_ready_inputs[i] != max_size) {
+          VLOG(1) << "Node not ready: " << graph.node(i).DebugString();
+        }
+      }
+    }
     return errors::InvalidArgument(
         "The graph couldn't be sorted in topological order.");
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -111,7 +123,7 @@ Status ComputeTopologicalOrder(
     topo_order->emplace_back(&graph.node(ready_node_idx));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ComputeTopologicalOrder(const GraphDef& graph,
@@ -124,14 +136,14 @@ Status ReversedTopologicalSort(GraphDef* graph) {
   TF_RETURN_IF_ERROR(ComputeTopologicalOrder(*graph, {}, &ready_nodes));
   std::reverse(ready_nodes.begin(), ready_nodes.end());
   PermuteNodesInPlace(graph, &ready_nodes, /*invert_permutation=*/true);
-  return Status::OK();
+  return OkStatus();
 }
 
 Status TopologicalSort(GraphDef* graph) {
   std::vector<int> ready_nodes;
   TF_RETURN_IF_ERROR(ComputeTopologicalOrder(*graph, {}, &ready_nodes));
   PermuteNodesInPlace(graph, &ready_nodes, /*invert_permutation=*/true);
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace grappler

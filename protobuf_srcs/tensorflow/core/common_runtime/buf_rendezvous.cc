@@ -18,11 +18,22 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/common_runtime/device.h"
+#include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/process_util.h"
+#include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/notification.h"
 
 namespace tensorflow {
+namespace {
+void DeregisterCancellation(BufRendezvous::Hook* h) {
+  if (h->cancellation_manager != nullptr) {
+    h->cancellation_manager->DeregisterCallback(h->cancellation_token);
+    h->cancellation_manager = nullptr;
+    h->cancellation_token = CancellationManager::kInvalidToken;
+  }
+}
+}  // namespace
 
 BufRendezvous::~BufRendezvous() {
   mutex_lock l(mu_);
@@ -50,6 +61,9 @@ void BufRendezvous::StartAbort(const Status& s) {
 void BufRendezvous::PurgeTable(const Status& s, HookTable* table) {
   for (auto& it : *table) {
     Hook* h = it.second;
+    if (h->cancellation_manager != nullptr) {
+      h->cancellation_manager->TryDeregisterCallback(h->cancellation_token);
+    }
     if (h->cons_cb != nullptr) {
       h->cons_cb(s, nullptr);
     }
@@ -62,17 +76,25 @@ void BufRendezvous::PurgeTable(const Status& s, HookTable* table) {
 }
 
 string BufRendezvous::Hook::DebugString() const {
-  return absl::StrCat("[dev:", (prod_dev ? prod_dev->name() : "none"),
-                      ", ctx:", reinterpret_cast<uint64>(prod_ctx),
-                      ", val:", reinterpret_cast<uint64>(prod_value),
-                      ", pcb:", reinterpret_cast<uint64>(&prod_cb),
-                      ", ccb:", reinterpret_cast<uint64>(&cons_cb), "]");
+  return absl::StrCat(
+      "[dev:", (prod_dev ? prod_dev->name() : "none"),
+      ", ctx:", reinterpret_cast<uint64>(prod_ctx),
+      ", val:", reinterpret_cast<uint64>(prod_value),
+      ", pcb:", prod_cb ? reinterpret_cast<uint64>(&prod_cb) : 0,
+      ", ccb:", cons_cb ? reinterpret_cast<uint64>(&cons_cb) : 0, "]");
 }
 
 void BufRendezvous::ProvideBuf(const string& key, Device* dev,
                                DeviceContext* dev_ctx, const Tensor* v,
                                const AllocatorAttributes& attr,
-                               const ProducerCallback& done) {
+                               const ProducerCallback& done,
+                               CancellationManager* cancellation_manager) {
+  DVLOG(4) << "ProvideBuf: key = " << key;
+#ifndef NDEBUG
+  if (VLOG_IS_ON(4)) {
+    LogContents();
+  }
+#endif
   Hook* h = nullptr;
   Status providebuf_status;
   do {
@@ -81,9 +103,13 @@ void BufRendezvous::ProvideBuf(const string& key, Device* dev,
       providebuf_status = status_;
       break;
     } else {
+      CancellationToken cancellation_token = CancellationManager::kInvalidToken;
       auto it = hook_table_.find(key);
       if (it == hook_table_.end()) {
-        h = new Hook;
+        if (cancellation_manager != nullptr) {
+          cancellation_token = cancellation_manager->get_cancellation_token();
+        }
+        h = new Hook(cancellation_manager, cancellation_token);
         it = hook_table_.insert(std::make_pair(key, h)).first;
       } else {
         if (it->second->prod_cb != nullptr) {
@@ -99,16 +125,30 @@ void BufRendezvous::ProvideBuf(const string& key, Device* dev,
       h->prod_value = v;
       h->prod_attr = attr;
       h->prod_cb = done;
-      // If consumer is waiting, kick off right away, removing Hook from table.
       if (h->cons_cb != nullptr) {
+        // If consumer is waiting, kick off right away, removing Hook from
+        // table.
         hook_table_.erase(it);
       } else {
+        if (cancellation_manager != nullptr &&
+            !cancellation_manager->RegisterCallback(
+                cancellation_token, [this, key]() { CancelHook(key); })) {
+          // Register cancellation callback with CancellationManager.  If it is
+          // already cancelled, call done immediately with cancelled status.
+          providebuf_status = errors::Cancelled(
+              "Operation was cancelled for BufRendezvous key ", key);
+          hook_table_.erase(it);
+          delete h;
+        }
         h = nullptr;
       }
     }
   } while (false);
   if (h) {
-    h->cons_cb(Status::OK(), h);
+    DVLOG(4) << "ProvideBuf: key = " << key << ": calling cons_cb"
+             << h->DebugString();
+    DeregisterCancellation(h);
+    h->cons_cb(OkStatus(), h);
   }
   if (!providebuf_status.ok()) {
     done(providebuf_status);
@@ -117,7 +157,14 @@ void BufRendezvous::ProvideBuf(const string& key, Device* dev,
 
 void BufRendezvous::ConsumeBuf(const string& key, const string& device_name,
                                const uint64 device_incarnation,
-                               const ConsumerCallback& done) {
+                               const ConsumerCallback& done,
+                               CancellationManager* cancellation_manager) {
+  DVLOG(4) << "ConsumeBuf: key = " << key << " device_name = " << device_name;
+#ifndef NDEBUG
+  if (VLOG_IS_ON(4)) {
+    LogContents();
+  }
+#endif
   // Check the incarnation in the request matches the current device
   // incarnation of the producer.
   Device* device;
@@ -135,7 +182,6 @@ void BufRendezvous::ConsumeBuf(const string& key, const string& device_name,
     done(consumebuf_status, nullptr);
     return;
   }
-
   Hook* existing_hook = nullptr;
   do {
     mutex_lock l(mu_);
@@ -156,14 +202,29 @@ void BufRendezvous::ConsumeBuf(const string& key, const string& device_name,
       existing_hook->cons_cb = done;
     } else {
       // Hang consumer callback on the Hook.
-      Hook* h = new Hook;
-      hook_table_[key] = h;
-      h->cons_cb = done;
-      return;
+      CancellationToken cancellation_token = CancellationManager::kInvalidToken;
+      bool already_cancelled = false;
+      if (cancellation_manager != nullptr) {
+        cancellation_token = cancellation_manager->get_cancellation_token();
+        already_cancelled = !cancellation_manager->RegisterCallback(
+            cancellation_token, [this, key]() { CancelHook(key); });
+      }
+      if (already_cancelled) {
+        consumebuf_status = errors::Cancelled(
+            "Operation was cancelled for BufRendezvous key ", key);
+      } else {
+        Hook* h = new Hook(cancellation_manager, cancellation_token);
+        h->cons_cb = done;
+        it = hook_table_.insert(std::make_pair(key, h)).first;
+        return;
+      }
     }
   } while (false);
   if (existing_hook) {
-    existing_hook->cons_cb(Status::OK(), existing_hook);
+    DVLOG(4) << "ConsumeBuf: key = " << key << ": calling cons_cb"
+             << existing_hook->DebugString();
+    DeregisterCancellation(existing_hook);
+    existing_hook->cons_cb(OkStatus(), existing_hook);
     return;
   }
   if (!consumebuf_status.ok()) {
@@ -172,9 +233,31 @@ void BufRendezvous::ConsumeBuf(const string& key, const string& device_name,
   }
 }
 
+void BufRendezvous::CancelHook(const string& key) {
+  Hook* h = nullptr;
+  {
+    mutex_lock l(mu_);
+    auto it = hook_table_.find(key);
+    if (it == hook_table_.end()) return;
+    h = it->second;
+    hook_table_.erase(it);
+  }
+  if (h != nullptr) {
+    auto s = errors::Cancelled("Operation was cancelled for BufRendezvous key ",
+                               key);
+    if (h->prod_cb != nullptr) {
+      h->prod_cb(s);
+    }
+    if (h->cons_cb != nullptr) {
+      h->cons_cb(s, /*Hook=*/nullptr);
+    }
+    delete h;
+  }
+}
+
 /*static*/
 void BufRendezvous::DoneWithHook(Hook* h) {
-  h->prod_cb(Status::OK());
+  h->prod_cb(OkStatus());
   delete h;
 }
 
@@ -183,7 +266,7 @@ void BufRendezvous::LogContents() {
   LOG(INFO) << strings::StrCat("BufRendezvous ",
                                strings::Hex(reinterpret_cast<uint64>(this)),
                                " step_id=", step_id_, " current contents:");
-  for (auto it : hook_table_) {
+  for (const auto& it : hook_table_) {
     LOG(INFO) << it.first << ":" << it.second->DebugString();
   }
 }

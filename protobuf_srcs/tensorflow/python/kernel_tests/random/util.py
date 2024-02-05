@@ -14,10 +14,6 @@
 # ==============================================================================
 """Utilities for testing random variables."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import math
 
 import numpy as np
@@ -49,10 +45,12 @@ def test_moment_matching(
   sample_moments = []
   expected_moments = []
   variance_sample_moments = []
-  x = samples.flat
   for i in range(1, number_moments + 1):
-    strided_range = x[::(i - 1) * stride + 1]
-    sample_moments.append(np.mean(strided_range ** i))
+    if len(samples.shape) == 2:
+      strided_range = samples.flat[::(i - 1) * stride + 1]
+    else:
+      strided_range = samples[::(i - 1) * stride + 1, ...]
+    sample_moments.append(np.mean(strided_range**i, axis=0))
     expected_moments.append(dist.moment(i))
     variance_sample_moments.append(
         (dist.moment(2 * i) - dist.moment(i) ** 2) / len(strided_range))
@@ -66,8 +64,7 @@ def test_moment_matching(
         i * np.finfo(samples.dtype).eps)
     tiny = np.finfo(samples.dtype).tiny
     assert np.all(total_variance > 0)
-    if total_variance < tiny:
-      total_variance = tiny
+    total_variance = np.where(total_variance < tiny, tiny, total_variance)
     # z_test is approximately a unit normal distribution.
     z_test_scores.append(abs(
         (sample_moments[i - 1] - expected_moments[i - 1]) / np.sqrt(
@@ -99,8 +96,17 @@ def anderson_darling(x):
   return -n - z / n
 
 
-def test_truncated_normal(assert_equal, assert_all_close, n, y,
-                          mean_atol=5e-4, median_atol=8e-4, variance_rtol=1e-3):
+def test_truncated_normal(assert_equal,
+                          assert_all_close,
+                          n,
+                          y,
+                          means=None,
+                          stddevs=None,
+                          minvals=None,
+                          maxvals=None,
+                          mean_atol=5e-4,
+                          median_atol=8e-4,
+                          variance_rtol=1e-3):
   """Tests truncated normal distribution's statistics."""
   def _normal_cdf(x):
     return .5 * math.erfc(-x / math.sqrt(2))
@@ -115,6 +121,18 @@ def test_truncated_normal(assert_equal, assert_all_close, n, y,
   b = 2.
   mu = 0.
   sigma = 1.
+
+  if minvals is not None:
+    a = minvals
+
+  if maxvals is not None:
+    b = maxvals
+
+  if means is not None:
+    mu = means
+
+  if stddevs is not None:
+    sigma = stddevs
 
   alpha = (a - mu) / sigma
   beta = (b - mu) / sigma

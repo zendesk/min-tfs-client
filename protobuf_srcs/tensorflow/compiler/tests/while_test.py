@@ -14,11 +14,8 @@
 # ==============================================================================
 """Tests for while loops in XLA."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
+
 import numpy as np
 
 from tensorflow.compiler.tests import xla_test
@@ -32,6 +29,7 @@ from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import map_fn
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import while_loop
 from tensorflow.python.platform import test
 
 
@@ -142,7 +140,7 @@ class WhileTest(xla_test.XLATestCase):
 
       def create_while_loop():
         iterations = array_ops.size(p, name="iterations")
-        r = control_flow_ops.while_loop(
+        r = while_loop.while_loop(
             lambda *_: True,
             lambda i, x: (i + 1, v * x), (0, 1.0),
             maximum_iterations=iterations,
@@ -177,7 +175,7 @@ class WhileTest(xla_test.XLATestCase):
       def mid_body_builder(iterations):
 
         def mid_body(i, x):
-          r = control_flow_ops.while_loop(
+          r = while_loop.while_loop(
               lambda *_: True,
               lambda i, x: (i + 1, v * x), (0, x),
               maximum_iterations=iterations,
@@ -188,14 +186,14 @@ class WhileTest(xla_test.XLATestCase):
 
       def outer_body(i, x):
         iterations = array_ops.size(p, name="iterations")
-        return (i + 1, x + control_flow_ops.while_loop(
+        return (i + 1, x + while_loop.while_loop(
             lambda *_: True,
             mid_body_builder(iterations), (0, x),
             maximum_iterations=iterations,
             name="mid")[1])
 
       def create_while_loop():
-        r = control_flow_ops.while_loop(
+        r = while_loop.while_loop(
             lambda *_: True,
             outer_body, (0, 1.0),
             maximum_iterations=5,
@@ -236,6 +234,22 @@ class WhileTest(xla_test.XLATestCase):
       elems = constant_op.constant(nums, name="data")
       r = map_fn.map_fn(lambda x: math_ops.multiply(math_ops.add(x, 3), 2),
                         elems)
+      self.assertAllEqual(r, np.array([(x + 3) * 2 for x in nums]))
+      xla_context.Exit()
+
+  @test_util.enable_control_flow_v2
+  def testMapBackPropFalse(self):
+    if is_compile_on_demand():
+      self.skipTest("list_ops are not supported in cpu_ondemand")
+    with self.session(), self.test_scope():
+      xla_context = control_flow_ops.XLAControlFlowContext()
+      xla_context.Enter()
+      nums = [1, 2, 3, 4, 5, 6]
+      elems = constant_op.constant(nums, name="data")
+      r = map_fn.map_fn(
+          lambda x: math_ops.multiply(math_ops.add(x, 3), 2),
+          elems,
+          back_prop=False)
       self.assertAllEqual(r, np.array([(x + 3) * 2 for x in nums]))
       xla_context.Exit()
 

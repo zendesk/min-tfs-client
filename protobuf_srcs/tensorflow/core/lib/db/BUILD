@@ -2,10 +2,15 @@
 #   Libraries for storing tensors in SQL databases.
 
 load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_copts")
+load(
+    "//tensorflow/core/platform:rules_cc.bzl",
+    "cc_library",
+)
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//tensorflow:internal"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 cc_library(
@@ -17,6 +22,7 @@ cc_library(
         ":snapfn",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
+        "@com_google_absl//absl/status",
         "@org_sqlite",
     ],
 )

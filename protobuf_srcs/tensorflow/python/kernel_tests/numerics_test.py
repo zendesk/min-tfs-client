@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for tensorflow.ops.numerics."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.framework import constant_op
@@ -25,9 +21,11 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import numerics
+from tensorflow.python.ops import while_loop
 from tensorflow.python.platform import test
 
 
@@ -64,7 +62,7 @@ class VerifyTensorAllFiniteTest(test.TestCase):
         self.evaluate(t_verified)
 
 
-@test_util.run_v1_only("b/120545219")
+@test_util.run_v1_only("add_check_numerics_op() is meant to be a v1-only API")
 class NumericsTest(test.TestCase):
 
   def testInf(self):
@@ -107,24 +105,22 @@ class NumericsTest(test.TestCase):
 
   def testControlFlowCond(self):
     predicate = array_ops.placeholder(dtypes.bool, shape=[])
-    _ = control_flow_ops.cond(predicate,
-                              lambda: constant_op.constant([37.]),
-                              lambda: constant_op.constant([42.]))
-    with self.assertRaisesRegexp(
-        ValueError,
-        r"`tf\.add_check_numerics_ops\(\) is not compatible with "
+    _ = cond.cond(predicate,
+                  lambda: constant_op.constant([37.]),
+                  lambda: constant_op.constant([42.]))
+    with self.assertRaisesRegex(
+        ValueError, r"`tf\.add_check_numerics_ops\(\) is not compatible with "
         r"TensorFlow control flow operations such as `tf\.cond\(\)` "
         r"or `tf.while_loop\(\)`\."):
       numerics.add_check_numerics_ops()
 
   def testControlFlowWhile(self):
     predicate = array_ops.placeholder(dtypes.bool, shape=[])
-    _ = control_flow_ops.while_loop(lambda _: predicate,
-                                    lambda _: constant_op.constant([37.]),
-                                    [constant_op.constant([42.])])
-    with self.assertRaisesRegexp(
-        ValueError,
-        r"`tf\.add_check_numerics_ops\(\) is not compatible with "
+    _ = while_loop.while_loop(lambda _: predicate,
+                              lambda _: constant_op.constant([37.]),
+                              [constant_op.constant([42.])])
+    with self.assertRaisesRegex(
+        ValueError, r"`tf\.add_check_numerics_ops\(\) is not compatible with "
         r"TensorFlow control flow operations such as `tf\.cond\(\)` "
         r"or `tf.while_loop\(\)`\."):
       numerics.add_check_numerics_ops()

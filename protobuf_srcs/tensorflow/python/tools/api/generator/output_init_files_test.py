@@ -13,20 +13,18 @@
 # limitations under the License.
 # =============================================================================
 """Tests for api_init_files.bzl and api_init_files_v1.bzl."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import argparse
+import importlib
 import sys
 
-# The unused imports are needed so that the python and lite modules are
-# available in sys.modules
-# pylint: disable=unused-import
-from tensorflow import python as _tf_for_api_traversal
-from tensorflow.lite.python import lite as _tflite_for_api_traversal
-# pylint: enable=unused-import
+from tensorflow.python.platform import resource_loader
 from tensorflow.python.platform import test
 from tensorflow.python.util import tf_decorator
+
+
+def _traverse_packages(packages):
+  for package in packages:
+    importlib.import_module(package)
 
 
 def _get_module_from_symbol(symbol):
@@ -158,8 +156,8 @@ class OutputInitFilesTest(test.TestCase):
   def test_V2_init_files(self):
     modules = _get_modules(
         'tensorflow', '_tf_api_names', '_tf_api_constants')
-    file_path = (
-        'tensorflow/python/tools/api/generator/api_init_files.bzl')
+    file_path = resource_loader.get_path_to_datafile(
+        'api_init_files.bzl')
     paths = _get_files_set(
         file_path, '# BEGIN GENERATED FILES', '# END GENERATED FILES')
     module_paths = set(
@@ -170,8 +168,7 @@ class OutputInitFilesTest(test.TestCase):
   def test_V1_init_files(self):
     modules = _get_modules(
         'tensorflow', '_tf_api_names_v1', '_tf_api_constants_v1')
-    file_path = (
-        'tensorflow/python/tools/api/generator/'
+    file_path = resource_loader.get_path_to_datafile(
         'api_init_files_v1.bzl')
     paths = _get_files_set(
         file_path, '# BEGIN GENERATED FILES', '# END GENERATED FILES')
@@ -182,4 +179,17 @@ class OutputInitFilesTest(test.TestCase):
 
 
 if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+  parser.add_argument(
+      '--packages',
+      type=str,
+      default='',
+      help='Comma separated list of packages to traverse.')
+  FLAGS, unparsed = parser.parse_known_args()
+
+  # Traverse packages that define APIs.
+  _traverse_packages(FLAGS.packages.split(','))
+
+  # Now update argv, so that unittest library does not get confused.
+  sys.argv = [sys.argv[0]] + unparsed
   test.main()

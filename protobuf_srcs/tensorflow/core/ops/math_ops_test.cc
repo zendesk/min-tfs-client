@@ -120,7 +120,7 @@ TEST(MathOpsTest, BroadcastBinaryOps_ShapeFn) {
     INFER_OK(op, "[1];[?]", "[d1_0]");
     INFER_OK(op, "[?];[2]", incompatible_shape_error ? "[d1_0]" : "?");
     INFER_OK(op, "[2];[?]", incompatible_shape_error ? "[d0_0]" : "?");
-    INFER_OK(op, "[?];[?]", incompatible_shape_error ? "[?]" : "?");
+    INFER_OK(op, "[?];[?]", "[?]");
     INFER_OK(op, "[];[?]", "[d1_0]");
     INFER_OK(op, "[?];[]", "[d0_0]");
 
@@ -237,7 +237,7 @@ TEST(MathOpsTest, Select_ShapeFn) {
     LOG(INFO) << "Inference got " << s;
     return s;
   };
-  auto shape_proto = [](std::initializer_list<int64> dim_sizes) {
+  auto shape_proto = [](std::initializer_list<int64_t> dim_sizes) {
     TensorShapeProto p;
     for (auto i : dim_sizes) p.add_dim()->set_size(i);
     return p;
@@ -264,19 +264,19 @@ TEST(MathOpsTest, Select_ShapeFn) {
 
   // Expect an error when the shapes can't be merged.
   handle_data[2]->at(0).first = shape_proto({2, 2});
-  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().error_message(),
+  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().message(),
                                 "must be equal, but are 1 and 2"));
   handle_data[2]->at(0).first = i1;  // restore to valid
 
   // Expect an error when the types can't be merged.
   handle_data[2]->at(1).second = DT_INT64;
-  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().error_message(),
+  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().message(),
                                 "pointing to different dtypes"));
   handle_data[2]->at(1).second = DT_INT32;  // restore to valid
 
   // Expect an error when different numbers of tensors are merged.
   handle_data[2]->push_back({i1, DT_FLOAT});
-  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().error_message(),
+  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().message(),
                                 "pointing to different numbers of tensors"));
   handle_data[2]->pop_back();  // restore to valid.
 }
@@ -592,5 +592,34 @@ TEST(MathOpsTest, Bincount_ShapeFn) {
   INFER_OK(op, "?;[];?", "[?]");
   INFER_OK(op, "[?];[];?", "[?]");
   INFER_OK(op, "[?];[];[?]", "[?]");
+}
+
+TEST(MathOpsTest, SobolSample) {
+  ShapeInferenceTestOp op("SobolSample");
+
+  // All inputs should be scalar.
+  INFER_ERROR("must be rank 0", op, "[1];?;?");
+  INFER_ERROR("must be rank 0", op, "?;[1];?");
+  INFER_ERROR("must be rank 0", op, "?;?;[1]");
+
+  INFER_OK(op, "[];[];[]", "[?,?]");
+}
+
+TEST(MathOpsTest, EqualOp) {
+  ShapeInferenceTestOp op("Equal");
+  AddNodeAttr("incompatible_shape_error", true, &op.node_def);
+
+  INFER_OK(op, "?;?", "?");
+  INFER_OK(op, "[1,2];?", "?");
+  INFER_OK(op, "?;[1,2]", "?");
+
+  INFER_OK(op, "[1,2,3];[1]", "[d0_0,d0_1,d0_2]");
+  INFER_OK(op, "[?,2,1];[1,3]", "[d0_0,d0_1,d1_1]");
+  INFER_OK(op, "[1,?,3];[3,1]", "[d0_0,d1_0,d0_2]");
+  INFER_OK(op, "[1,2,3];[2,1,3]", "[d1_0,d0_1,d0_2]");
+
+  // Note: Test case for GitHub issue 40471
+  INFER_OK(op, "[?,10,1];[?,1,4]", "[?,d0_1,d1_2]");
+  INFER_OK(op, "[10,?,1];[1,?,4]", "[d0_0,?,d1_2]");
 }
 }  // end namespace tensorflow

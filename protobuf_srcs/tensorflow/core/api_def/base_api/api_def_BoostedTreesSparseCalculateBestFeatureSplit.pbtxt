@@ -1,5 +1,6 @@
 op {
   graph_op_name: "BoostedTreesSparseCalculateBestFeatureSplit"
+  deprecation_message: "Boosted Trees kernels in TF are deprecated. Please use TensorFlow Decision Forests instead (https://github.com/tensorflow/decision-forests)"
   visibility: HIDDEN
   in_arg {
     name: "node_id_range"
@@ -47,7 +48,7 @@ END
   in_arg {
     name: "min_node_weight"
     description: <<END
-mininum avg of hessians in a node before required for the node to be considered for splitting.
+minimum avg of hessians in a node before required for the node to be considered for splitting.
 END
   }
   out_arg {

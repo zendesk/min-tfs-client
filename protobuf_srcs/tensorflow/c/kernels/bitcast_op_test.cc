@@ -27,14 +27,10 @@ namespace {
 
 class DummyDevice : public DeviceBase {
  public:
-  DummyDevice(Env* env, bool save) : DeviceBase(env), save_(save) {}
-  bool RequiresRecordingAccessedTensors() const override { return save_; }
+  explicit DummyDevice(Env* env) : DeviceBase(env) {}
   Allocator* GetAllocator(AllocatorAttributes /*attr*/) override {
     return cpu_allocator();
   }
-
- private:
-  bool save_;
 };
 
 void TestBitcastOp(Tensor* input_tensor, DataType out_type,
@@ -61,12 +57,12 @@ void TestBitcastOp(Tensor* input_tensor, DataType out_type,
   ASSERT_TRUE(status.ok()) << status.ToString();
 
   OpKernelContext::Params params;
-  DummyDevice dummy_device(nullptr, false);
+  DummyDevice dummy_device(nullptr);
   params.device = &dummy_device;
   params.op_kernel = kernel.get();
   gtl::InlinedVector<TensorValue, 4> inputs;
   inputs.emplace_back(input_tensor);
-  params.inputs = &inputs;
+  params.inputs = inputs;
 
   OpKernelContext ctx(&params);
   kernel->Compute(&ctx);
@@ -100,7 +96,7 @@ TEST(BitcastOpTest, TestImpossibleCast) {
   TestBitcastOp(&int8_input, DT_UINT32, TensorShape(), error::INVALID_ARGUMENT);
 }
 
-PartialTensorShape S(std::initializer_list<int64> dims) {
+PartialTensorShape S(std::initializer_list<int64_t> dims) {
   return PartialTensorShape(dims);
 }
 

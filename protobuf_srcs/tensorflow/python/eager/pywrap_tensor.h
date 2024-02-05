@@ -15,15 +15,20 @@ limitations under the License.
 #ifndef TENSORFLOW_PYTHON_EAGER_PYWRAP_TENSOR_H_
 #define TENSORFLOW_PYTHON_EAGER_PYWRAP_TENSOR_H_
 
+// Must be included first
+// clang-format off
+#include "tsl/python/lib/core/numpy.h" //NOLINT
+// clang-format on
+
 #include "tensorflow/c/eager/c_api.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/python/lib/core/numpy.h"
 
 bool EagerTensor_CheckExact(const PyObject* o);
-tensorflow::int64 PyEagerTensor_ID(const PyObject* tensor);
+int64_t PyEagerTensor_ID(const PyObject* tensor);
 tensorflow::DataType PyEagerTensor_Dtype(const PyObject* tensor);
-tensorflow::int64 PyEagerTensor_NumElements(PyObject* tensor);
+int64_t PyEagerTensor_NumElements(PyObject* tensor);
+TFE_TensorHandle* EagerTensor_Handle(const PyObject* o);
 
 namespace tensorflow {
 
@@ -36,6 +41,8 @@ namespace tensorflow {
 TFE_TensorHandle* ConvertToEagerTensor(TFE_Context* ctx, PyObject* value,
                                        DataType dtype,
                                        const char* device_name = nullptr);
+
+PyObject* TFE_TensorHandleToNumpy(TFE_TensorHandle* handle, TF_Status* status);
 
 }  // namespace tensorflow
 

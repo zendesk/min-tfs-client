@@ -14,40 +14,33 @@
 # ==============================================================================
 """SavedModel utility functions implementation."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import os
-
 from tensorflow.core.framework import types_pb2
 from tensorflow.core.protobuf import meta_graph_pb2
 from tensorflow.core.protobuf import struct_pb2
 from tensorflow.python.eager import context
+from tensorflow.python.framework import byte_swap_tensor as bst
 from tensorflow.python.framework import composite_tensor
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.framework import tensor_shape
-from tensorflow.python.lib.io import file_io
-from tensorflow.python.saved_model import constants
+from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.saved_model import nested_structure_coder
-from tensorflow.python.util import compat
 from tensorflow.python.util import deprecation
 from tensorflow.python.util import nest
 from tensorflow.python.util.tf_export import tf_export
 
 
 # TensorInfo helpers.
+_DEPRECATION_MSG = (
+    "This API was designed for TensorFlow v1. See "
+    "https://www.tensorflow.org/guide/migrate for instructions on how to "
+    "migrate your code to TensorFlow v2.")
 
 
-@tf_export(v1=["saved_model.build_tensor_info",
-               "saved_model.utils.build_tensor_info"])
-@deprecation.deprecated(
-    None,
-    "This function will only be available through the v1 compatibility "
-    "library as tf.compat.v1.saved_model.utils.build_tensor_info or "
-    "tf.compat.v1.saved_model.build_tensor_info.")
+@tf_export(
+    v1=["saved_model.build_tensor_info", "saved_model.utils.build_tensor_info"])
+@deprecation.deprecated(None, _DEPRECATION_MSG)
 def build_tensor_info(tensor):
   """Utility function to build TensorInfo proto from a Tensor.
 
@@ -61,16 +54,25 @@ def build_tensor_info(tensor):
 
   Raises:
     RuntimeError: If eager execution is enabled.
+
+  @compatibility(TF2)
+  This API is not compatible with eager execution as `tensor` needs to be a
+  graph tensor, and there is no replacement for it in TensorFlow 2.x. To start
+  writing programs using TensorFlow 2.x, please refer to the [Effective
+  TensorFlow 2](https://www.tensorflow.org/guide/effective_tf2) guide.
+  @end_compatibility
   """
   if context.executing_eagerly():
-    raise RuntimeError("build_tensor_info is not supported in Eager mode.")
+    raise RuntimeError("`build_tensor_info` is not supported in eager "
+                       "execution.")
   return build_tensor_info_internal(tensor)
 
 
 def build_tensor_info_internal(tensor):
   """Utility function to build TensorInfo proto from a Tensor."""
   if (isinstance(tensor, composite_tensor.CompositeTensor) and
-      not isinstance(tensor, sparse_tensor.SparseTensor)):
+      not isinstance(tensor, sparse_tensor.SparseTensor) and
+      not isinstance(tensor, resource_variable_ops.ResourceVariable)):
     return _build_composite_tensor_info_internal(tensor)
 
   tensor_info = meta_graph_pb2.TensorInfo(
@@ -89,8 +91,7 @@ def _build_composite_tensor_info_internal(tensor):
   """Utility function to build TensorInfo proto from a CompositeTensor."""
   spec = tensor._type_spec  # pylint: disable=protected-access
   tensor_info = meta_graph_pb2.TensorInfo()
-  struct_coder = nested_structure_coder.StructureCoder()
-  spec_proto = struct_coder.encode_structure(spec)
+  spec_proto = nested_structure_coder.encode_structure(spec)
   tensor_info.composite_tensor.type_spec.CopyFrom(spec_proto.type_spec_value)
   for component in nest.flatten(tensor, expand_composites=True):
     tensor_info.composite_tensor.components.add().CopyFrom(
@@ -110,14 +111,14 @@ def build_tensor_info_from_op(op):
   is for the Op of the call site for the defunned function:
   ```python
     @function.defun
-    def some_vairable_initialiation_fn(value_a, value_b):
+    def some_variable_initialization_fn(value_a, value_b):
       a = value_a
       b = value_b
 
     value_a = constant_op.constant(1, name="a")
     value_b = constant_op.constant(2, name="b")
     op_info = utils.build_op_info(
-        some_vairable_initialiation_fn(value_a, value_b))
+        some_variable_initialization_fn(value_a, value_b))
   ```
 
   Args:
@@ -126,7 +127,13 @@ def build_tensor_info_from_op(op):
 
   Returns:
     A TensorInfo protocol buffer constructed based on the supplied argument.
+
+  Raises:
+    RuntimeError: If eager execution is enabled.
   """
+  if context.executing_eagerly():
+    raise RuntimeError(
+        "`build_tensor_info_from_op` is not supported in eager execution.")
   return meta_graph_pb2.TensorInfo(
       dtype=types_pb2.DT_INVALID,
       tensor_shape=tensor_shape.unknown_shape().as_proto(),
@@ -135,11 +142,7 @@ def build_tensor_info_from_op(op):
 
 @tf_export(v1=["saved_model.get_tensor_from_tensor_info",
                "saved_model.utils.get_tensor_from_tensor_info"])
-@deprecation.deprecated(
-    None,
-    "This function will only be available through the v1 compatibility "
-    "library as tf.compat.v1.saved_model.utils.get_tensor_from_tensor_info or "
-    "tf.compat.v1.saved_model.get_tensor_from_tensor_info.")
+@deprecation.deprecated(None, _DEPRECATION_MSG)
 def get_tensor_from_tensor_info(tensor_info, graph=None, import_scope=None):
   """Returns the Tensor or CompositeTensor described by a TensorInfo proto.
 
@@ -172,15 +175,16 @@ def get_tensor_from_tensor_info(tensor_info, graph=None, import_scope=None):
         _get_tensor(tensor_info.coo_sparse.values_tensor_name),
         _get_tensor(tensor_info.coo_sparse.dense_shape_tensor_name))
   elif encoding == "composite_tensor":
-    struct_coder = nested_structure_coder.StructureCoder()
     spec_proto = struct_pb2.StructuredValue(
         type_spec_value=tensor_info.composite_tensor.type_spec)
-    spec = struct_coder.decode_proto(spec_proto)
+    spec = nested_structure_coder.decode_proto(spec_proto)
     components = [_get_tensor(component.name) for component in
                   tensor_info.composite_tensor.components]
-    return spec.from_components(components)
+    return nest.pack_sequence_as(spec, components, expand_composites=True)
   else:
-    raise ValueError("Invalid TensorInfo.encoding: %s" % encoding)
+    raise ValueError(f"Invalid TensorInfo.encoding: {encoding}. Expected `"
+                     "coo_sparse`, `composite_tensor`, or `name` for a dense "
+                     "tensor.")
 
 
 def get_element_from_tensor_info(tensor_info, graph=None, import_scope=None):
@@ -204,59 +208,7 @@ def get_element_from_tensor_info(tensor_info, graph=None, import_scope=None):
       ops.prepend_name_scope(tensor_info.name, import_scope=import_scope))
 
 
-# Path helpers.
-
-
-def get_or_create_variables_dir(export_dir):
-  """Return variables sub-directory, or create one if it doesn't exist."""
-  variables_dir = get_variables_dir(export_dir)
-  if not file_io.file_exists(variables_dir):
-    file_io.recursive_create_dir(variables_dir)
-  return variables_dir
-
-
-def get_variables_dir(export_dir):
-  """Return variables sub-directory in the SavedModel."""
-  return os.path.join(
-      compat.as_text(export_dir),
-      compat.as_text(constants.VARIABLES_DIRECTORY))
-
-
-def get_variables_path(export_dir):
-  """Return the variables path, used as the prefix for checkpoint files."""
-  return os.path.join(
-      compat.as_text(get_variables_dir(export_dir)),
-      compat.as_text(constants.VARIABLES_FILENAME))
-
-
-def get_or_create_assets_dir(export_dir):
-  """Return assets sub-directory, or create one if it doesn't exist."""
-  assets_destination_dir = get_assets_dir(export_dir)
-
-  if not file_io.file_exists(assets_destination_dir):
-    file_io.recursive_create_dir(assets_destination_dir)
-
-  return assets_destination_dir
-
-
-def get_assets_dir(export_dir):
-  """Return path to asset directory in the SavedModel."""
-  return os.path.join(
-      compat.as_text(export_dir),
-      compat.as_text(constants.ASSETS_DIRECTORY))
-
-
-def get_or_create_debug_dir(export_dir):
-  """Returns path to the debug sub-directory, creating if it does not exist."""
-  debug_dir = get_debug_dir(export_dir)
-
-  if not file_io.file_exists(debug_dir):
-    file_io.recursive_create_dir(debug_dir)
-
-  return debug_dir
-
-
-def get_debug_dir(export_dir):
-  """Returns path to the debug sub-directory in the SavedModel."""
-  return os.path.join(
-      compat.as_text(export_dir), compat.as_text(constants.DEBUG_DIRECTORY))
+def swap_function_tensor_content(meta_graph_def, from_endiness, to_endiness):
+  bst.swap_tensor_content_in_graph_function(
+      meta_graph_def, from_endiness, to_endiness
+  )

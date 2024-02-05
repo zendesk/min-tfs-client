@@ -31,7 +31,7 @@ class SummaryImageOp : public OpKernel {
   typedef Eigen::Tensor<uint8, 2, Eigen::RowMajor> Uint8Image;
 
   explicit SummaryImageOp(OpKernelConstruction* context) : OpKernel(context) {
-    int64 max_images_tmp;
+    int64_t max_images_tmp;
     OP_REQUIRES_OK(context, context->GetAttr("max_images", &max_images_tmp));
     OP_REQUIRES(context, max_images_tmp < (1LL << 31),
                 errors::InvalidArgument("max_images must be < 2^31"));
@@ -52,7 +52,7 @@ class SummaryImageOp : public OpKernel {
   void Compute(OpKernelContext* c) override {
     const Tensor& tags = c->input(0);
     const Tensor& tensor = c->input(1);
-    OP_REQUIRES(c, IsLegacyScalar(tags.shape()),
+    OP_REQUIRES(c, TensorShapeUtils::IsScalar(tags.shape()),
                 errors::InvalidArgument("Tags must be a scalar"));
     OP_REQUIRES(c,
                 tensor.dims() == 4 &&
@@ -173,7 +173,7 @@ class SummaryImageOp : public OpKernel {
         return errors::Internal("PNG encoding failed");
       }
     }
-    return Status::OK();
+    return OkStatus();
   }
 
   template <class T>

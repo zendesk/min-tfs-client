@@ -14,16 +14,12 @@
 # ==============================================================================
 """A python interface for Grappler clusters."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import contextlib
 
 from tensorflow.core.framework import step_stats_pb2
 from tensorflow.core.grappler.costs import op_performance_data_pb2
 from tensorflow.core.protobuf import device_properties_pb2
-from tensorflow.python import pywrap_tensorflow as tf_cluster
+from tensorflow.python.grappler import _pywrap_tf_cluster as tf_cluster
 
 
 class Cluster(object):
@@ -92,13 +88,9 @@ class Cluster(object):
       item: The item for which to measure the costs.
     Returns: The triplet op_perfs, runtime, step_stats.
     """
-    ret_from_swig = tf_cluster.TF_MeasureCosts(item.tf_item, self._tf_cluster,
-                                               self._generate_timeline)
+    op_perf_bytes_list, run_time, step_stats_bytes = tf_cluster.TF_MeasureCosts(
+        item.tf_item, self._tf_cluster, self._generate_timeline)
 
-    if ret_from_swig is None:
-      return None
-
-    op_perf_bytes_list, run_time, step_stats_bytes = ret_from_swig
     op_perfs = [op_performance_data_pb2.OpPerformance.FromString(op_perf_bytes)
                 for op_perf_bytes in op_perf_bytes_list]
     return (op_perfs, run_time,

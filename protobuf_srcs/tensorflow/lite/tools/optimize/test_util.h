@@ -34,6 +34,9 @@ extern const char* kConvModelWithMinus128Plus127Weights;
 // Activations have min = 0, max = 10.
 extern const char* kConvModelWith0Plus10Weights;
 
+// Test model where no bias is in the conv.
+extern const char* kConvModelWithNoBias;
+
 // A floating point model with a single softmax. The input tensor has min
 // and max in range [-5, 5], not necessarily -5 or +5.
 extern const char* kSingleSoftmaxModelMinMinus5MaxPlus5;
@@ -60,21 +63,73 @@ extern const char* kConstInputAddModel;
 // 10] as output.
 extern const char* kFloatConcatMax5Max10Max10;
 
+// Test model with broadcast_to op.
+extern const char* kModelWithBroadcastToOp;
+
 // Test model with a custom op.
 extern const char* kModelWithCustomOp;
 
 // Test model with a argmax op.
 extern const char* kModelWithArgMaxOp;
 
-// Test model with a argmax op.
+// Test model with a fully connected op.
 extern const char* kModelWithFCOp;
+
+// Test model with a gather_nd op.
+extern const char* kModelWithGatherNDOp;
+
+// Test model with a Where op.
+extern const char* kModelWithWhereOp;
 
 // Test model with mixed quantizable and un-quantizable ops.
 // reshape->custom->custom->squeeze.
 extern const char* kModelMixed;
 
+// Test model with mixed quantizable and
+// and un-quantizable ops for
+// activations in 16-bit.
+extern const char* kModelMixed16x8;
+
 // Test model with split op.
 extern const char* kModelSplit;
+
+// Test model with pack op.
+extern const char* kModelPack;
+
+// Test model with LSTM op that has layer norm, has projection, without
+// peephole, without cifg.
+extern const char* kLstmCalibrated;
+extern const char* kLstmQuantized;
+
+// Test model with LSTM op that has peephole, without layer norm, without
+// projection, without cifg.
+extern const char* kLstmCalibrated2;
+extern const char* kLstmQuantized2;
+
+extern const char* kUnidirectionalSequenceLstmCalibrated;
+extern const char* kUnidirectionalSequenceLstmQuantized;
+
+// Test model with a minimum op.
+extern const char* kModelWithMinimumOp;
+
+// Test model with a maximum op.
+extern const char* kModelWithMaximumOp;
+
+// Test model with a transpose op.
+extern const char* kModelWithTranspose;
+
+// Test model with SVDF op.
+extern const char* kSvdfCalibrated;
+extern const char* kSvdfQuantized;
+
+// Test model with an unpack op.
+extern const char* kModelWithUnpack;
+
+// Test QAT model with fc op.
+extern const char* kQatModelWithFc;
+
+// Test calibrated model with resource variables.
+extern const char* kModelWithResourceVarsCalibrated;
 
 // An error reporter that fails on testing.
 class FailOnErrorReporter : public ErrorReporter {

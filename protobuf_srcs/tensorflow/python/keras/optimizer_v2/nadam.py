@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Nadam for TensorFlow."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+"""Nadam optimizer implementation."""
+# pylint: disable=g-classes-have-attributes
 
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.keras import backend_config
 from tensorflow.python.keras.optimizer_v2 import learning_rate_schedule
 from tensorflow.python.keras.optimizer_v2 import optimizer_v2
@@ -26,40 +25,40 @@ from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import state_ops
 from tensorflow.python.ops import variables as tf_variables
-from tensorflow.python.util.tf_export import keras_export
 
 
-@keras_export('keras.optimizers.Nadam')
 class Nadam(optimizer_v2.OptimizerV2):
   r"""Optimizer that implements the NAdam algorithm.
-
   Much like Adam is essentially RMSprop with momentum, Nadam is Adam with
   Nesterov momentum.
 
-  Initialization:
+  Args:
+    learning_rate: A Tensor or a floating point value.  The learning rate.
+    beta_1: A float value or a constant float tensor. The exponential decay
+      rate for the 1st moment estimates.
+    beta_2: A float value or a constant float tensor. The exponential decay
+      rate for the exponentially weighted infinity norm.
+    epsilon: A small constant for numerical stability.
+    name: Optional name for the operations created when applying gradients.
+      Defaults to `"Nadam"`.
+    **kwargs: Keyword arguments. Allowed to be one of
+      `"clipnorm"` or `"clipvalue"`.
+      `"clipnorm"` (float) clips gradients by norm; `"clipvalue"` (float) clips
+      gradients by value.
 
-  $$m_0 := 0 \text{(Initialize 1st moment vector)}$$
-  $$v_0 := 0 \text{(Initialize 2nd moment vector)}$$
-  $$mu_0 := 1$$
-  $$t := 0 \text{(Initialize timestep)}$$
+  Usage Example:
+    >>> opt = tf.keras.optimizers.Nadam(learning_rate=0.2)
+    >>> var1 = tf.Variable(10.0)
+    >>> loss = lambda: (var1 ** 2) / 2.0
+    >>> step_count = opt.minimize(loss, [var1]).numpy()
+    >>> "{:.1f}".format(var1.numpy())
+    9.8
 
-  Computes:
-  $$t := t + 1$$
-  $$\mu_t := \beta_1 * (1 - 0.5 * 0.96^{0.004 * t})$$
-  $$g' := g / (1 - \prod_{i=1}^{t}{\mu_i})$$
-  $$m_t := \beta_1 * m_{t-1} + (1 - \beta_1) * g$$
-  $$m' := m_t / (1 - \prod_{i=1}^{t+1}{\mu_i})$$
-  $$v_t := \beta_2 * v_{t-1} + (1 - \beta_2) * g * g$$
-  $$v' := v_t / (1 - \beta_2^t)$$
-  $$\bar{m} := (1 - \mu_t) * g' + \mu_{t+1} * m'$$
-  $$\theta_t := \theta_{t-1} - lr * \bar{m} / (\sqrt{v'} + \epsilon)$$
-
-  gradient is evaluated at theta(t) + momentum * v(t), and the variables always
-  store theta + beta_1 * m / sqrt(v) instead of theta.
-
-  References
-    See [Dozat, T., 2015](http://cs229.stanford.edu/proj2015/054_report.pdf).
+  Reference:
+    - [Dozat, 2015](http://cs229.stanford.edu/proj2015/054_report.pdf).
   """
+
+  _HAS_AGGREGATE_GRAD = True
 
   def __init__(self,
                learning_rate=0.001,
@@ -68,24 +67,6 @@ class Nadam(optimizer_v2.OptimizerV2):
                epsilon=1e-7,
                name='Nadam',
                **kwargs):
-    """Construct a new Nadam optimizer.
-
-    Args:
-      learning_rate: A Tensor or a floating point value.  The learning rate.
-      beta_1: A float value or a constant float tensor. The exponential decay
-        rate for the 1st moment estimates.
-      beta_2: A float value or a constant float tensor. The exponential decay
-        rate for the exponentially weighted infinity norm.
-      epsilon: A small constant for numerical stability.
-      name: Optional name for the operations created when applying gradients.
-        Defaults to "Adamax".
-      **kwargs: keyword arguments. Allowed to be {`clipnorm`, `clipvalue`, `lr`,
-        `decay`}. `clipnorm` is clip gradients by norm; `clipvalue` is clip
-        gradients by value, `decay` is included for backward compatibility to
-        allow time inverse decay of learning rate. `lr` is included for backward
-        compatibility, recommended to use `learning_rate` instead.
-    """
-
     # Backwards compatibility with keras NAdam optimizer.
     kwargs['decay'] = kwargs.pop('schedule_decay', 0.004)
     learning_rate = kwargs.get('lr', learning_rate)
@@ -143,19 +124,20 @@ class Nadam(optimizer_v2.OptimizerV2):
 
     apply_state[(var_device, var_dtype)] = dict(
         lr_t=lr_t,
-        neg_lr_t=-lr_t,
-        epsilon=ops.convert_to_tensor(self.epsilon, var_dtype),
+        neg_lr_t=-lr_t,  # pylint: disable=invalid-unary-operand-type
+        epsilon=tensor_conversion.convert_to_tensor_v2_with_dispatch(
+            self.epsilon, var_dtype
+        ),
         beta_1_t=beta_1_t,
         beta_2_t=beta_2_t,
         m_t=m_t,
         m_t_1=m_t_1,
-
         one_minus_beta_1_t=1 - beta_1_t,
         one_minus_beta_2_t=1 - beta_2_t,
-        one_minus_m_t=1. - m_t,
-        one_minus_m_schedule_new=1. - m_schedule_new,
-        one_minus_m_schedule_next=1. - m_schedule_next,
-        v_t_prime_denominator=1. - math_ops.pow(beta_2_t, local_step),
+        one_minus_m_t=1.0 - m_t,
+        one_minus_m_schedule_new=1.0 - m_schedule_new,
+        one_minus_m_schedule_next=1.0 - m_schedule_next,
+        v_t_prime_denominator=1.0 - math_ops.pow(beta_2_t, local_step),
     )
 
   def _prepare(self, var_list):
@@ -230,7 +212,7 @@ class Nadam(optimizer_v2.OptimizerV2):
     config = super(Nadam, self).get_config()
     config.update({
         'learning_rate': self._serialize_hyperparameter('learning_rate'),
-        'decay': self._serialize_hyperparameter('decay'),
+        'decay': self._initial_decay,
         'beta_1': self._serialize_hyperparameter('beta_1'),
         'beta_2': self._serialize_hyperparameter('beta_2'),
         'epsilon': self.epsilon,

@@ -14,27 +14,30 @@
 # ==============================================================================
 """Tests for eager profiler."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 
-from tensorflow.core.protobuf import trace_events_pb2
 from tensorflow.python.eager import profiler
 from tensorflow.python.eager import test
+from tensorflow.python.framework import config
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import test_util
 from tensorflow.python.platform import gfile
+from tensorflow.python.profiler import trace
+from tsl.profiler.protobuf import trace_events_pb2
 
 
+@test_util.with_eager_op_as_function
 class ProfilerTest(test_util.TensorFlowTestCase):
 
+  # TODO(b/201538012): Re-enable eager-op-as-funcition when trace discrepancies
+  #                    have been fixed, ideally at trace level 2.
+  @test_util.disable_eager_op_as_function
   def test_profile(self):
-    profiler.start()
-    three = constant_op.constant(3)
-    five = constant_op.constant(5)
-    product = three * five
+    profiler.start(options={'host_tracer_level': 2})
+    with trace.Trace('three_times_five'):
+      three = constant_op.constant(3)
+      five = constant_op.constant(5)
+      product = three * five
     self.assertAllEqual(15, product)
     with self.assertRaises(profiler.ProfilerAlreadyRunningError):
       profiler.start()
@@ -42,8 +45,13 @@ class ProfilerTest(test_util.TensorFlowTestCase):
     profile_result = profiler.stop()
     profile_pb = trace_events_pb2.Trace()
     profile_pb.ParseFromString(profile_result)
-    profile_pb_str = '%s' % profile_pb
-    self.assertTrue('Mul' in profile_pb_str)
+    devices = frozenset(device.name for device in profile_pb.devices.values())
+    self.assertIn('/host:CPU', devices)
+    if config.list_physical_devices('GPU'):
+      self.assertIn('/device:GPU:0', devices)
+    events = frozenset(event.name for event in profile_pb.trace_events)
+    self.assertIn('three_times_five', events)
+    self.assertIn('Mul', events)
     with self.assertRaises(profiler.ProfilerNotRunningError):
       profiler.stop()
 

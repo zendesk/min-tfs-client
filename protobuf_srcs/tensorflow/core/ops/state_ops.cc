@@ -51,7 +51,7 @@ REGISTER_OP("Variable")
       ShapeHandle out;
       TF_RETURN_IF_ERROR(c->MakeShapeFromPartialTensorShape(shape, &out));
       c->set_output(0, out);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("IsVariableInitialized")
@@ -92,7 +92,7 @@ REGISTER_OP("Assign")
       }
 
       c->set_output(0, c->input(1));
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("AssignAdd")
@@ -124,11 +124,27 @@ Status ScatterUpdateShape(InferenceContext* c) {
   TF_RETURN_IF_ERROR(c->Concatenate(indices_shape, var_subshape, &concat));
   TF_RETURN_IF_ERROR(
       InferenceContext::Rank(c->input(2)) == 0
-          ? Status::OK()
+          ? OkStatus()
           : c->Merge(c->input(2), concat, &unused_updates_shape));
 
   c->set_output(0, var_shape);
-  return Status::OK();
+  return OkStatus();
+}
+
+Status ScatterNdUpdateShape(InferenceContext* c) {
+  ShapeHandle input_shape = c->input(0);
+  if (c->input_handle_shapes_and_types(0) != nullptr) {
+    const auto& shape_and_type = *(c->input_handle_shapes_and_types(0));
+    if (!shape_and_type.empty()) {
+      input_shape = shape_and_type[0].shape;
+    }
+  }
+  ShapeHandle indices_shape;
+  TF_RETURN_IF_ERROR(c->WithRankAtLeast(c->input(1), 1, &indices_shape));
+  ShapeHandle updates_shape;
+  TF_RETURN_IF_ERROR(c->WithRankAtLeast(c->input(2), 1, &updates_shape));
+  return shape_inference::ScatterNdShapeHelper(c, indices_shape, updates_shape,
+                                               input_shape);
 }
 
 }  // namespace
@@ -211,7 +227,7 @@ REGISTER_OP("ScatterNdUpdate")
     .Attr("T: type")
     .Attr("Tindices: {int32, int64}")
     .Attr("use_locking: bool = true")
-    .SetShapeFn(shape_inference::ScatterNdUpdateShape);
+    .SetShapeFn(ScatterNdUpdateShape);
 
 REGISTER_OP("ResourceScatterNdUpdate")
     .Input("ref: resource")
@@ -220,7 +236,7 @@ REGISTER_OP("ResourceScatterNdUpdate")
     .Attr("T: type")
     .Attr("Tindices: {int32, int64}")
     .Attr("use_locking: bool = true")
-    .SetShapeFn(shape_inference::ScatterNdUpdateShape);
+    .SetShapeFn(ScatterNdUpdateShape);
 
 REGISTER_OP("ResourceScatterNdAdd")
     .Input("ref: resource")
@@ -229,7 +245,7 @@ REGISTER_OP("ResourceScatterNdAdd")
     .Attr("T: type")
     .Attr("Tindices: {int32, int64}")
     .Attr("use_locking: bool = true")
-    .SetShapeFn(shape_inference::ScatterNdUpdateShape);
+    .SetShapeFn(ScatterNdUpdateShape);
 
 REGISTER_OP("ResourceScatterNdSub")
     .Input("ref: resource")
@@ -238,7 +254,25 @@ REGISTER_OP("ResourceScatterNdSub")
     .Attr("T: type")
     .Attr("Tindices: {int32, int64}")
     .Attr("use_locking: bool = true")
-    .SetShapeFn(shape_inference::ScatterNdUpdateShape);
+    .SetShapeFn(ScatterNdUpdateShape);
+
+REGISTER_OP("ResourceScatterNdMin")
+    .Input("ref: resource")
+    .Input("indices: Tindices")
+    .Input("updates: T")
+    .Attr("T: type")
+    .Attr("Tindices: {int32, int64}")
+    .Attr("use_locking: bool = true")
+    .SetShapeFn(ScatterNdUpdateShape);
+
+REGISTER_OP("ResourceScatterNdMax")
+    .Input("ref: resource")
+    .Input("indices: Tindices")
+    .Input("updates: T")
+    .Attr("T: type")
+    .Attr("Tindices: {int32, int64}")
+    .Attr("use_locking: bool = true")
+    .SetShapeFn(ScatterNdUpdateShape);
 
 REGISTER_OP("ScatterNdAdd")
     .Input("ref: Ref(T)")
@@ -248,7 +282,7 @@ REGISTER_OP("ScatterNdAdd")
     .Attr("T: numbertype")
     .Attr("Tindices: {int32, int64}")
     .Attr("use_locking: bool = false")
-    .SetShapeFn(shape_inference::ScatterNdUpdateShape);
+    .SetShapeFn(ScatterNdUpdateShape);
 
 REGISTER_OP("ScatterNdSub")
     .Input("ref: Ref(T)")
@@ -258,7 +292,27 @@ REGISTER_OP("ScatterNdSub")
     .Attr("T: numbertype")
     .Attr("Tindices: {int32, int64}")
     .Attr("use_locking: bool = false")
-    .SetShapeFn(shape_inference::ScatterNdUpdateShape);
+    .SetShapeFn(ScatterNdUpdateShape);
+
+REGISTER_OP("ScatterNdMax")
+    .Input("ref: Ref(T)")
+    .Input("indices: Tindices")
+    .Input("updates: T")
+    .Output("output_ref: Ref(T)")
+    .Attr("T: numbertype")
+    .Attr("Tindices: {int32, int64}")
+    .Attr("use_locking: bool = false")
+    .SetShapeFn(ScatterNdUpdateShape);
+
+REGISTER_OP("ScatterNdMin")
+    .Input("ref: Ref(T)")
+    .Input("indices: Tindices")
+    .Input("updates: T")
+    .Output("output_ref: Ref(T)")
+    .Attr("T: numbertype")
+    .Attr("Tindices: {int32, int64}")
+    .Attr("use_locking: bool = false")
+    .SetShapeFn(ScatterNdUpdateShape);
 
 REGISTER_OP("CountUpTo")
     .Input("ref: Ref(T)")
@@ -269,7 +323,7 @@ REGISTER_OP("CountUpTo")
       ShapeHandle output;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 0, &output));
       c->set_output(0, output);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("ResourceCountUpTo")
@@ -293,7 +347,7 @@ REGISTER_OP("ResourceCountUpTo")
       ShapeHandle output;
       TF_RETURN_IF_ERROR(c->WithRank(shape_and_type.shape, 0, &output));
       c->set_output(0, output);
-      return Status::OK();
+      return OkStatus();
     });
 
 }  // namespace tensorflow

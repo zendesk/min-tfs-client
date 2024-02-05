@@ -15,11 +15,11 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define EIGEN_USE_GPU
 #endif
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -31,9 +31,9 @@ limitations under the License.
 #include "tensorflow/core/kernels/sparse/sparse_matrix.h"
 #include "tensorflow/core/kernels/fill_functor.h"
 
-#if GOOGLE_CUDA
-#include "tensorflow/core/kernels/cuda_solvers.h"
-#include "tensorflow/core/kernels/cuda_sparse.h"
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#include "tensorflow/core/util/cuda_sparse.h"
+#include "tensorflow/core/util/gpu_solvers.h"
 #endif
 
 namespace tensorflow {
@@ -53,10 +53,10 @@ class CSRSparseMatrixAddFunctor {
                     CSRSparseMatrix* c) {
     TensorShape a_tensor_shape;
     TensorShape b_tensor_shape;
-    TF_RETURN_IF_ERROR(TensorShapeUtils::MakeShape(a.dense_shape().vec<int64>(),
-                                                   &a_tensor_shape));
-    TF_RETURN_IF_ERROR(TensorShapeUtils::MakeShape(b.dense_shape().vec<int64>(),
-                                                   &b_tensor_shape));
+    TF_RETURN_IF_ERROR(TensorShapeUtils::MakeShape(
+        a.dense_shape().vec<int64_t>(), &a_tensor_shape));
+    TF_RETURN_IF_ERROR(TensorShapeUtils::MakeShape(
+        b.dense_shape().vec<int64_t>(), &b_tensor_shape));
 
     if (a_tensor_shape.dims() == 3) {
       if ((a_tensor_shape.dims() != b_tensor_shape.dims()) ||
@@ -82,11 +82,11 @@ class CSRSparseMatrixAddFunctor {
 
     // TODO(ebrevdo): Add support for broadcasting at least in the
     // batch dimension.
-    auto a_dense_shape = a.dense_shape().vec<int64>();
-    auto b_dense_shape = b.dense_shape().vec<int64>();
+    auto a_dense_shape = a.dense_shape().vec<int64_t>();
+    auto b_dense_shape = b.dense_shape().vec<int64_t>();
     Tensor c_dense_shape_t = a.dense_shape();
 
-    const int64 rows = a_dense_shape((rank == 2) ? 0 : 1);
+    const int64_t rows = a_dense_shape((rank == 2) ? 0 : 1);
 
     functor::CSRSparseMatrixAdd<Device, T> csr_geam(ctx_, alpha_, beta_);
     TF_RETURN_IF_ERROR(csr_geam.Initialize());
@@ -107,6 +107,26 @@ class CSRSparseMatrixAddFunctor {
     const Device& d = ctx_->eigen_device<Device>();
     set_zero(d, c_row_ptr_t.flat<int32>());
 
+    size_t maxWorkspaceSize = 0;
+    for (int i = 0; i < batch_size; ++i) {
+      ConstCSRComponent<T> a_comp{a.row_pointers_vec(i), a.col_indices_vec(i),
+                                  a.values_vec<T>(i), a_dense_shape};
+      ConstCSRComponent<T> b_comp{b.row_pointers_vec(i), b.col_indices_vec(i),
+                                  b.values_vec<T>(i), b_dense_shape};
+
+      size_t thisWorkspaceSize;
+      TF_RETURN_IF_ERROR(
+          csr_geam.GetWorkspaceSize(a_comp, b_comp, &thisWorkspaceSize));
+      if (thisWorkspaceSize > maxWorkspaceSize) {
+        maxWorkspaceSize = thisWorkspaceSize;
+      }
+    }
+
+    Tensor temp;
+    TF_RETURN_IF_ERROR(ctx_->allocate_temp(
+        DT_INT8, TensorShape({static_cast<int64_t>(maxWorkspaceSize)}), &temp));
+    void* workspace = temp.flat<int8>().data();
+
     for (int i = 0; i < batch_size; ++i) {
       // Calculate output sizes for all minibatch entries.
       // Store in c_batch_ptr and update c_row_ptrs.
@@ -121,8 +141,8 @@ class CSRSparseMatrixAddFunctor {
       TTypes<int32>::UnalignedVec c_row_ptr_i(&c_row_ptr(i * (rows + 1)),
                                               rows + 1);
       int c_nnz_i;
-      TF_RETURN_IF_ERROR(
-          csr_geam.GetOutputStructure(a_comp, b_comp, c_row_ptr_i, &c_nnz_i));
+      TF_RETURN_IF_ERROR(csr_geam.GetOutputStructure(
+          a_comp, b_comp, c_row_ptr_i, &c_nnz_i, workspace));
       c_batch_ptr(i + 1) = c_batch_ptr(i) + c_nnz_i;
     }
 
@@ -149,12 +169,13 @@ class CSRSparseMatrixAddFunctor {
       ConstCSRComponent<T> b_comp{b.row_pointers_vec(i), b.col_indices_vec(i),
                                   b.values_vec<T>(i), b_dense_shape};
       CSRComponent<T> c_comp{c->row_pointers_vec(i), c->col_indices_vec(i),
-                             c->values_vec<T>(i), c_dense_shape_t.vec<int64>()};
+                             c->values_vec<T>(i),
+                             c_dense_shape_t.vec<int64_t>()};
 
-      TF_RETURN_IF_ERROR(csr_geam.Compute(a_comp, b_comp, &c_comp));
+      TF_RETURN_IF_ERROR(csr_geam.Compute(a_comp, b_comp, &c_comp, workspace));
     }
 
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -227,14 +248,16 @@ class CSRAddOp : public OpKernel {
                               .HostMemory("beta"),    \
                           CSRAddOp<DEV##Device, T>);
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #define REGISTER_GPU(T) REGISTER(GPU, T)
 
 REGISTER_GPU(float)
 REGISTER_GPU(double)
+#if GOOGLE_CUDA
 REGISTER_GPU(complex64)
 REGISTER_GPU(complex128)
+#endif
 
 #undef REGISTER_GPU
 
@@ -242,11 +265,11 @@ REGISTER_UNARY_VARIANT_BINARY_OP_FUNCTION(
     ADD_VARIANT_BINARY_OP, DEVICE_GPU, CSRSparseMatrix,
     (CSRSparseMatrixBinaryHelper<GPUDevice, CSRSparseMatrixSumFunctor>));
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #undef REGISTER
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 namespace functor {
 template <typename T>
 struct CSRSparseMatrixAdd<GPUDevice, T>
@@ -264,13 +287,39 @@ struct CSRSparseMatrixAdd<GPUDevice, T>
     TF_RETURN_IF_ERROR(descrB_.Initialize());
     TF_RETURN_IF_ERROR(descrC_.Initialize());
     initialized_ = true;
-    return Status::OK();
+    return OkStatus();
+  }
+
+  Status GetWorkspaceSize(const ConstCSRComponent<T>& a,
+                          const ConstCSRComponent<T>& b, size_t* bufferSize) {
+    DCHECK(initialized_);
+
+    const int m = a.row_ptr.size() - 1;
+    DCHECK_EQ(m, b.row_ptr.size() - 1);
+    const int row_dim = a.dense_shape_host.size() == 2 ? 0 : 1;
+    DCHECK_EQ(m, a.dense_shape_host(row_dim));
+    DCHECK_EQ(m, b.dense_shape_host(row_dim));
+    const int nnzA = a.col_ind.size();
+    const int nnzB = b.col_ind.size();
+
+    const int n = a.dense_shape_host(row_dim + 1);
+    DCHECK_EQ(n, b.dense_shape_host(row_dim + 1));
+    T* null_T = nullptr;
+    int* null_int = nullptr;
+
+    TF_RETURN_IF_ERROR(cuda_sparse_.CsrgeamBufferSizeExt(
+        m, n, &alpha_, descrA_.descr(), nnzA, a.values.data(), a.row_ptr.data(),
+        a.col_ind.data(), &beta_, descrB_.descr(), nnzB, b.values.data(),
+        b.row_ptr.data(), b.col_ind.data(), descrC_.descr(), null_T, null_int,
+        null_int, bufferSize));
+
+    return OkStatus();
   }
 
   Status GetOutputStructure(const ConstCSRComponent<T>& a,
                             const ConstCSRComponent<T>& b,
                             TTypes<int32>::UnalignedVec c_row_ptr,
-                            int* output_nnz) {
+                            int* output_nnz, void* workspace) {
     DCHECK(initialized_);
 
     const int m = a.row_ptr.size() - 1;
@@ -288,17 +337,17 @@ struct CSRSparseMatrixAdd<GPUDevice, T>
     TF_RETURN_IF_ERROR(cuda_sparse_.CsrgeamNnz(
         m, n, descrA_.descr(), nnzA, a.row_ptr.data(), a.col_ind.data(),
         descrB_.descr(), nnzB, b.row_ptr.data(), b.col_ind.data(),
-        descrC_.descr(), c_row_ptr.data(), output_nnz));
+        descrC_.descr(), c_row_ptr.data(), output_nnz, workspace));
 
     if (*output_nnz < 0) {
       return errors::Internal(
           "CSRAdd: CsrgeamNnz returned nnzTotalDevHostPtr < 0: ", *output_nnz);
     }
-    return Status::OK();
+    return OkStatus();
   }
 
   Status Compute(const ConstCSRComponent<T>& a, const ConstCSRComponent<T>& b,
-                 CSRComponent<T>* c) {
+                 CSRComponent<T>* c, void* workspace) {
     DCHECK(initialized_);
 
     const int m = a.row_ptr.size() - 1;
@@ -317,26 +366,27 @@ struct CSRSparseMatrixAdd<GPUDevice, T>
         m, n, &alpha_, descrA_.descr(), nnzA, a.values.data(), a.row_ptr.data(),
         a.col_ind.data(), &beta_, descrB_.descr(), nnzB, b.values.data(),
         b.row_ptr.data(), b.col_ind.data(), descrC_.descr(), c->values.data(),
-        c->row_ptr.data(), c->col_ind.data()));
+        c->row_ptr.data(), c->col_ind.data(), workspace));
 
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
   OpKernelContext* ctx_;
-  CudaSparse cuda_sparse_;
-  CudaSparseMatrixDescriptor descrA_;
-  CudaSparseMatrixDescriptor descrB_;
-  CudaSparseMatrixDescriptor descrC_;
+  GpuSparse cuda_sparse_;
+  GpuSparseMatrixDescriptor descrA_;
+  GpuSparseMatrixDescriptor descrB_;
+  GpuSparseMatrixDescriptor descrC_;
   const T alpha_;
   const T beta_;
   bool initialized_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(CSRSparseMatrixAdd);
+  CSRSparseMatrixAdd(const CSRSparseMatrixAdd&) = delete;
+  void operator=(const CSRSparseMatrixAdd&) = delete;
 };
 
 }  // namespace functor
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // namespace tensorflow

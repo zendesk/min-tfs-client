@@ -13,29 +13,24 @@
 # limitations under the License.
 # ==============================================================================
 # pylint: disable=protected-access
-"""Functions that save the model's config into different formats.
-"""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+"""Functions that save the model's config into different formats."""
 
-import json
-
-from tensorflow.python.util.tf_export import keras_export
-
-# pylint: disable=g-import-not-at-top
-try:
-  import yaml
-except ImportError:
-  yaml = None
-# pylint: enable=g-import-not-at-top
+from tensorflow.python.keras.saving.saved_model import json_utils
 
 
-@keras_export('keras.models.model_from_config')
 def model_from_config(config, custom_objects=None):
   """Instantiates a Keras model from its config.
 
-  Arguments:
+  Usage:
+  ```
+  # for a Functional API model
+  tf.keras.Model().from_config(model.get_config())
+
+  # for a Sequential model
+  tf.keras.Sequential().from_config(model.get_config())
+  ```
+
+  Args:
       config: Configuration dictionary.
       custom_objects: Optional dictionary mapping names
           (strings) to custom classes or functions to be
@@ -55,12 +50,14 @@ def model_from_config(config, custom_objects=None):
   return deserialize(config, custom_objects=custom_objects)
 
 
-@keras_export('keras.models.model_from_yaml')
 def model_from_yaml(yaml_string, custom_objects=None):
   """Parses a yaml model configuration file and returns a model instance.
 
-  Arguments:
-      yaml_string: YAML string encoding a model configuration.
+  Note: Since TF 2.6, this method is no longer supported and will raise a
+  RuntimeError.
+
+  Args:
+      yaml_string: YAML string or open file encoding a model configuration.
       custom_objects: Optional dictionary mapping names
           (strings) to custom classes or functions to be
           considered during deserialization.
@@ -69,20 +66,27 @@ def model_from_yaml(yaml_string, custom_objects=None):
       A Keras model instance (uncompiled).
 
   Raises:
-      ImportError: if yaml module is not found.
+      RuntimeError: announces that the method poses a security risk
   """
-  if yaml is None:
-    raise ImportError('Requires yaml module installed (`pip install pyyaml`).')
-  config = yaml.load(yaml_string)
-  from tensorflow.python.keras.layers import deserialize  # pylint: disable=g-import-not-at-top
-  return deserialize(config, custom_objects=custom_objects)
+  raise RuntimeError(
+      'Method `model_from_yaml()` has been removed due to security risk of '
+      'arbitrary code execution. Please use `Model.to_json()` and '
+      '`model_from_json()` instead.'
+  )
 
 
-@keras_export('keras.models.model_from_json')
 def model_from_json(json_string, custom_objects=None):
-  """Parses a JSON model configuration file and returns a model instance.
+  """Parses a JSON model configuration string and returns a model instance.
 
-  Arguments:
+  Usage:
+
+  >>> model = tf.keras.Sequential([
+  ...     tf.keras.layers.Dense(5, input_shape=(3,)),
+  ...     tf.keras.layers.Softmax()])
+  >>> config = model.to_json()
+  >>> loaded_model = tf.keras.models.model_from_json(config)
+
+  Args:
       json_string: JSON string encoding a model configuration.
       custom_objects: Optional dictionary mapping names
           (strings) to custom classes or functions to be
@@ -91,6 +95,6 @@ def model_from_json(json_string, custom_objects=None):
   Returns:
       A Keras model instance (uncompiled).
   """
-  config = json.loads(json_string)
+  config = json_utils.decode(json_string)
   from tensorflow.python.keras.layers import deserialize  # pylint: disable=g-import-not-at-top
   return deserialize(config, custom_objects=custom_objects)

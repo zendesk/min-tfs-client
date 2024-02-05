@@ -15,23 +15,42 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/kernels/while_op.h"
 
-#include "absl/strings/str_split.h"
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include "absl/container/inlined_vector.h"
+#include "absl/log/log.h"
+#include "absl/strings/str_join.h"
 #include "tensorflow/compiler/tf2xla/kernels/if_while_utils.h"
 #include "tensorflow/compiler/tf2xla/kernels/tensor_list_utils.h"
-#include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/side_effect_util.h"
-#include "tensorflow/compiler/tf2xla/type_util.h"
+#include "tensorflow/compiler/tf2xla/tf2xla_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/compiler/xla/status_macros.h"
+#include "tensorflow/compiler/tf2xla/xla_resource.h"
+#include "xla/client/client.h"
+#include "xla/client/lib/tuple.h"
+#include "xla/client/xla_builder.h"
+#include "xla/client/xla_computation.h"
+#include "xla/shape.h"
+#include "xla/shape_tree.h"
+#include "xla/shape_util.h"
+#include "xla/status_macros.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/statusor.h"
+#include "tensorflow/core/platform/types.h"
+#include "tsl/platform/errors.h"
 
 namespace tensorflow {
 
@@ -58,7 +77,7 @@ Status VerifyResourceArgsGroupedAtEnd(XlaOpKernelContext* ctx,
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Builds XlaCompiler argument descriptions `args` from `ctx`.
@@ -109,7 +128,7 @@ Status MakeXlaCompilerArgumentsFromInputs(
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Populates loop invariant indices to true in `loop_invariants`.
@@ -118,46 +137,56 @@ void GetLoopInvariants(XlaOpKernelContext* ctx,
                        std::vector<bool>* const loop_invariants) {
   const FunctionBody* body;
   OP_REQUIRES_OK(ctx, ctx->compiler()->FindFunctionBody(body_name_attr, &body));
+  const tensorflow::FunctionLibraryDefinition* fld =
+      ctx->compiler()->flib_runtime()->GetFunctionLibraryDefinition();
   for (int i = 0; i < body->ret_nodes.size(); i++) {
-    const Node* arg = body->arg_nodes[i];
-    const Node* ret = body->ret_nodes[i];
-    const Node* ret_input_0;
-    OP_REQUIRES_OK(ctx, ret->input_node(0, &ret_input_0));
-    (*loop_invariants)[i] = ret_input_0->id() == arg->id();
+    StatusOr<bool> is_loop_invariant = IsLoopInvariant(body, i, fld);
+    OP_REQUIRES_OK(ctx, is_loop_invariant.status());
+    (*loop_invariants)[i] = *is_loop_invariant;
+    VLOG(2) << "Arg " << i << " of " << body_name_attr.name() << " is "
+            << ((*loop_invariants)[i] ? "" : "not ") << "loop invariant";
   }
 }
 
-// Converts entries in `args` which are loop invariants and have compile
-// time constant inputs to constants so that they can be propagated in the loop
-// body.
+// Converts entries in `args` which are loop invariants and have compile time
+// constant inputs and need to be constants in order to be compilable to
+// constants so that they can be propagated in the loop body.
 Status ConvertLoopInvariantsToConst(
     XlaOpKernelContext* ctx, const NameAttrList& body_name_attr,
+    const NameAttrList& cond_name_attr,
     std::vector<XlaCompiler::Argument>* args,
     std::vector<bool>* compile_time_const_arg_indices,
     int* num_compile_time_const_args, xla::Client* client) {
   std::vector<bool> loop_invariants(ctx->num_inputs());
   GetLoopInvariants(ctx, body_name_attr, &loop_invariants);
-  for (int i = 0; i < ctx->num_inputs(); i++) {
-    XlaCompiler::Argument& arg = (*args)[i];
-    const XlaExpression& expression = ctx->InputExpression(i);
-    // If this is a loop invariant and the input tensor is a compile time
-    // constant build a kConstant type argument.
-    if (arg.kind != XlaCompiler::Argument::kResource && loop_invariants[i]) {
-      // NOTE: We can not simple check that this is Kind::kConstant because
-      // this could be the output of a MetadataOnly op e.g. Size.
-      xla::StatusOr<absl::optional<Tensor>> maybe_constant =
-          expression.ResolveConstant(client);
-      if (maybe_constant.ok() && maybe_constant.ValueOrDie().has_value()) {
-        arg.kind = XlaCompiler::Argument::kConstant;
-        arg.type = expression.dtype();
-        arg.constant_value = std::move(maybe_constant.ValueOrDie().value());
-        arg.shape = expression.GetShape().ValueOrDie();
-        compile_time_const_arg_indices->at(i) = true;
-        (*num_compile_time_const_args)++;
-      }
-    }
+
+  std::vector<bool> body_must_be_const_nodes;
+  const FunctionBody* body;
+  std::vector<bool> cond_must_be_const_nodes;
+  const FunctionBody* cond;
+  TF_RETURN_IF_ERROR(FindMustBeConstNodes(ctx, body_name_attr,
+                                          &body_must_be_const_nodes, &body));
+  TF_RETURN_IF_ERROR(FindMustBeConstNodes(ctx, cond_name_attr,
+                                          &cond_must_be_const_nodes, &cond));
+
+  auto should_convert_to_const = [&](int arg_idx) {
+    XlaCompiler::Argument& arg = (*args)[arg_idx];
+    return arg.kind != XlaCompiler::Argument::kResource &&
+           loop_invariants[arg_idx] &&
+           (body_must_be_const_nodes[body->arg_nodes[arg_idx]->id()] ||
+            cond_must_be_const_nodes[cond->arg_nodes[arg_idx]->id()]);
+  };
+  absl::InlinedVector<int, 5> converted_constants =
+      ConvertCompileTimeConstArgumentsToConst(ctx, args,
+                                              /*xla_expression_offset=*/0,
+                                              should_convert_to_const);
+  VLOG(2) << "Converted args to constants: {"
+          << absl::StrJoin(converted_constants, ",") << "}";
+  for (int arg_idx : converted_constants) {
+    compile_time_const_arg_indices->at(arg_idx) = true;
+    (*num_compile_time_const_args)++;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status VerifyBodyInputAndOutputShapeMatch(
@@ -184,10 +213,10 @@ Status VerifyBodyInputAndOutputShapeMatch(
         xla::ShapeUtil::HumanString(body_input_shape), " vs. ",
         xla::ShapeUtil::HumanString(body_output_shape));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
-xla::StatusOr<xla::XlaComputation> BuildWrappedCond(
+StatusOr<xla::XlaComputation> BuildWrappedCond(
     XlaOpKernelContext* ctx, const XlaCompiler::CompilationResult& cond) {
   xla::Shape cond_input_shape = cond.xla_input_shapes[0];
   std::unique_ptr<xla::XlaBuilder> cb =
@@ -198,11 +227,12 @@ xla::StatusOr<xla::XlaComputation> BuildWrappedCond(
   return cb->Build();
 }
 
-xla::StatusOr<xla::XlaComputation> BuildWrappedBody(
+StatusOr<xla::XlaComputation> BuildWrappedBody(
     XlaOpKernelContext* ctx, const XlaCompiler::CompilationResult& body,
     const std::vector<bool>& compile_time_const_arg_indices,
     int num_compile_time_const_args, bool has_token_input_output) {
-  if (num_compile_time_const_args <= 0) {
+  if (num_compile_time_const_args <= 0 &&
+      body.xla_input_shapes[0] == body.xla_output_shape) {
     return xla::XlaComputation(body.computation->proto());
   }
   xla::XlaComputation body_wrapper;
@@ -215,10 +245,41 @@ xla::StatusOr<xla::XlaComputation> BuildWrappedBody(
   // the inputs and outputs of its body function to match.
   auto outputs = xla::Call(cb.get(), *body.computation, {inputs});
   std::vector<xla::XlaOp> non_compile_time_const_outputs;
+  int input_num = 0;
   for (int i = 0; i < compile_time_const_arg_indices.size(); i++) {
     if (!compile_time_const_arg_indices[i]) {
-      non_compile_time_const_outputs.push_back(
-          xla::GetTupleElement(outputs, i));
+      xla::XlaOp output = xla::GetTupleElement(outputs, i);
+      const xla::Shape& input_shape = body_input_shape.tuple_shapes(input_num);
+      const xla::Shape& output_shape = body.xla_output_shape.tuple_shapes(i);
+      TF_RET_CHECK(xla::ShapeUtil::Compatible(input_shape, output_shape));
+      if (input_shape != output_shape) {
+        TF_ASSIGN_OR_RETURN(xla::ShapeTree<xla::XlaOp> disassembled_tuple,
+                            xla::DisassembleTuple(output));
+        disassembled_tuple.ForEachMutableElement(
+            [&](const xla::ShapeIndex& index, xla::XlaOp* element) {
+              const xla::Shape& output_subshape =
+                  xla::ShapeUtil::GetSubshape(output_shape, index);
+              if (output_subshape.IsArray()) {
+                const xla::Shape& input_subshape =
+                    xla::ShapeUtil::GetSubshape(input_shape, index);
+                for (int d = 0; d < output_subshape.rank(); ++d) {
+                  if (input_subshape.is_dynamic_dimension(d) &&
+                      !output_subshape.is_dynamic_dimension(d)) {
+                    *element = xla::SetDimensionSize(
+                        *element,
+                        xla::ConstantR0(
+                            cb.get(),
+                            static_cast<int32_t>(output_shape.dimensions()[d])),
+                        d);
+                  }
+                }
+              }
+            });
+        output =
+            xla::AssembleTuple(output.builder(), std::move(disassembled_tuple));
+      }
+      non_compile_time_const_outputs.push_back(output);
+      ++input_num;
     }
   }
   // If `body` has a token output, append it to
@@ -234,7 +295,7 @@ xla::StatusOr<xla::XlaComputation> BuildWrappedBody(
 xla::XlaOp BuildWhile(XlaOpKernelContext* ctx,
                       const xla::XlaComputation& wrapped_cond,
                       const xla::XlaComputation& wrapped_body,
-                      const xla::XlaOp& initial_values,
+                      const xla::XlaOp initial_values,
                       const std::vector<int>& input_mapping,
                       const std::vector<bool>& compile_time_const_arg_indices,
                       int num_compile_time_const_args,
@@ -277,6 +338,10 @@ XlaWhileOp::XlaWhileOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
     OP_REQUIRES_OK(ctx, ctx->GetAttr(kPropagateCompileTimeConsts,
                                      &propagate_compile_time_consts_));
   }
+  if (!ctx->GetAttr(kXlaOriginalOutsideCompilationNodeName,
+                    &original_node_name_)
+           .ok())
+    original_node_name_ = name();
 }
 
 void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
@@ -302,7 +367,7 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
   // 2. The op inputs at these indices are compile time constants.
   //
   // These compile time consts do not appear as _Args in the cond/body functions
-  // and are replaced by kConstant nodes instead. As as result, the compiled
+  // and are replaced by kConstant nodes instead. As a result, the compiled
   // body function does not have matching input and output shape. We fix this
   // by rewriting the body computation (see body_wrapper below) to output
   // just the non compile-time-const values and later pad up the while output
@@ -311,7 +376,7 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
   int num_compile_time_const_args = 0;
   if (propagate_compile_time_consts_) {
     OP_REQUIRES_OK(ctx, ConvertLoopInvariantsToConst(
-                            ctx, body_name_attr_, &arguments,
+                            ctx, body_name_attr_, cond_name_attr_, &arguments,
                             &compile_time_const_arg_indices,
                             &num_compile_time_const_args, compiler->client()));
   }
@@ -329,12 +394,14 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
   XlaCompiler::CompileOptions body_options;
   body_options.use_tuple_arg = true;
   body_options.return_updated_values_for_all_resources = true;
-  body_options.resolve_compile_time_constants = false;
   body_options.is_entry_computation = false;
   body_options.add_token_input_output = has_token_input_output_;
-  XlaCompiler::CompilationResult body;
+  auto body = std::make_unique<XlaCompiler::CompilationResult>();
   OP_REQUIRES_OK(ctx, compiler->CompileFunction(body_options, body_name_attr_,
-                                                arguments, &body));
+                                                arguments, body.get()));
+  OP_REQUIRES_OK(
+      ctx, ctx->xla_context()->RecordCollectiveInfoFromNestedCompilationResult(
+               *body.get()));
 
   // We must use a static shape for parameters to an XLA compilation. However,
   // we may not know the shape of a resource if it is first
@@ -360,8 +427,8 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
             << has_uninitialized_tensor_lists;
     // Initializes any uninitialized resource with zero values of the
     // shape determined by the first compilation.
-    for (int i = 0; i < body.resource_updates.size(); ++i) {
-      const XlaCompiler::ResourceUpdate& update = body.resource_updates[i];
+    for (int i = 0; i < body->resource_updates.size(); ++i) {
+      const XlaCompiler::ResourceUpdate& update = body->resource_updates[i];
       XlaResource* resource;
       OP_REQUIRES_OK(ctx, ctx->GetResourceInput(update.input_index, &resource));
 
@@ -398,7 +465,7 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
     // Set the shape of any uninitialized TensorLists to the shape determined by
     // the first compilation. Note that, unlike resources, we do not initialize
     // the input list with zeros here, that is done later.
-    xla::Shape body_output_shape = body.xla_output_shape;
+    xla::Shape body_output_shape = body->xla_output_shape;
     OP_REQUIRES(ctx, body_output_shape.IsTuple(),
                 errors::FailedPrecondition(
                     "xla_output_shape of while body must be a tuple."));
@@ -413,25 +480,24 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
 
     // Recompile the body with the "correct" resource shapes.
     VLOG(1) << "Recompiling body with corrected resource shapes";
-    body = {};
+    *body = {};
     OP_REQUIRES_OK(ctx, compiler->CompileFunction(body_options, body_name_attr_,
-                                                  arguments, &body));
+                                                  arguments, body.get()));
   }
 
   VLOG(1) << "Compiling condition";
 
   XlaCompiler::CompileOptions cond_options;
   cond_options.use_tuple_arg = true;
-  cond_options.resolve_compile_time_constants = false;
   cond_options.is_entry_computation = false;
   cond_options.add_token_input_output = has_token_input_output_;
   XlaCompiler::CompilationResult cond;
   OP_REQUIRES_OK(ctx, compiler->CompileFunction(cond_options, cond_name_attr_,
                                                 arguments, &cond));
 
-  OP_REQUIRES(ctx, body.xla_input_shapes.size() == 1,
+  OP_REQUIRES(ctx, body->xla_input_shapes.size() == 1,
               errors::FailedPrecondition("Expected one input shape"));
-  xla::Shape body_input_shape = body.xla_input_shapes[0];
+  xla::Shape body_input_shape = body->xla_input_shapes[0];
   OP_REQUIRES(ctx, body_input_shape.IsTuple(),
               errors::FailedPrecondition("Expected tuple shape"));
   OP_REQUIRES(ctx, cond.xla_input_shapes.size() == 1,
@@ -441,7 +507,7 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
               errors::FailedPrecondition("Expected tuple shape"));
 
   VLOG(2) << "Body shape: " << xla::ShapeUtil::HumanString(body_input_shape)
-          << " -> " << xla::ShapeUtil::HumanString(body.xla_output_shape);
+          << " -> " << xla::ShapeUtil::HumanString(body->xla_output_shape);
   VLOG(2) << "Cond shape: " << xla::ShapeUtil::HumanString(cond_input_shape)
           << " -> " << xla::ShapeUtil::HumanString(cond.xla_output_shape);
 
@@ -456,7 +522,7 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
   // args (which are pruned from the body outputs in body_wapper) matches the
   // shape of the inputs.
   OP_REQUIRES_OK(ctx, VerifyBodyInputAndOutputShapeMatch(
-                          ctx, compile_time_const_arg_indices, body,
+                          ctx, compile_time_const_arg_indices, *body.get(),
                           has_token_input_output_));
 
   xla::Shape expected_cond_output_shape_without_side_effect =
@@ -477,17 +543,18 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
                   "(pred[], token[]), got: ",
                   xla::ShapeUtil::HumanString(cond.xla_output_shape)));
 
-  int num_inputs = body.input_mapping.size();
+  int num_inputs = body->input_mapping.size();
   std::vector<xla::XlaOp> inputs(num_inputs);
   for (int i = 0; i < num_inputs; ++i) {
-    int input_num = body.input_mapping[i];
+    int input_num = body->input_mapping[i];
     if (has_token_input_output_ && i == num_inputs - 1) {
       // Set token input for this "while" op.
       std::vector<xla::XlaOp> token_inputs;
+      token_inputs.reserve(token_input_nodes_.size());
       for (const string& node_name : token_input_nodes_) {
         auto token_or = compiler->GetNodeToken(node_name);
         OP_REQUIRES_OK(ctx, token_or.status());
-        token_inputs.push_back(token_or.ValueOrDie());
+        token_inputs.push_back(token_or.value());
       }
       inputs[i] = xla::AfterAll(builder, token_inputs);
     } else if (ctx->input_type(input_num) == DT_RESOURCE) {
@@ -498,15 +565,48 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
       xla::XlaOp input = ctx->Input(input_num);
       auto input_shape_or = ctx->builder()->GetShape(input);
       OP_REQUIRES_OK(ctx, input_shape_or.status());
-      xla::Shape input_shape = input_shape_or.ValueOrDie();
+      xla::Shape input_shape = input_shape_or.value();
       const xla::Shape& list_shape = body_input_shape.tuple_shapes(i);
       // Shape/datatype of the input list may differ from shape/datatype of the
       // body/cond input if the list's shape/datatype was inferred after the
       // first compilation and the body/cond was recompiled with the updated
       // shape/datatype of the list.
       if (input_shape != list_shape) {
-        OP_REQUIRES_OK(ctx, CreateZerosTensorListWithShape(
-                                ctx->builder(), list_shape, &inputs[i]));
+        // Prepare dynamic dimensions for element shapes.
+        std::vector<std::vector<xla::XlaOp>> list_dynamic_dims;
+        for (int i = 0; i < list_shape.tuple_shapes_size() - 1; ++i) {
+          std::vector<xla::XlaOp> dynamic_dims;
+
+          const xla::Shape& shape = list_shape.tuple_shapes(i);
+
+          // We already have the dynamic size of leading dimension outside of
+          // the while loop without initializing the TensorList inside the while
+          // loop.
+          if (shape.is_dynamic_dimension(0)) {
+            xla::XlaOp leading_dim_size = xla::GetDimensionSize(input, 0);
+            dynamic_dims.push_back(leading_dim_size);
+          } else {
+            int32_t dim_size = shape.dimensions(0);
+            dynamic_dims.push_back(
+                xla::ConstantR0<int32>(ctx->builder(), dim_size));
+          }
+
+          // Set dynamic dimension size to 0 for element value. Inside the while
+          // loop, TensorlistSetItem will properly set the element shape's
+          // dynamic dimension.
+          for (int64_t dim = 1; dim < shape.dimensions_size(); ++dim) {
+            int32_t dim_size = shape.dimensions(dim);
+            if (shape.is_dynamic_dimension(dim)) {
+              dim_size = 0;
+            }
+            dynamic_dims.push_back(
+                xla::ConstantR0<int32_t>(ctx->builder(), dim_size));
+          }
+          list_dynamic_dims.push_back(dynamic_dims);
+        }
+        OP_REQUIRES_OK(
+            ctx, CreateZerosTensorListWithShape(ctx->builder(), list_shape,
+                                                list_dynamic_dims, &inputs[i]));
       } else {
         inputs[i] = ctx->Input(input_num);
       }
@@ -520,20 +620,20 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
   VLOG(1) << "Building while loop";
 
   // Wraps the condition in a computation that unpacks the output tuple.
-  xla::StatusOr<xla::XlaComputation> cond_result = BuildWrappedCond(ctx, cond);
+  StatusOr<xla::XlaComputation> cond_result = BuildWrappedCond(ctx, cond);
   OP_REQUIRES_OK(ctx, cond_result.status());
-  xla::XlaComputation wrapped_cond = std::move(cond_result.ValueOrDie());
+  xla::XlaComputation wrapped_cond = std::move(cond_result.value());
 
   // Remove compile time const args from the list of body outputs.
-  xla::StatusOr<xla::XlaComputation> body_result =
-      BuildWrappedBody(ctx, body, compile_time_const_arg_indices,
+  StatusOr<xla::XlaComputation> body_result =
+      BuildWrappedBody(ctx, *body.get(), compile_time_const_arg_indices,
                        num_compile_time_const_args, has_token_input_output_);
   OP_REQUIRES_OK(ctx, body_result.status());
-  xla::XlaComputation wrapped_body = std::move(body_result.ValueOrDie());
+  xla::XlaComputation wrapped_body = std::move(body_result.value());
 
   // Builds the While op and pads its output with the compile time const args.
   xla::XlaOp while_result =
-      BuildWhile(ctx, wrapped_cond, wrapped_body, init, body.input_mapping,
+      BuildWhile(ctx, wrapped_cond, wrapped_body, init, body->input_mapping,
                  compile_time_const_arg_indices, num_compile_time_const_args,
                  has_token_input_output_);
 
@@ -557,16 +657,17 @@ void XlaWhileOp::Compile(XlaOpKernelContext* ctx) {
         xla::GetTupleElement(while_result, ctx->num_outputs());
     auto shape_or = builder->GetShape(token_output);
     OP_REQUIRES_OK(ctx, shape_or.status());
-    OP_REQUIRES(ctx, shape_or.ValueOrDie().IsToken(),
+    OP_REQUIRES(ctx, shape_or.value().IsToken(),
                 errors::FailedPrecondition(
                     "Token output is not token type: ",
-                    xla::ShapeUtil::HumanString(shape_or.ValueOrDie())));
-    OP_REQUIRES_OK(ctx, compiler->SetNodeToken(name(), token_output));
+                    xla::ShapeUtil::HumanString(shape_or.value())));
+    OP_REQUIRES_OK(ctx,
+                   compiler->SetNodeToken(original_node_name_, token_output));
   }
 
   // Updates the values of any resource variables modified by the loop.
-  for (int i = 0; i < body.resource_updates.size(); ++i) {
-    const XlaCompiler::ResourceUpdate& update = body.resource_updates[i];
+  for (int i = 0; i < body->resource_updates.size(); ++i) {
+    const XlaCompiler::ResourceUpdate& update = body->resource_updates[i];
     XlaResource* resource;
     OP_REQUIRES_OK(ctx, ctx->GetResourceInput(update.input_index, &resource));
     if (update.modified) {

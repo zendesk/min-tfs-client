@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/cache_ops.h"
 
+#include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/resource_mgr.h"
@@ -26,11 +27,11 @@ namespace tensorflow {
 namespace data {
 namespace {
 
-const char kMemoryCache[] = "MemoryCache";
+constexpr char kMemoryCache[] = "MemoryCache";
 
 }  // namespace
 
-string MemoryCache::DebugString() const { return kMemoryCache; }
+string MemoryCacheManager::DebugString() const { return kMemoryCache; }
 
 void MemoryCache::Complete(std::vector<std::vector<Tensor>>&& cache) {
   mutex_lock l(mu_);
@@ -51,7 +52,7 @@ void MemoryCache::Reset() {
   cache_.clear();
 }
 
-const std::vector<Tensor>& MemoryCache::at(int64 index) {
+const std::vector<Tensor>& MemoryCache::at(int64_t index) {
   tf_shared_lock l(mu_);
   DCHECK(index < cache_.size());
   return cache_[index];
@@ -62,37 +63,34 @@ size_t MemoryCache::size() {
   return cache_.size();
 }
 
+const std::vector<std::vector<Tensor>>& MemoryCache::data() {
+  tf_shared_lock l(mu_);
+  return cache_;
+}
+
 AnonymousMemoryCacheHandleOp::AnonymousMemoryCacheHandleOp(
     OpKernelConstruction* ctx)
-    : AnonymousResourceOp<MemoryCache>(ctx) {}
-
-void AnonymousMemoryCacheHandleOp::Compute(OpKernelContext* ctx) {
-  AnonymousResourceOp<MemoryCache>::Compute(ctx);
-}
+    : AnonymousResourceOp<MemoryCacheManager>(ctx,
+                                              /* ref_counting */ true,
+                                              /* return_deleter */ true) {}
 
 string AnonymousMemoryCacheHandleOp::name() { return kMemoryCache; }
 
 Status AnonymousMemoryCacheHandleOp::CreateResource(
     OpKernelContext* ctx, std::unique_ptr<FunctionLibraryDefinition> flib_def,
     std::unique_ptr<ProcessFunctionLibraryRuntime> pflr,
-    FunctionLibraryRuntime* lib, MemoryCache** resource) {
-  *resource = new MemoryCache();
-  return Status::OK();
+    FunctionLibraryRuntime* lib, MemoryCacheManager** manager) {
+  *manager = new MemoryCacheManager();
+  return OkStatus();
 }
 
 void DeleteMemoryCacheOp::Compute(OpKernelContext* ctx) {
   const ResourceHandle& handle = ctx->input(0).flat<ResourceHandle>()(0);
-  // The resource is guaranteed to exist because the variant tensor wrapping the
-  // deleter is provided as an unused input to this op, which guarantees that it
-  // has not run yet.
+  // The resource might have been already deleted by the dataset.
   Status s = ctx->resource_manager()->Delete(handle);
-  if (errors::IsNotFound(s)) {
-    // TODO(b/135948230): Investigate why is the above statement not true and
-    // then get rid of the special case.
-    ctx->SetStatus(Status::OK());
-    return;
+  if (!errors::IsNotFound(s)) {
+    OP_REQUIRES_OK(ctx, s);
   }
-  ctx->SetStatus(s);
 }
 
 namespace {
@@ -102,6 +100,9 @@ REGISTER_KERNEL_BUILDER(Name("AnonymousMemoryCache").Device(DEVICE_CPU),
 
 REGISTER_KERNEL_BUILDER(Name("DeleteMemoryCache").Device(DEVICE_CPU),
                         DeleteMemoryCacheOp);
+
+REGISTER_KERNEL_BUILDER(Name("DummyMemoryCache").Device(DEVICE_CPU),
+                        DummyResourceOp<MemoryCache>);
 
 }  // namespace
 }  // namespace data

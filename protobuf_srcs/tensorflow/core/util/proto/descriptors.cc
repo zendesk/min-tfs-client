@@ -35,7 +35,7 @@ Status CreatePoolFromSet(const protobuf::FileDescriptorSet& set,
                                      file.DebugString());
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Build a `DescriptorPool` from the named file or URI. The file or URI
@@ -68,14 +68,18 @@ Status GetDescriptorPoolFromBinary(
     const string& source,
     std::unique_ptr<protobuf::DescriptorPool>* owned_desc_pool) {
   if (!absl::StartsWith(source, "bytes://")) {
-    return errors::InvalidArgument(
-        "Source does not represent serialized file descriptor set proto.");
+    return errors::InvalidArgument(absl::StrCat(
+        "Source does not represent serialized file descriptor set proto. ",
+        "This may be due to a missing dependency on the file containing ",
+        "REGISTER_DESCRIPTOR_POOL(\"", source, "\", ...);"));
   }
   // Parse the FileDescriptorSet.
   protobuf::FileDescriptorSet proto;
   if (!proto.ParseFromString(string(absl::StripPrefix(source, "bytes://")))) {
-    return errors::InvalidArgument(
-        "Source does not represent serialized file descriptor set proto.");
+    return errors::InvalidArgument(absl::StrCat(
+        "Source does not represent serialized file descriptor set proto. ",
+        "This may be due to a missing dependency on the file containing ",
+        "REGISTER_DESCRIPTOR_POOL(\"", source, "\", ...);"));
   }
   return CreatePoolFromSet(proto, owned_desc_pool);
 }
@@ -98,7 +102,7 @@ Status GetDescriptorPool(
       GetDescriptorPoolFromFile(env, descriptor_source, owned_desc_pool);
   if (status.ok()) {
     *desc_pool = owned_desc_pool->get();
-    return Status::OK();
+    return OkStatus();
   }
 
   status = GetDescriptorPoolFromBinary(descriptor_source, owned_desc_pool);

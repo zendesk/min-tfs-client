@@ -16,8 +16,8 @@ limitations under the License.
 #define EIGEN_USE_THREADS
 
 #include "tensorflow/core/common_runtime/constant_folding.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/common_runtime/threadpool_device.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/subgraph.h"
 #include "tensorflow/core/kernels/quantization_utils.h"
@@ -34,7 +34,7 @@ namespace graph_transforms {
 Status QuantizeWeights(const GraphDef& input_graph_def,
                        const TransformFuncContext& context,
                        GraphDef* output_graph_def) {
-  int32 minimum_size;
+  int32_t minimum_size;
   TF_RETURN_IF_ERROR(
       context.GetOneInt32Parameter("minimum_size", 1024, &minimum_size));
   TF_RETURN_IF_ERROR(ReplaceMatchingOpTypes(
@@ -63,7 +63,7 @@ Status QuantizeWeights(const GraphDef& input_graph_def,
         // same node with no changes.
         if ((old_dtype != DT_FLOAT) || (num_elements < minimum_size)) {
           new_nodes->push_back(old_const_node);
-          return Status::OK();
+          return OkStatus();
         }
         const float* old_values = old_tensor.flat<float>().data();
         float min = std::numeric_limits<float>::max();
@@ -133,11 +133,11 @@ Status QuantizeWeights(const GraphDef& input_graph_def,
         AddNodeInput(max_node.name(), &dequantize_node);
         new_nodes->push_back(dequantize_node);
 
-        return Status::OK();
+        return OkStatus();
       },
       {}, output_graph_def));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("quantize_weights", QuantizeWeights);

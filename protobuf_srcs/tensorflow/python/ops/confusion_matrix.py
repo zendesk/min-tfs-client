@@ -14,19 +14,16 @@
 # ==============================================================================
 """Confusion matrix related utilities."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
-from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import check_ops
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
-from tensorflow.python.ops import sparse_ops
 from tensorflow.python.util import deprecation
+from tensorflow.python.util import dispatch
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -79,13 +76,13 @@ def remove_squeezable_dimensions(
     rank_diff = array_ops.rank(predictions) - array_ops.rank(labels)
     if (predictions_rank is None) or (
         predictions_shape.dims[-1].is_compatible_with(1)):
-      predictions = control_flow_ops.cond(
+      predictions = cond.cond(
           math_ops.equal(expected_rank_diff + 1, rank_diff),
           lambda: array_ops.squeeze(predictions, [-1]),
           lambda: predictions)
     if (labels_rank is None) or (
         labels_shape.dims[-1].is_compatible_with(1)):
-      labels = control_flow_ops.cond(
+      labels = cond.cond(
           math_ops.equal(expected_rank_diff - 1, rank_diff),
           lambda: array_ops.squeeze(labels, [-1]),
           lambda: labels)
@@ -93,6 +90,7 @@ def remove_squeezable_dimensions(
 
 
 @tf_export('math.confusion_matrix', v1=[])
+@dispatch.add_dispatch_support
 def confusion_matrix(labels,
                      predictions,
                      num_classes=None,
@@ -188,20 +186,18 @@ def confusion_matrix(labels,
       predictions.get_shape().assert_is_compatible_with(weights.get_shape())
       weights = math_ops.cast(weights, dtype)
 
-    shape = array_ops.stack([num_classes, num_classes])
-    indices = array_ops.stack([labels, predictions], axis=1)
+    shape = array_ops_stack.stack([num_classes, num_classes])
+    indices = array_ops_stack.stack([labels, predictions], axis=1)
     values = (array_ops.ones_like(predictions, dtype)
               if weights is None else weights)
-    cm_sparse = sparse_tensor.SparseTensor(
+    return array_ops.scatter_nd(
         indices=indices,
-        values=values,
-        dense_shape=math_ops.cast(shape, dtypes.int64))
-    zero_matrix = array_ops.zeros(math_ops.cast(shape, dtypes.int32), dtype)
-
-    return sparse_ops.sparse_add(zero_matrix, cm_sparse)
+        updates=values,
+        shape=math_ops.cast(shape, dtypes.int64))
 
 
 @tf_export(v1=['math.confusion_matrix', 'confusion_matrix'])
+@dispatch.add_dispatch_support
 @deprecation.deprecated_endpoints('confusion_matrix', 'train.confusion_matrix')
 def confusion_matrix_v1(labels,
                         predictions,

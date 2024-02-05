@@ -18,7 +18,7 @@ limitations under the License.
 
 #include <deque>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/numeric_op.h"
 
 #include "tensorflow/core/framework/op_kernel.h"
@@ -56,7 +56,7 @@ class ConditionalAccumulatorBase : public ResourceBase {
 
   typedef AsyncOpKernel::DoneCallback DoneCallback;
 
-  virtual void TryApplyGrad(int64 local_step, OpKernelContext* ctx) = 0;
+  virtual void TryApplyGrad(int64_t local_step, OpKernelContext* ctx) = 0;
   void TryTakeGrad(int num_required, OpKernelContext* ctx,
                    DoneCallback callback);
 
@@ -73,7 +73,7 @@ class ConditionalAccumulatorBase : public ResourceBase {
   // SetGlobalStep is a modifier method for current_global_step.
   // It returns an InvalidArgument error if the new_global_step is less than
   // current_global_step.
-  Status SetGlobalStep(int64 new_global_step);
+  Status SetGlobalStep(int64_t new_global_step);
 
   Status MatchesNodeDef(const NodeDef& node_def);
 
@@ -81,7 +81,7 @@ class ConditionalAccumulatorBase : public ResourceBase {
   // Virtual methods to be implemented by sub-classes for different datatypes.
   // Implements arithmetic operations specific to datatype.
   virtual void DivideAccumGradByCounter(OpKernelContext* ctx)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_) = 0;
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) = 0;
   virtual bool SetOutput(OpKernelContext* ctx) = 0;
 
   enum RunResult { kNoProgress, kComplete };
@@ -127,10 +127,10 @@ class ConditionalAccumulatorBase : public ResourceBase {
   const string name_;
   const string reduction_type_;
   mutex mu_;
-  int counter_ GUARDED_BY(mu_);
-  int64 current_global_step_ GUARDED_BY(mu_);
+  int counter_ TF_GUARDED_BY(mu_);
+  int64_t current_global_step_ TF_GUARDED_BY(mu_);
 
-  std::deque<Attempt> takegrad_attempts_ GUARDED_BY(mu_);
+  std::deque<Attempt> takegrad_attempts_ TF_GUARDED_BY(mu_);
 
   // Methods
 
@@ -149,12 +149,12 @@ class ConditionalAccumulatorBase : public ResourceBase {
   //       (if it is not stale) or drop it silently (if it is stale).
   void FlushUnlocked();
   bool TryAttemptLocked(std::vector<CleanUp>* clean_up)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Helper methods
   //  void DeepCopy(Tensor* dst);
   bool TakeGradLockedHelper(OpKernelContext* ctx, DoneCallback callback)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 };
 
 /*
@@ -193,9 +193,7 @@ class TypeConverter {
 template <typename U>
 class TypeConverter<Eigen::half, U> {
  public:
-  static Eigen::half ConvertUToT(U c) {
-    return Eigen::half_impl::float_to_half_rtne(c);
-  }
+  static Eigen::half ConvertUToT(U c) { return static_cast<Eigen::half>(c); }
 };
 
 }  // namespace tensorflow

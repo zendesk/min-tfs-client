@@ -16,9 +16,10 @@ limitations under the License.
 
 #include <map>
 
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/name_utils.h"
 
 namespace tensorflow {
 namespace data {
@@ -48,7 +49,7 @@ class AssertNextDatasetOp::Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, name_utils::IteratorPrefix(kDatasetType, prefix)});
   }
 
@@ -61,7 +62,14 @@ class AssertNextDatasetOp::Dataset : public DatasetBase {
     return name_utils::DatasetDebugString(kDatasetType);
   }
 
-  int64 Cardinality() const override { return input_->Cardinality(); }
+  int64_t CardinalityInternal(CardinalityOptions options) const override {
+    return input_->Cardinality(options);
+  }
+
+  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+    inputs->push_back(input_);
+    return OkStatus();
+  }
 
   Status CheckExternalState() const override {
     return input_->CheckExternalState();
@@ -77,7 +85,7 @@ class AssertNextDatasetOp::Dataset : public DatasetBase {
     TF_RETURN_IF_ERROR(b->AddVector(transformations_, &transformations_node));
     TF_RETURN_IF_ERROR(
         b->AddDataset(this, {input_graph_node, transformations_node}, output));
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -96,14 +104,16 @@ class AssertNextDatasetOp::Dataset : public DatasetBase {
       }
       int n = tokens.size();
       for (size_t i = 0; i < dataset()->transformations_.size(); ++i) {
-        if (dataset()->transformations_[i] != tokens[n - 2 - i]) {
-          return errors::InvalidArgument(
-              "Asserted ", dataset()->transformations_[i],
-              " transformation at offset ", i, " but encountered ",
-              tokens[n - 2 - i], " transformation instead.");
+        if (!MatchesAnyVersion(dataset()->transformations_[i],
+                               tokens[n - 2 - i])) {
+          return errors::InvalidArgument("Asserted transformation matching ",
+                                         dataset()->transformations_[i],
+                                         " at offset ", i, " but encountered ",
+                                         tokens[n - 2 - i],
+                                         " transformation instead.");
         }
       }
-      return dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_);
+      return dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_);
     }
 
     Status GetNextInternal(IteratorContext* ctx,
@@ -119,15 +129,16 @@ class AssertNextDatasetOp::Dataset : public DatasetBase {
                                        /*ratio=*/1);
     }
 
-    Status SaveInternal(IteratorStateWriter* writer) override {
-      TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
-      return Status::OK();
+    Status SaveInternal(SerializationContext* ctx,
+                        IteratorStateWriter* writer) override {
+      TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
+      return OkStatus();
     }
 
     Status RestoreInternal(IteratorContext* ctx,
                            IteratorStateReader* reader) override {
       TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-      return Status::OK();
+      return OkStatus();
     }
 
    private:

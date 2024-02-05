@@ -16,10 +16,14 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_LITE_FLATBUFFER_IMPORT_H_
 #define TENSORFLOW_COMPILER_MLIR_LITE_FLATBUFFER_IMPORT_H_
 
+#include <string>
+#include <vector>
+
 #include "absl/strings/string_view.h"
-#include "mlir/IR/Location.h"  // TF:local_config_mlir
-#include "mlir/IR/MLIRContext.h"  // TF:local_config_mlir
-#include "mlir/IR/Module.h"  // TF:local_config_mlir
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/Location.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
 
 namespace tflite {
 // Converts a TFLite flatbuffer stored in `buffer` to a MLIR module
@@ -29,11 +33,16 @@ namespace tflite {
 // If ordered_output_arrays is not empty, then the imported mlir function will
 // only return nodes in ordered_output_arrays in the same order. Returns nullptr
 // on failure, and more specific errors will be emitted via the context.
-mlir::OwningModuleRef FlatBufferToMlir(
+// If `use_external_constant` is true, it will create `tfl.external_const`
+// instead of `tfl.const`.
+// If `experimental_prune_unreachable_nodes_unconditionally` is true, nodes that
+// are not ancestors of the output nodes will be pruned.
+mlir::OwningOpRef<mlir::ModuleOp> FlatBufferToMlir(
     absl::string_view buffer, mlir::MLIRContext* context,
-    mlir::Location base_loc,
-    const std::vector<std::string>& ordered_output_arrays,
-    bool add_pseudo_input_nodes = true);
+    mlir::Location base_loc, bool use_external_constant = false,
+    const std::vector<std::string>& ordered_input_arrays = {},
+    const std::vector<std::string>& ordered_output_arrays = {},
+    bool experimental_prune_unreachable_nodes_unconditionally = false);
 }  // namespace tflite
 
 #endif  // TENSORFLOW_COMPILER_MLIR_LITE_FLATBUFFER_IMPORT_H_

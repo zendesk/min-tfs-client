@@ -1,24 +1,29 @@
-// RUN: flatbuffer_translate -mlir-to-tflite-flatbuffer %s -o - | flatbuffer_to_string - | FileCheck --dump-input-on-failure %s
+// RUN: flatbuffer_translate -mlir-to-tflite-flatbuffer %s -o - | flatbuffer_to_string - | FileCheck %s
 
-func @main(tensor<4xf32>) -> tensor<4xf32> {
+func.func @main(tensor<4xf32>) -> tensor<4xf32> {
 ^bb0(%arg0: tensor<4xf32>):
   // CHECK:      {
   // CHECK-NEXT:   version: 3,
   // CHECK-NEXT:   operator_codes: [ {
-  // CHECK-NEXT:     builtin_code: SQUARED_DIFFERENCE,
-  // CHECK-NEXT:     version: 1
+  // CHECK-NEXT:     deprecated_builtin_code: 99,
+  // CHECK-NEXT:     version: 1,
+  // CHECK-NEXT:     builtin_code: SQUARED_DIFFERENCE
   // CHECK-NEXT:   }, {
-  // CHECK-NEXT:     builtin_code: MUL,
-  // CHECK-NEXT:     version: 1
+  // CHECK-NEXT:     deprecated_builtin_code: 18,
+  // CHECK-NEXT:     version: 1,
+  // CHECK-NEXT:     builtin_code: MUL
   // CHECK-NEXT:   }, {
-  // CHECK-NEXT:     builtin_code: DIV,
-  // CHECK-NEXT:     version: 1
+  // CHECK-NEXT:     deprecated_builtin_code: 42,
+  // CHECK-NEXT:     version: 1,
+  // CHECK-NEXT:     builtin_code: DIV
   // CHECK-NEXT:   }, {
-  // CHECK-NEXT:     builtin_code: EXP,
-  // CHECK-NEXT:     version: 1
+  // CHECK-NEXT:     deprecated_builtin_code: 47,
+  // CHECK-NEXT:     version: 1,
+  // CHECK-NEXT:     builtin_code: EXP
   // CHECK-NEXT:   }, {
-  // CHECK-NEXT:     builtin_code: NEG,
-  // CHECK-NEXT:     version: 1
+  // CHECK-NEXT:     deprecated_builtin_code: 59,
+  // CHECK-NEXT:     version: 1,
+  // CHECK-NEXT:     builtin_code: NEG
   // CHECK-NEXT:   } ],
   // CHECK-NEXT:   subgraphs: [ {
   // CHECK-NEXT:     tensors: [ {
@@ -27,49 +32,56 @@ func @main(tensor<4xf32>) -> tensor<4xf32> {
   // CHECK-NEXT:       name: "arg0",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       buffer: 2,
   // CHECK-NEXT:       name: "Const",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       buffer: 3,
   // CHECK-NEXT:       name: "squared_difference",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       buffer: 4,
   // CHECK-NEXT:       name: "mul",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       buffer: 5,
   // CHECK-NEXT:       name: "div",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       buffer: 6,
   // CHECK-NEXT:       name: "exp",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       buffer: 7,
   // CHECK-NEXT:       name: "neg",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     } ],
   // CHECK-NEXT:     inputs: [ 0 ],
   // CHECK-NEXT:     outputs: [ 6 ],
@@ -128,7 +140,14 @@ func @main(tensor<4xf32>) -> tensor<4xf32> {
   // CHECK-EMPTY:
   // CHECK-NEXT:   }, {
   // CHECK-EMPTY:
+  // CHECK-NEXT:   }, {
+  // CHECK-NEXT:     data: [ 49, 46, 49, 51, 46, 49, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ]
+  // CHECK-NEXT:   } ],
+  // CHECK-NEXT:   metadata: [ {
+  // CHECK-NEXT:   name: "min_runtime_version",
+  // CHECK-NEXT:   buffer: 8
   // CHECK-NEXT:   } ]
+  // CHECK-NEXT:   signature_defs: [ ]
   // CHECK-NEXT: }
 
   %0 = "tfl.pseudo_const" () {value = dense<1.0> : tensor<4xf32>} : () -> tensor<4xf32> loc("Const")
@@ -137,5 +156,5 @@ func @main(tensor<4xf32>) -> tensor<4xf32> {
   %3 = "tfl.div"(%2, %1) {fused_activation_function = "NONE"} : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xf32> loc("div")
   %4 = "tfl.exp"(%3) : (tensor<4xf32>) -> tensor<4xf32> loc("exp")
   %5 = "tfl.neg"(%4) : (tensor<4xf32>) -> tensor<4xf32> loc("neg")
-  return %5 : tensor<4xf32>
+  func.return %5 : tensor<4xf32>
 }

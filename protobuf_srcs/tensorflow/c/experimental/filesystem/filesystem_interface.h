@@ -56,7 +56,7 @@ extern "C" {
 /// Lifetime: The wrapper data structures are owned by core TensorFlow. The data
 /// pointed to by the `void*` members is always owned by the plugin. The plugin
 /// will provide functions to call to allocate and deallocate this data (see
-/// next section) and core TensorFlow ensures to call these at the proper time.
+/// next sections) and core TensorFlow ensures to call these at the proper time.
 ///
 /// Plugins will never receive a `TF_*` pointer that is `nullptr`. Core
 /// TensorFlow will never touch the `void*` wrapped by these structures, except
@@ -77,6 +77,44 @@ typedef struct TF_ReadOnlyMemoryRegion {
 typedef struct TF_Filesystem {
   void* plugin_filesystem;
 } TF_Filesystem;
+
+typedef struct TF_TransactionToken {
+  void* token;
+  TF_Filesystem* owner;
+} TF_TransactionToken;
+
+// The named union is needed here (as opposed to
+// inside the `TF_Filesystem_Option_Value` struct)
+// as MSVC does not recognize `typeof`.
+typedef union TF_Filesystem_Option_Value_Union {
+  int64_t int_val;
+  double real_val;
+  struct {
+    char* buf;
+    int buf_length;
+  } buffer_val;
+} TF_Filesystem_Option_Value_Union;
+
+typedef struct TF_Filesystem_Option_Value {
+  int type_tag;    // type of values in the values union
+  int num_values;  // number of values
+  TF_Filesystem_Option_Value_Union*
+      values;  // owned (plugins must make a copy if storing this)
+} TF_Filesystem_Option_Value;
+
+typedef enum TF_Filesystem_Option_Type {
+  TF_Filesystem_Option_Type_Int = 0,
+  TF_Filesystem_Option_Type_Real,
+  TF_Filesystem_Option_Type_Buffer,
+  TF_Filesystem_Num_Option_Types,  // must always be the last item
+} TF_Filesystem_Option_Type;
+
+typedef struct TF_Filesystem_Option {
+  char* name;                         // null terminated, owned
+  char* description;                  // null terminated, owned
+  int per_file;                       // bool actually, but bool is not a C type
+  TF_Filesystem_Option_Value* value;  // owned
+} TF_Filesystem_Option;
 
 /// SECTION 2. Function tables for functionality provided by plugins
 /// ----------------------------------------------------------------------------
@@ -252,9 +290,9 @@ typedef struct TF_WritableFileOps {
   ///
   /// Flushes all buffers and deallocates all resources.
   ///
-  /// Plugins must ensure that calling this on an already closed `*file` only
-  /// sets `status` to a non `TF_OK` value. Furthermore, calling `close` must
-  /// not result in calling `cleanup`.
+  /// Calling `close` must not result in calling `cleanup`.
+  ///
+  /// Core TensorFlow will never call `close` twice.
   void (*close)(const TF_WritableFile* file, TF_Status* status);
 } TF_WritableFileOps;
 // LINT.ThenChange(:writable_file_ops_version)
@@ -299,7 +337,7 @@ typedef struct TF_FilesystemOps {
   /// function will never be called. There are plans to refactor registration
   /// and fix this.
   ///
-  /// TODO(mihaimaruseac): After all filesystems are converted, revisit note.
+  /// TODO(b/139060984): After all filesystems are converted, revisit note.
   ///
   /// This operation must be provided. See "REQUIRED OPERATIONS" above.
   void (*cleanup)(TF_Filesystem* filesystem);
@@ -445,7 +483,7 @@ typedef struct TF_FilesystemOps {
   /// traversal couldn't start, `*undeleted_files` must be set to 0 and
   /// `*undeleted_dirs` must be set to 1.
   ///
-  /// TODO(mihaimaruseac): After all filesystems are converted, consider
+  /// TODO(b/139060984): After all filesystems are converted, consider
   /// invariant about `*undeleted_files` and `*undeleted_dirs`.
   ///
   /// Plugins:
@@ -471,8 +509,8 @@ typedef struct TF_FilesystemOps {
   ///   * Must set `status` to `TF_NOT_FOUND` if one of the parents entries in
   ///     either `src` or `dst` doesn't exist or if the specified `src` path
   ///     doesn't exist.
-  ///   * Must set `status` to `TF_FAILED_PRECONDITION` if either `src` or `dst`
-  ///     is a directory or if either of these paths are invalid.
+  ///   * Must set `status` to `TF_FAILED_PRECONDITION` if either `src` or
+  ///     `dst` is a directory or if either of them is invalid.
   ///   * Might use any other error value for `status` to signal other errors.
   ///
   /// DEFAULT IMPLEMENTATION: Copies file and deletes original. Needs
@@ -494,8 +532,8 @@ typedef struct TF_FilesystemOps {
   ///   * Must set `status` to `TF_NOT_FOUND` if one of the parents entries in
   ///     either `src` or `dst` doesn't exist or if the specified `src` path
   ///     doesn't exist.
-  ///   * Must set `status` to `TF_FAILED_PRECONDITION` if `src` is a directory
-  ///     or if either `src` or `dst` are invalid.
+  ///   * Must set `status` to `TF_FAILED_PRECONDITION` if either `src` or
+  ///     `dst` is a directory or if either of them is invalid.
   ///   * Might use any other error value for `status` to signal other errors.
   ///
   /// DEFAULT IMPLEMENTATION: Reads from `src` and writes to `dst`. Needs
@@ -527,11 +565,13 @@ typedef struct TF_FilesystemOps {
   ///     of type `TF_Status*`.
   ///
   /// If `statuses` is not null, plugins must fill each element with detailed
-  /// status for each file, as if calling `path_exists` on each one.
+  /// status for each file, as if calling `path_exists` on each one. Core
+  /// TensorFlow initializes the `statuses` array and plugins must use
+  /// `TF_SetStatus` to set each element instead of directly assigning.
   ///
   /// DEFAULT IMPLEMENTATION: Checks existence of every file. Needs
   /// `path_exists`.
-  bool (*paths_exist)(const TF_Filesystem* filesystem, const char** paths,
+  bool (*paths_exist)(const TF_Filesystem* filesystem, char** paths,
                       int num_files, TF_Status** statuses);
 
   /// Obtains statistics for the given `path`.
@@ -591,31 +631,38 @@ typedef struct TF_FilesystemOps {
   /// implemented by a filesystem registered to handle the `fs://` scheme.
   ///
   /// A new `char*` buffer must be allocated by this method. Core TensorFlow
-  /// manages the lifetime of the buffer after the call.
+  /// manages the lifetime of the buffer after the call. Thus, all callers of
+  /// this method must take ownership of the returned pointer.
   ///
   /// The implementation should clean up paths, including but not limited to,
   /// removing duplicate `/`s, and resolving `..` and `.`.
   ///
   /// Plugins must not return `nullptr`. Returning empty strings is allowed.
   ///
+  /// The allocation and freeing of memory must happen via the functions sent to
+  /// core TensorFlow upon registration (see the `TF_FilesystemPluginInfo`
+  /// structure in Section 4).
+  ///
   /// This function will be called by core TensorFlow to clean up all path
   /// arguments for all other methods in the filesystem API.
   ///
   /// DEFAULT IMPLEMENTATION: Uses `io::CleanPath` and `io::ParseURI`.
-  const char* (*translate_name)(const TF_Filesystem* filesystem,
-                                const char* uri);
+  char* (*translate_name)(const TF_Filesystem* filesystem, const char* uri);
 
   /// Finds all entries in the directory given by `path`.
   ///
   /// The returned entries are paths relative to `path`.
   ///
-  /// Caller passes `nullptr` for `entries`. Plugins must allocate `entries`
-  /// to hold all names that need to be returned and return the size of
-  /// `entries`.
+  /// Plugins must allocate `entries` to hold all names that need to be returned
+  /// and return the size of `entries`. Caller takes ownership of `entries`
+  /// after the call.
   ///
   /// In case of error, plugins must set `status` to a value different than
-  /// `TF_OK`, return -1 and leave `entries` unchanged (i.e., `nullptr`, freeing
-  /// any allocated memory).
+  /// `TF_OK`, free memory allocated for `entries` and return -1.
+  ///
+  /// The allocation and freeing of memory must happen via the functions sent to
+  /// core TensorFlow upon registration (see the `TF_FilesystemPluginInfo`
+  /// structure in Section 4).
   ///
   /// Plugins:
   ///   * Must set `status` to `TF_OK` if all children were returned.
@@ -645,13 +692,17 @@ typedef struct TF_FilesystemOps {
   ///   '\\' c: matches character c
   ///   lo '-' hi: matches character c for lo <= c <= hi
   ///
-  /// Caller passes `nullptr` for `entries`. Plugins must allocate `entries`
-  /// to hold all names that need to be returned and return the size of
-  /// `entries`.
+  /// Implementations must allocate `entries` to hold all names that need to be
+  /// returned and return the size of `entries`. Caller takes ownership of
+  /// `entries` after the call.
   ///
-  /// In case of error, plugins must set `status` to a value different than
-  /// `TF_OK`, return -1 and leave `entries` unchanged (i.e., `nullptr`, freeing
-  /// any allocated memory)
+  /// In case of error, the implementations must set `status` to a value
+  /// different than `TF_OK`, free any memory that might have been allocated for
+  /// `entries` and return -1.
+  ///
+  /// The allocation and freeing of memory must happen via the functions sent to
+  /// core TensorFlow upon registration (see the `TF_FilesystemPluginInfo`
+  /// structure in Section 4).
   ///
   /// Plugins:
   ///   * Must set `status` to `TF_OK` if all matches were returned.
@@ -666,6 +717,211 @@ typedef struct TF_FilesystemOps {
   ///
   /// DEFAULT IMPLEMENTATION: No op.
   void (*flush_caches)(const TF_Filesystem* filesystem);
+
+  /// Starts a new transaction.
+  ///
+  /// An opaque transaction token is returned in `token`. Ownership of the token
+  /// is in filesystem. Token will be freed in `end_transaction` call and any
+  /// access to token after that is invalid.
+  ///
+  /// In case of error, plugins must set `status` to a value different than
+  /// `TF_OK`, free memory allocated for `token` and return -1.
+  ///
+  /// The allocation and freeing of memory must happen via the functions sent to
+  /// core TensorFlow upon registration (see the `TF_FilesystemPluginInfo`
+  /// structure in Section 4).
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` if transaction successfuly started.
+  ///   * Must set `status` to `TF_FAILED_PRECONDITION` if multiple transactions
+  ///     are not supported
+  ///   * Might use any other error value for `status` to signal other errors.
+  int (*start_transaction)(const TF_Filesystem* filesystem,
+                           TF_TransactionToken** token, TF_Status* status);
+
+  /// Ends transaction and free the `token`. Any access to token after
+  /// that will be invalid.
+  ///
+  /// In case of error, plugins must set `status` to a value different than
+  /// `TF_OK`, free memory allocated for `token` and return -1.
+  ///
+  /// The allocation and freeing of memory must happen via the functions sent to
+  /// core TensorFlow upon registration (see the `TF_FilesystemPluginInfo`
+  /// structure in Section 4).
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` if transaction successfuly finalized.
+  ///   * Must set `status` to `TF_NOT_FOUND` if token is invalid/not found
+  ///   * Might use any other error value for `status` to signal other errors.
+  int (*end_transaction)(const TF_Filesystem* filesystem,
+                         TF_TransactionToken* token, TF_Status* status);
+
+  /// Adds file/directory in the `path` to transaction in `token`. It is a valid
+  /// operation to add a path that doesn't exist yet to a transaction.
+  ///
+  /// In case of error, plugins must set `status` to a value different than
+  /// `TF_OK`, free memory allocated for `token` and return -1.
+  ///
+  /// The allocation and freeing of memory must happen via the functions sent to
+  /// core TensorFlow upon registration (see the `TF_FilesystemPluginInfo`
+  /// structure in Section 4).
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` if path added to transaction successful.
+  ///   * Must set `status` to `TF_NOT_FOUND` if `token` is invalid.
+  ///   * Must set `status` to `TF_FAILED_PRECONDITION` if file/directory is in
+  ///     another transaction and multiple transactions are not supported
+  ///   * Might use any other error value for `status` to signal other errors.
+  int (*add_to_transaction)(const TF_Filesystem* filesystem, const char* path,
+                            TF_TransactionToken* token, TF_Status* status);
+
+  /// Returns transaction token for file/directory in the `path`. Note that path
+  /// may not exist yet but still might be part of a transaction.
+  ///
+  /// Transaction token is returned in `token`. Ownership of the token is in
+  /// filesystem. Token will be freed in `end_transaction` call and any access
+  /// to token after that is invalid.
+  ///
+  /// In case of error, plugins must set `status` to a value different than
+  /// `TF_OK`, free memory allocated for `token` and return -1.
+  ///
+  /// The allocation and freeing of memory must happen via the functions sent to
+  /// core TensorFlow upon registration (see the `TF_FilesystemPluginInfo`
+  /// structure in Section 4).
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` if a transaction for path is found
+  ///   * Must set `status` to `TF_NOT_FOUND` if `path` is not part of any
+  ///     transaction
+  ///   * Must set `status` to `TF_FAILED_PRECONDITION` if `path`  is
+  ///     not in this filesystem.
+  ///   * Might use any other error value for `status` to signal other errors.
+  int (*get_transaction_for_path)(const TF_Filesystem* filesystem,
+                                  const char* path, TF_TransactionToken** token,
+                                  TF_Status* status);
+
+  /// Returns transaction token for `path` if it is part of a transaction else
+  /// starts a new transaction and adds `path` to that transaction
+  ///
+  /// Transaction token is returned in `token`. Ownership of the token is in
+  /// filesystem. Token will be freed in `end_transaction` call and any access
+  /// to token after that is invalid.
+  ///
+  /// In case of error, plugins must set `status` to a value different than
+  /// `TF_OK`, free memory allocated for `token` and return -1.
+  ///
+  /// The allocation and freeing of memory must happen via the functions sent to
+  /// core TensorFlow upon registration (see the `TF_FilesystemPluginInfo`
+  /// structure in Section 4).
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` if transaction found or successfuly
+  ///     started.
+  ///   * Must set `status` to `TF_NOT_FOUND` if `path` doesn't point to this
+  ///     filesystem
+  ///   * Must set `status` to `TF_FAILED_PRECONDITION` if file/directory is
+  ///     not in any transaction and multiple transactions are not supported.
+  ///   * Might use any other error value for `status` to signal other errors.
+  int (*get_or_start_transaction_for_path)(const TF_Filesystem* filesystem,
+                                           const char* path,
+                                           TF_TransactionToken** token,
+                                           TF_Status* status);
+
+  /// Decodes transaction token in `token` to human readable format for
+  /// debugging.
+  ///
+  /// A new `char*` buffer must be allocated by this method. Core TensorFlow
+  /// manages the lifetime of the buffer after the call. Thus, all callers of
+  /// this method must take ownership of the returned pointer.
+  ///
+  /// Plugins must not return `nullptr`. Returning empty strings is allowed.
+  ///
+  /// The allocation and freeing of memory must happen via the functions sent to
+  /// core TensorFlow upon registration (see the `TF_FilesystemPluginInfo`
+  /// structure in Section 4).
+  ///
+  /// DEFAULT IMPLEMENTATION: Dump token and owner address.
+  char* (*decode_transaction_token)(const TF_Filesystem* filesystem,
+                                    const TF_TransactionToken* token);
+
+  /// Returns pointer to an array of available configuration options and their
+  /// current/default values in `options` and number of options in array in
+  /// `num_options`. Ownership of the array is transferred to caller and the
+  /// caller is responsible of freeing the buffers using respective file systems
+  /// allocation API.
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` if `options` and `num_options` set.
+  ///     If there is no configurable option, `num_options` should be 0.
+  ///   * Might use any other error value for `status` to signal other errors.
+  ///
+  /// DEFAULT IMPLEMENTATION: return 0 options and `TF_OK`.
+  void (*get_filesystem_configuration)(const TF_Filesystem* filesystem,
+                                       TF_Filesystem_Option** options,
+                                       int* num_options, TF_Status* status);
+
+  /// Updates filesystem configuration with options passed in `options`. It can
+  /// contain full set of options supported by the filesystem or just a subset
+  /// of them. Ownership of options and buffers therein belongs to the caller
+  /// and any buffers need to be allocated through filesystem allocation API.
+  /// Filesystems may choose to ignore configuration errors but should at least
+  /// display a warning or error message to warn the users.
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` if options are updated.
+  ///   * Might use any other error value for `status` to signal other errors.
+  ///
+  /// DEFAULT IMPLEMENTATION: return `TF_NOT_FOUND`.
+  void (*set_filesystem_configuration)(const TF_Filesystem* filesystem,
+                                       const TF_Filesystem_Option* options,
+                                       int num_options, TF_Status* status);
+
+  /// Returns the value of the filesystem option given in `key` in `option`.
+  /// Valid values of the `key` are returned by
+  /// `get_file_system_configuration_keys` call. Ownership of the
+  /// `option` is transferred to caller. Buffers therein should be allocated and
+  /// freed by the relevant filesystems allocation API.
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` if `option` is set
+  ///   * Must set `status` to `TF_NOT_FOUND` if the key is invalid
+  ///   * Might use any other error value for `status` to signal other errors.
+  ///
+  /// DEFAULT IMPLEMENTATION: return `TF_NOT_FOUND`.
+  void (*get_filesystem_configuration_option)(const TF_Filesystem* filesystem,
+                                              const char* key,
+                                              TF_Filesystem_Option** option,
+                                              TF_Status* status);
+
+  /// Sets the value of the filesystem option given in `key` to value in
+  /// `option`. Valid values of the `key` are returned by
+  /// `get_file_system_configuration_keys` call. Ownership of the `option` and
+  /// the `key` belogs to the caller. Buffers therein should be allocated and
+  /// freed by the filesystems allocation API.
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` if `option` is set/updated
+  ///   * Must set `status` to `TF_NOT_FOUND` if the key is invalid
+  ///   * Might use any other error value for `status` to signal other errors.
+  ///
+  /// DEFAULT IMPLEMENTATION: return `TF_NOT_FOUND`.
+  void (*set_filesystem_configuration_option)(
+      const TF_Filesystem* filesystem, const TF_Filesystem_Option* option,
+      TF_Status* status);
+
+  /// Returns a list of valid configuration keys in `keys` array and number of
+  /// keys in `num_keys`. Ownership of the buffers in `keys` are transferred to
+  /// caller and needs to be freed using relevant filesystem allocation API.
+  ///
+  /// Plugins:
+  ///   * Must set `status` to `TF_OK` on success. If there are no configurable
+  ///     keys, `num_keys` should be set to 0
+  ///   * Might use any other error value for `status` to signal other errors.
+  ///
+  /// DEFAULT IMPLEMENTATION: return `TF_OK` and `num_keys`=0.
+  void (*get_filesystem_configuration_keys)(const TF_Filesystem* filesystem,
+                                            char** keys, int* num_keys,
+                                            TF_Status* status);
 } TF_FilesystemOps;
 // LINT.ThenChange(:filesystem_ops_version)
 
@@ -735,95 +991,132 @@ constexpr size_t TF_FILESYSTEM_OPS_SIZE = sizeof(TF_FilesystemOps);
 /// SECTION 4. Plugin registration and initialization
 /// ----------------------------------------------------------------------------
 ///
-/// In this section we define two functions:
-///   * `TF_InitPlugin`: must be present in the plugin shared object as it will
-///     be called by core TensorFlow when the filesystem plugin is loaded;
-///   * `RegisterFilesystemPlugin`: it is implemented by core TensorFlow but
-///     plugins must call it in their `TF_InitPlugin`, usually using the macro
-///     `TF_REGISTER_FILESYSTEM_PLUGIN`.
+/// In this section we define the API used by core TensorFlow to initialize a
+/// filesystem provided by a plugin. That is, we define the following:
+///   * `TF_InitPlugin` function: must be present in the plugin shared object as
+///     it will be called by core TensorFlow when the filesystem plugin is
+///     loaded;
+///   * `TF_FilesystemPluginOps` struct: used to transfer information between
+///     plugins and core TensorFlow about the operations provided and metadata;
+///   * `TF_FilesystemPluginInfo` struct: similar to the above structure, but
+///     collects information about all the file schemes that the plugin provides
+///     support for, as well as about the plugin's memory handling routines;
+///   * `TF_SetFilesystemVersionMetadata` function: must be called by plugins in
+///     their `TF_InitPlugin` to record the versioning information the plugins
+///     are compiled against.
 ///
 /// The `TF_InitPlugin` function is used by plugins to set up the data
-/// structures that implement this interface, as presented in Section 2.
-///
-/// The `RegisterFilesystemPlugin` is used by core TensorFlow to check that
-/// plugins satisfy the requirements expected by core TensorFlow, as follows:
-///   1. If ABI numbers don't match we don't load the plugin, else we continue.
-///   2. If the API numbers are mismatched, we warn the user and continue
-///   loading the plugin.
-///   3. If any required operation is missing, we stop loading the plugin.
-///
-/// If all these checks succeed, we copy the plugin operations to a different
-/// memory location so that core TensorFlow has the guarantee that they won't be
-/// changed by plugins at a later time. Finally, we initialize the opaque
-/// pointer of `TF_Filesystem` by calling the required `init` function of
-/// `TF_FilesystemOps` and if that succeeds we register the filesystem.
+/// structures that implement this interface, as presented in Section 2. In
+/// order to not have plugin shared objects call back symbols defined in core
+/// TensorFlow, `TF_InitPlugin` has a `TF_FilesystemPluginInfo` argument which
+/// the plugin must fill (using the `TF_SetFilesystemVersionMetadata` for the
+/// metadata and setting up all the supported operations and the URI schemes
+/// that are supported).
 
-// Initializes a TensorFlow plugin.
-//
-// Must be implemented by the plugin DSO. It is called by TensorFlow runtime.
-//
-// Filesystem plugins can be loaded on demand by users via
-// `Env::LoadLibrary` or during TensorFlow's startup if they are on certain
-// paths (although this has a security risk if two plugins register for the
-// same filesystem and the malicious one loads before the legimitate one -
-// but we consider this to be something that users should care about and
-// manage themselves). In both of these cases, core TensorFlow looks for
-// the `TF_InitPlugin` symbol and calls that function.
-//
-// A plugin is loaded only if this `status` is `TF_OK` after the call.
-TF_CAPI_EXPORT extern void TF_InitPlugin(TF_Status* status);
+/// This structure incorporates the operations defined in Section 2 and the
+/// metadata defined in section 3, allowing plugins to define different ops
+/// for different URI schemes.
+///
+/// Every URI scheme is of the form "fs" for URIs of form "fs:///path/to/file".
+/// For local filesystems (i.e., when the URI is "/path/to/file"), the scheme
+/// must be "". The scheme must never be `nullptr`.
+///
+/// Every plugin fills this in `TF_InitPlugin`, using the alocator passed as
+/// argument to allocate memory. After `TF_InitPlugin` finishes, core
+/// TensorFlow uses the information present in this to initialize filesystems
+/// for the URI schemes that the plugin requests.
+///
+/// All pointers defined in this structure point to memory allocated by the DSO
+/// using an allocator provided by core TensorFlow when calling `TF_InitPlugin`.
+///
+/// IMPORTANT: To maintain binary compatibility, the layout of this structure
+/// must not change! In the unlikely case that a new type of file needs to be
+/// supported, add the new ops and metadata at the end of the structure.
+typedef struct TF_FilesystemPluginOps {
+  char* scheme;
+  int filesystem_ops_abi;
+  int filesystem_ops_api;
+  size_t filesystem_ops_size;
+  TF_FilesystemOps* filesystem_ops;
+  int random_access_file_ops_abi;
+  int random_access_file_ops_api;
+  size_t random_access_file_ops_size;
+  TF_RandomAccessFileOps* random_access_file_ops;
+  int writable_file_ops_abi;
+  int writable_file_ops_api;
+  size_t writable_file_ops_size;
+  TF_WritableFileOps* writable_file_ops;
+  int read_only_memory_region_ops_abi;
+  int read_only_memory_region_ops_api;
+  size_t read_only_memory_region_ops_size;
+  TF_ReadOnlyMemoryRegionOps* read_only_memory_region_ops;
+} TF_FilesystemPluginOps;
 
-/// Registers a filesystem plugin so that core TensorFlow can use it.
+/// This structure gathers together all the operations provided by the plugin.
 ///
-/// Must be called by the plugin during `TF_InitPlugin`, usually by using the
-/// convenience `TF_REGISTER_FILESYSTEM_PLUGIN` macro.
+/// Plugins must provide exactly `num_schemes` elements in the `ops` array.
 ///
-/// Arguments (grouped by category):
-///   * `..ABI`: ABI compatibility numbers (see Section 3.).
-///   * `..API`: API compatibility numbers (see Section 3.).
-///   * `..Size`: Sizes of the operation tables (see Section 3.).
-///   * `scheme`: The URI scheme that plugin is registering filesystems for.
-///     Must be of the form "fs" for URIs of form "fs:///path/to/file". For
-///     local filesystems (i.e., when the URI is "/path/to/file"), `scheme`
-///     must be "". Must never be `nullptr`.
-///   * `..Ops`: The function tables provided by the plugin. Owned by the
-///     plugin, but core TensorFlow makes a copy of these.
-///   * `status`: The output variable for representing success/failure.
+/// Since memory that is allocated by the DSO gets transferred to core
+/// TensorFlow, we need to provide a way for the allocation and deallocation to
+/// match. This is why this structure also defines `plugin_memory_allocate` and
+/// `plugin_memory_free` members.
 ///
-/// Sets `status` to `TF_OK` if plugin was registered and filesystem operations
-/// can be invoked from anywhere during TensorFlow's runtime. Any other value of
-/// `status` means that plugin failed to load properly and as such the
-/// operations it provides cannot be used at all (i.e., core TensorFlow will
-/// never run them, returning early with `TF_UNIMPLEMENTED` or similar error
-/// values).
-TF_CAPI_EXPORT extern void RegisterFilesystemPlugin(
-    int pluginFilesystemOpsABI, int pluginFilesystemOpsAPI,
-    size_t pluginFilesystemOpsSize, int pluginRandomAccessFileOpsABI,
-    int pluginRandomAccessFileOpsAPI, size_t pluginRandomAccessFileOpsSize,
-    int pluginWritableFileOpsABI, int pluginWritableFileOpsAPI,
-    size_t pluginWritableFileOpsSize, int pluginReadOnlyMemoryRegionOpsABI,
-    int pluginReadOnlyMemoryRegionOpsAPI,
-    size_t pluginReadOnlyMemoryRegionOpsSize, const char* scheme,
-    const TF_FilesystemOps* pluginFilesystemOps,
-    const TF_RandomAccessFileOps* pluginRandomAccessFileOps,
-    const TF_WritableFileOps* pluginWritableFileOps,
-    const TF_ReadOnlyMemoryRegionOps* pluginReadOnlyMemoryRegionOps,
-    TF_Status* status);
+/// All memory allocated by the plugin that will be owned by core TensorFlow
+/// must be allocated using the allocator in this structure. Core TensorFlow
+/// will use the deallocator to free this memory once it no longer needs it.
+///
+/// IMPORTANT: To maintain binary compatibility, the layout of this structure
+/// must not change! In the unlikely case that new global operations must be
+/// provided, add them at the end of the structure.
+typedef struct TF_FilesystemPluginInfo {
+  size_t num_schemes;
+  TF_FilesystemPluginOps* ops;
+  void* (*plugin_memory_allocate)(size_t size);
+  void (*plugin_memory_free)(void* ptr);
+} TF_FilesystemPluginInfo;
 
-/// This macro is just a convenience wrapper around `RegisterFilesystemPlugin`.
-/// Plugins should prefer using this macro instead of a direct call.
-#define TF_REGISTER_FILESYSTEM_PLUGIN(                                        \
-    scheme, pluginFilesystemOps, pluginRandomAccessFileOps,                   \
-    pluginWritableFileOps, pluginReadOnlyMemoryRegionOps, status)             \
-  RegisterFilesystemPlugin(                                                   \
-      TF_FILESYSTEM_OPS_ABI, TF_FILESYSTEM_OPS_API, TF_FILESYSTEM_OPS_SIZE,   \
-      TF_RANDOM_ACCESS_FILE_OPS_ABI, TF_RANDOM_ACCESS_FILE_OPS_API,           \
-      TF_RANDOM_ACCESS_FILE_OPS_SIZE, TF_WRITABLE_FILE_OPS_ABI,               \
-      TF_WRITABLE_FILE_OPS_API, TF_WRITABLE_FILE_OPS_SIZE,                    \
-      TF_READ_ONLY_MEMORY_REGION_OPS_ABI, TF_READ_ONLY_MEMORY_REGION_OPS_API, \
-      TF_READ_ONLY_MEMORY_REGION_OPS_SIZE, scheme, pluginFilesystemOps,       \
-      pluginRandomAccessFileOps, pluginWritableFileOps,                       \
-      pluginReadOnlyMemoryRegionOps, status)
+/// Convenience function for setting the versioning metadata.
+///
+/// The argument is guaranteed to not be `nullptr`.
+///
+/// We want this to be defined in the plugin's memory space and we guarantee
+/// that core TensorFlow will never call this.
+static inline void TF_SetFilesystemVersionMetadata(
+    TF_FilesystemPluginOps* ops) {
+  ops->filesystem_ops_abi = TF_FILESYSTEM_OPS_ABI;
+  ops->filesystem_ops_api = TF_FILESYSTEM_OPS_API;
+  ops->filesystem_ops_size = TF_FILESYSTEM_OPS_SIZE;
+  ops->random_access_file_ops_abi = TF_RANDOM_ACCESS_FILE_OPS_ABI;
+  ops->random_access_file_ops_api = TF_RANDOM_ACCESS_FILE_OPS_API;
+  ops->random_access_file_ops_size = TF_RANDOM_ACCESS_FILE_OPS_SIZE;
+  ops->writable_file_ops_abi = TF_WRITABLE_FILE_OPS_ABI;
+  ops->writable_file_ops_api = TF_WRITABLE_FILE_OPS_API;
+  ops->writable_file_ops_size = TF_WRITABLE_FILE_OPS_SIZE;
+  ops->read_only_memory_region_ops_abi = TF_READ_ONLY_MEMORY_REGION_OPS_ABI;
+  ops->read_only_memory_region_ops_api = TF_READ_ONLY_MEMORY_REGION_OPS_API;
+  ops->read_only_memory_region_ops_size = TF_READ_ONLY_MEMORY_REGION_OPS_SIZE;
+}
+
+/// Initializes a TensorFlow plugin.
+///
+/// Must be implemented by the plugin DSO. It is called by TensorFlow runtime.
+///
+/// Filesystem plugins can be loaded on demand by users via
+/// `Env::LoadLibrary` or during TensorFlow's startup if they are on certain
+/// paths (although this has a security risk if two plugins register for the
+/// same filesystem and the malicious one loads before the legimitate one -
+/// but we consider this to be something that users should care about and
+/// manage themselves). In both of these cases, core TensorFlow looks for
+/// the `TF_InitPlugin` symbol and calls this function.
+///
+/// For every filesystem URI scheme that this plugin supports, the plugin must
+/// add one `TF_FilesystemPluginInfo` entry in `plugin_info->ops` and call
+/// `TF_SetFilesystemVersionMetadata` for that entry.
+///
+/// Plugins must also initialize `plugin_info->plugin_memory_allocate` and
+/// `plugin_info->plugin_memory_free` to ensure memory allocated by plugin is
+/// freed in a compatible way.
+TF_CAPI_EXPORT extern void TF_InitPlugin(TF_FilesystemPluginInfo* plugin_info);
 
 #ifdef __cplusplus
 }  // end extern "C"

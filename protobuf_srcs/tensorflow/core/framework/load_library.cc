@@ -43,8 +43,8 @@ struct Library {
 // and OpList. Ops and kernels are registered as globals when a library is
 // loaded for the first time. Without caching, every subsequent load would not
 // perform initialization again, so the OpList would be empty.
-Status LoadLibrary(const char* library_filename, void** result,
-                   const void** buf, size_t* len) {
+Status LoadDynamicLibrary(const char* library_filename, void** result,
+                          const void** buf, size_t* len) {
   static mutex mu(LINKER_INITIALIZED);
   static std::unordered_map<string, Library> loaded_libs;
   Env* env = Env::Default();
@@ -66,7 +66,7 @@ Status LoadLibrary(const char* library_filename, void** result,
               if (seen_op_names.find(opdef.name()) == seen_op_names.end()) {
                 // Over writing a registration of an op not in this custom op
                 // library. Treat this as not an error.
-                return Status::OK();
+                return OkStatus();
               }
             }
             if (s.ok()) {
@@ -76,7 +76,7 @@ Status LoadLibrary(const char* library_filename, void** result,
             return s;
           }));
       OpRegistry::Global()->DeferRegistrations();
-      s = env->LoadLibrary(library_filename, &library.handle);
+      s = env->LoadDynamicLibrary(library_filename, &library.handle);
       if (s.ok()) {
         s = OpRegistry::Global()->ProcessRegistrations();
       }
@@ -98,7 +98,7 @@ Status LoadLibrary(const char* library_filename, void** result,
   *len = str.length();
 
   *result = library.handle;
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

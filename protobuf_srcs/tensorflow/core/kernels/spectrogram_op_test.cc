@@ -19,6 +19,8 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 #include "tensorflow/cc/client/client_session.h"
 #include "tensorflow/cc/ops/audio_ops.h"
 #include "tensorflow/cc/ops/const_op.h"
@@ -29,6 +31,9 @@ limitations under the License.
 #include "tensorflow/core/kernels/ops_util.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
+#include "tsl/lib/core/status_test_util.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/status_matchers.h"
 
 namespace tensorflow {
 namespace ops {
@@ -99,6 +104,81 @@ TEST(SpectrogramOpTest, SquaredTest) {
   test::ExpectTensorNear<float>(
       spectrogram_tensor,
       test::AsTensor<float>({0, 1, 4, 1, 0}, TensorShape({1, 1, 5})), 1e-3);
+}
+
+TEST(SpectrogramOpTest, MultichannelTest) {
+  Scope root = Scope::NewRootScope();
+
+  const int audio_size = 8;
+  const int channel_size = 2;
+  Tensor audio_tensor(DT_FLOAT, TensorShape({audio_size, channel_size}));
+  test::FillValues<float>(
+      &audio_tensor, {-1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, -1.0f,
+                      -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f});
+
+  Output audio_const_op = Const(root.WithOpName("audio_const_op"),
+                                Input::Initializer(audio_tensor));
+
+  AudioSpectrogram spectrogram_op =
+      AudioSpectrogram(root.WithOpName("spectrogram_op"), audio_const_op,
+                       audio_size, channel_size);
+
+  TF_ASSERT_OK(root.status());
+
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run(ClientSession::FeedType(),
+                           {spectrogram_op.spectrogram}, &outputs));
+
+  const Tensor& spectrogram_tensor = outputs[0];
+
+  EXPECT_EQ(3, spectrogram_tensor.dims());
+  EXPECT_EQ(5, spectrogram_tensor.dim_size(2));
+  EXPECT_EQ(1, spectrogram_tensor.dim_size(1));
+  EXPECT_EQ(channel_size, spectrogram_tensor.dim_size(0));
+
+  for (int channel = 0; channel < channel_size; channel++) {
+    test::ExpectTensorNear<float>(
+        spectrogram_tensor.SubSlice(channel),
+        test::AsTensor<float>({0, 1, 2, 1, 0}, TensorShape({1, 5})), 1e-3);
+  }
+}
+
+TEST(SpectrogramOpTest, InvalidWindowSize) {
+  Scope root = Scope::NewRootScope();
+  const int audio_size = 8;
+  const int channel_size = 2;
+  Tensor audio_tensor(DT_FLOAT, TensorShape({audio_size, channel_size}));
+  test::FillValues<float>(
+      &audio_tensor, {-1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, -1.0f,
+                      -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f});
+  Output audio_const_op = Const(root.WithOpName("audio_const_op"),
+                                Input::Initializer(audio_tensor));
+  AudioSpectrogram spectrogram_op =
+      AudioSpectrogram(root.WithOpName("spectrogram_op"), audio_const_op,
+                       /*window_size=*/1, /*stride=*/1);
+  EXPECT_THAT(root.status(),
+              tsl::testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
+                                     ::testing::ContainsRegex("window size")));
+}
+
+TEST(SpectrogramOpTest, InvalidStride) {
+  Scope root = Scope::NewRootScope();
+  const int audio_size = 8;
+  const int channel_size = 2;
+  Tensor audio_tensor(DT_FLOAT, TensorShape({audio_size, channel_size}));
+  test::FillValues<float>(
+      &audio_tensor, {-1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, -1.0f,
+                      -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f});
+  Output audio_const_op = Const(root.WithOpName("audio_const_op"),
+                                Input::Initializer(audio_tensor));
+  AudioSpectrogram spectrogram_op =
+      AudioSpectrogram(root.WithOpName("spectrogram_op"), audio_const_op,
+                       /*window_size=*/2, /*stride=*/0);
+  EXPECT_THAT(root.status(),
+              tsl::testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
+                                     ::testing::ContainsRegex("stride")));
 }
 
 }  // namespace

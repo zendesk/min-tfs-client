@@ -16,7 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_EIGEN_ATTENTION_H_
 #define TENSORFLOW_CORE_KERNELS_EIGEN_ATTENTION_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 
 namespace Eigen {
 
@@ -56,13 +56,14 @@ struct GlimpseExtractionOp {
   GlimpseExtractionOp(const Index width, const Index height,
                       const std::vector<IndexPair<float> >& offsets,
                       const bool normalized, const bool centered,
-                      const ExtractGlimpsesNoiseMode noise)
+                      const ExtractGlimpsesNoiseMode noise, const int version)
       : width_(width),
         height_(height),
         offsets_(offsets),
         normalized_(normalized),
         centered_(centered),
-        noise_(noise) {}
+        noise_(noise),
+        version_(version) {}
 
   template <typename Input>
   DSizes<Index, 4> dimensions(const Input& input) const {
@@ -101,21 +102,44 @@ struct GlimpseExtractionOp {
     for (Index i = 0; i < batch_size; ++i) {
       float x = offsets_[i].first, y = offsets_[i].second;
 
-      // Un-normalize coordinates back to pixel space if normalized.
-      if (normalized_) {
-        x *= input_width;
-        y *= input_height;
+      if (version_ == 1) {
+        // Un-normalize coordinates back to pixel space if normalized.
+        if (normalized_) {
+          x *= input_width;
+          y *= input_height;
+        }
+        // Un-center if coordinates are centered on the image center.
+        if (centered_) {
+          x /= 2.0f;
+          y /= 2.0f;
+          x += input_width / 2.0f;
+          y += input_height / 2.0f;
+        }
+        // Remove half of the glimpse window.
+        x -= width_ / 2.0f;
+        y -= height_ / 2.0f;
+      } else {
+        if (normalized_) {
+          // Un-normalize coordinates back to pixel space if normalized.
+          x *= input_width;
+          y *= input_height;
+          if (centered_) {
+            // Un-center if coordinates are centered on the image center.
+            x /= 2.0f;
+            y /= 2.0f;
+            x += input_width / 2.0f;
+            y += input_height / 2.0f;
+            // Remove half of the glimpse window.
+            x -= width_ / 2.0f;
+            y -= height_ / 2.0f;
+          }
+        } else {
+          if (centered_) {
+            x += input_width / 2.0f;
+            y += input_height / 2.0f;
+          }
+        }
       }
-      // Un-center if coordinates are centered on the image center.
-      if (centered_) {
-        x /= 2.0f;
-        y /= 2.0f;
-        x += input_width / 2.0f;
-        y += input_height / 2.0f;
-      }
-      // Remove half of the glimpse window.
-      x -= width_ / 2.0f;
-      y -= height_ / 2.0f;
 
       const Index offset_x = (Index)x;
       const Index offset_y = (Index)y;
@@ -160,8 +184,9 @@ struct GlimpseExtractionOp {
           } break;
           case UNIFORM: {
             // Initialize the glimpse with uniform noise.
-            typedef typename internal::remove_const<
-                typename internal::traits<Input>::Scalar>::type Scalar;
+            typedef std::remove_const_t<
+                typename internal::traits<Input>::Scalar>
+                Scalar;
             TensorFixedSize<Scalar, Sizes<> > mini;
             mini.device(device) = input.template chip<3>(i).minimum();
             TensorFixedSize<float, Sizes<> > range;
@@ -169,7 +194,7 @@ struct GlimpseExtractionOp {
                                        .template cast<float>();
 
             DSizes<Index, 3> glimpse_size(num_channels, width_, height_);
-            TensorMap<Tensor<float, 3> > tmp(NULL, glimpse_size);
+            TensorMap<Tensor<float, 3> > tmp(nullptr, glimpse_size);
             output.template chip<3>(i).device(device) =
                 mini.reshape(Sizes<1, 1, 1>()).broadcast(glimpse_size) +
                 (tmp.random(unigen) *
@@ -182,8 +207,9 @@ struct GlimpseExtractionOp {
             // of each channel, and use them to shape the gaussian.
             DSizes<Index, 2> glimpse_size(width_, height_);
             DSizes<Index, 2> input_size(input_width, input_height);
-            typedef typename internal::remove_const<
-                typename internal::traits<Input>::Scalar>::type Scalar;
+            typedef std::remove_const_t<
+                typename internal::traits<Input>::Scalar>
+                Scalar;
 
             for (int j = 0; j < num_channels; ++j) {
               TensorFixedSize<Scalar, Sizes<> > mean;
@@ -207,7 +233,7 @@ struct GlimpseExtractionOp {
               maxi.device(device) =
                   input.template chip<3>(i).template chip<0>(j).maximum();
 
-              TensorMap<Tensor<float, 2> > tmp(NULL, glimpse_size);
+              TensorMap<Tensor<float, 2> > tmp(nullptr, glimpse_size);
               output.template chip<3>(i).template chip<0>(j).device(device) =
                   (mean.reshape(Sizes<1, 1>()).broadcast(glimpse_size) +
                    (tmp.random(gen) *
@@ -243,6 +269,7 @@ struct GlimpseExtractionOp {
   const bool normalized_;
   const bool centered_;
   const ExtractGlimpsesNoiseMode noise_;
+  const int version_;
 };
 }  // namespace
 
@@ -255,7 +282,8 @@ ExtractGlimpses(
     const typename internal::traits<Input>::Index height,
     const std::vector<IndexPair<float> >& offsets, const bool normalized = true,
     const bool centered = true,
-    const ExtractGlimpsesNoiseMode noise = ExtractGlimpsesNoiseMode::UNIFORM) {
+    const ExtractGlimpsesNoiseMode noise = ExtractGlimpsesNoiseMode::UNIFORM,
+    const int version = 2) {
   EIGEN_STATIC_ASSERT(internal::traits<Input>::Layout == ColMajor,
                       YOU_MADE_A_PROGRAMMING_MISTAKE);
   EIGEN_STATIC_ASSERT(internal::traits<Input>::NumDimensions == 4,
@@ -263,7 +291,7 @@ ExtractGlimpses(
 
   typedef typename internal::traits<Input>::Index Index;
   const GlimpseExtractionOp<Index> op(width, height, offsets, normalized,
-                                      centered, noise);
+                                      centered, noise, version);
   return input.customOp(op);
 }
 

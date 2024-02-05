@@ -149,7 +149,7 @@ bool RecursivelyBackwardPropagateDataType(GraphTransformation* transformation,
                                           ArrayDataType new_data_type,
                                           const MinMax& new_minmax) {
   bool did_change = false;
-  for (int input_index = 0; input_index < op->inputs.size(); ++input_index) {
+  for (size_t input_index = 0; input_index < op->inputs.size(); ++input_index) {
     const auto& input = op->inputs[input_index];
     auto& input_array = model->GetArray(input);
 
@@ -245,7 +245,7 @@ bool RecursivelyForwardPropagateDataType(GraphTransformation* transformation,
 // This can be thought of as a bidirectional flood-fill of the num_bits implied
 // final_data_type that terminates at other FakeQuant ops (and a few others as
 // determined by DoesOpBlockBackwardPropagation/DoesOpBlockForwardPropagation).
-// Once all FakeQuant ops have been visted the arrays should all have
+// Once all FakeQuant ops have been visited the arrays should all have
 // appropriate final_data_types if the source graph was annotated with the
 // proper FakeQuant ops.
 //
@@ -284,7 +284,7 @@ bool RecursivelyForwardPropagateDataType(GraphTransformation* transformation,
   auto it = model->operators.begin() + op_index;
   auto* op = it->get();
   if (op->type != OperatorType::kFakeQuant) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   auto* fakequant_op = static_cast<FakeQuantOperator*>(op);
 
@@ -293,7 +293,7 @@ bool RecursivelyForwardPropagateDataType(GraphTransformation* transformation,
                                            &quantized_data_type)) {
     AddMessageF("FakeQuant op %s num_bits=%d is out of range, ignoring",
                 LogName(*op), fakequant_op->num_bits);
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   const auto& final_minmax = *fakequant_op->minmax;
 
@@ -315,7 +315,7 @@ bool RecursivelyForwardPropagateDataType(GraphTransformation* transformation,
       RecursivelyForwardPropagateDataType(this, model, op, quantized_data_type);
 
   *modified = did_change;
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

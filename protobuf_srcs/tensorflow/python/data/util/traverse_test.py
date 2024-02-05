@@ -14,13 +14,14 @@
 # ==============================================================================
 """Tests for utilities for traversing the dataset construction graph."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from absl.testing import parameterized
 
+from tensorflow.python.compat import compat
+from tensorflow.python.data.experimental.ops import data_service_ops
+from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.util import traverse
-from tensorflow.python.framework import test_util
+from tensorflow.python.framework import combinations
 from tensorflow.python.ops import gen_dataset_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import test
@@ -39,23 +40,23 @@ class _TestDataset(dataset_ops.UnaryUnchangedStructureDataset):
     super(_TestDataset, self).__init__(input_dataset, variant_tensor)
 
 
-class TraverseTest(test.TestCase):
+class TraverseTest(test_base.DatasetTestBase, parameterized.TestCase):
 
-  @test_util.run_deprecated_v1
+  @combinations.generate(test_base.graph_only_combinations())
   def testOnlySource(self):
     ds = dataset_ops.Dataset.range(10)
     variant_tensor_ops = traverse.obtain_all_variant_tensor_ops(ds)
     self.assertAllEqual(["RangeDataset"], [x.name for x in variant_tensor_ops])
 
-  @test_util.run_deprecated_v1
+  @combinations.generate(test_base.graph_only_combinations())
   def testSimplePipeline(self):
     ds = dataset_ops.Dataset.range(10).map(math_ops.square)
     variant_tensor_ops = traverse.obtain_all_variant_tensor_ops(ds)
     self.assertSetEqual(
         set(["MapDataset", "RangeDataset"]),
-        set([x.name for x in variant_tensor_ops]))
+        set(x.name for x in variant_tensor_ops))
 
-  @test_util.run_deprecated_v1
+  @combinations.generate(test_base.graph_only_combinations())
   def testConcat(self):
     ds1 = dataset_ops.Dataset.range(10)
     ds2 = dataset_ops.Dataset.range(10)
@@ -63,9 +64,9 @@ class TraverseTest(test.TestCase):
     variant_tensor_ops = traverse.obtain_all_variant_tensor_ops(ds)
     self.assertSetEqual(
         set(["ConcatenateDataset", "RangeDataset", "RangeDataset_1"]),
-        set([x.name for x in variant_tensor_ops]))
+        set(x.name for x in variant_tensor_ops))
 
-  @test_util.run_deprecated_v1
+  @combinations.generate(test_base.graph_only_combinations())
   def testZip(self):
     ds1 = dataset_ops.Dataset.range(10)
     ds2 = dataset_ops.Dataset.range(10)
@@ -73,18 +74,18 @@ class TraverseTest(test.TestCase):
     variant_tensor_ops = traverse.obtain_all_variant_tensor_ops(ds)
     self.assertSetEqual(
         set(["ZipDataset", "RangeDataset", "RangeDataset_1"]),
-        set([x.name for x in variant_tensor_ops]))
+        set(x.name for x in variant_tensor_ops))
 
-  @test_util.run_deprecated_v1
+  @combinations.generate(test_base.graph_only_combinations())
   def testMultipleVariantTensors(self):
     ds = dataset_ops.Dataset.range(10)
     ds = _TestDataset(ds)
     variant_tensor_ops = traverse.obtain_all_variant_tensor_ops(ds)
     self.assertSetEqual(
         set(["RangeDataset", "ModelDataset", "PrefetchDataset"]),
-        set([x.name for x in variant_tensor_ops]))
+        set(x.name for x in variant_tensor_ops))
 
-  @test_util.run_deprecated_v1
+  @combinations.generate(test_base.graph_only_combinations())
   def testFlatMap(self):
     ds1 = dataset_ops.Dataset.range(10).repeat(10)
 
@@ -102,7 +103,20 @@ class TraverseTest(test.TestCase):
         set([
             "FlatMapDataset", "PrefetchDataset", "RepeatDataset",
             "RangeDataset", "RangeDataset_1"
-        ]), set([x.name for x in variant_tensor_ops]))
+        ]), set(x.name for x in variant_tensor_ops))
+
+  @combinations.generate(test_base.graph_only_combinations())
+  def testTfDataService(self):
+    ds = dataset_ops.Dataset.range(10)
+    ds = ds.apply(
+        data_service_ops.distribute("parallel_epochs", "grpc://foo:0"))
+    ops = traverse.obtain_capture_by_value_ops(ds)
+    data_service_dataset_op = ("DataServiceDatasetV4"
+                               if compat.forward_compatible(2022, 8, 31) else
+                               "DataServiceDatasetV3")
+    self.assertContainsSubset(
+        ["RangeDataset", data_service_dataset_op, "DummyIterationCounter"],
+        set(x.name for x in ops))
 
 
 if __name__ == "__main__":

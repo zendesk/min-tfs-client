@@ -33,7 +33,6 @@ limitations under the License.
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/step_stats.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/strings/stringprintf.h"
 #include "tensorflow/core/profiler/internal/tfprof_code.h"
 #include "tensorflow/core/profiler/internal/tfprof_graph.h"
 #include "tensorflow/core/profiler/internal/tfprof_node.h"
@@ -59,12 +58,12 @@ class TFStats {
   TFStats(const string& filename,
           std::unique_ptr<checkpoint::CheckpointReader> ckpt_reader);
 
-  ~TFStats() {}
+  ~TFStats() = default;
 
   const std::map<string, std::unique_ptr<TFGraphNode>>& nodes() const {
     return nodes_map_;
   }
-  const std::set<int64>& steps() const { return steps_; }
+  const std::set<int64_t>& steps() const { return steps_; }
   bool has_code_traces() const { return has_code_traces_; }
   double run_coverage() const {
     return covered_nodes_.size() / (nodes_map_.size() + 1e-10);
@@ -87,7 +86,7 @@ class TFStats {
   void AddGraph(std::unique_ptr<GraphDef> graph);
 
   // Add a step of run time meta data.
-  void AddRunMeta(int64 step, std::unique_ptr<RunMetadata> run_meta);
+  void AddRunMeta(int64_t step, std::unique_ptr<RunMetadata> run_meta);
   // Add tfprof operation meta data, such as customized op type, float_ops,
   // and code traces.
   void AddOpLogProto(std::unique_ptr<OpLogProto> op_log);
@@ -96,13 +95,13 @@ class TFStats {
   void WriteProfile(const string& filename);
 
   // For test purpose only.
-  void AddNodeForTest(int64 step, std::unique_ptr<TFGraphNode> node);
+  void AddNodeForTest(int64_t step, std::unique_ptr<TFGraphNode> node);
 
  private:
   bool Validate(const Options& opts) const;
   string MaybeReportMissingTrace() const;
 
-  std::set<int64> steps_;
+  std::set<int64_t> steps_;
   bool has_code_traces_;
   bool miss_accelerator_stream_;
   std::unique_ptr<TFScope> scope_view_;
@@ -117,9 +116,9 @@ class TFStats {
   GraphNodeProto empty_graph_node_;
   MultiGraphNodeProto empty_multi_graph_node_;
 
-  std::map<int64, string> id_to_string_;
+  std::map<int64_t, string> id_to_string_;
   // Graph nodes covered by RunMetadata, that is traced with run time stats.
-  std::set<int64> covered_nodes_;
+  std::set<int64_t> covered_nodes_;
 };
 
 }  // namespace tfprof

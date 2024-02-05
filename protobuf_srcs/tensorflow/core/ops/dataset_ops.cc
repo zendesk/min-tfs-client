@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/framework/common_shape_fns.h"
+#include "tensorflow/core/framework/full_type.pb.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_def_builder.h"
 #include "tensorflow/core/framework/shape_inference.h"
@@ -28,33 +29,40 @@ namespace tensorflow {
 // "MakeIterator" op.
 //
 // TODO(b/123753214): DT_VARIANT tensors that represent "dataset" objects are
-// not presently serializable. To avoid issues with constant folding, ensure
-// that any "source dataset" ops (i.e. ops that output a dataset and do not
-// take one as input) are marked "stateful".
+// not presently serializable. To avoid issues with graph optimizations, such
+// as constant folding, CSE, or DCE, ensure that any "source dataset" ops
+// (i.e. ops that output a dataset and do not take one as input) are
+// marked as "do not optimize".
 
+// TODO(mrry): Validate that `components` have shapes compatible with
+// `output_shapes`.
 REGISTER_OP("TensorDataset")
     .Input("components: Toutput_types")
     .Output("handle: variant")
     .Attr("Toutput_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetIsStateful()  // TODO(b/123753214): Source dataset ops must be marked
-                      // stateful to inhibit constant folding.
-    .SetShapeFn(shape_inference::ScalarShape);  // TODO(mrry): Validate that
-                                                // `components` have shapes
-                                                // compatible with
-                                                // `output_shapes`.
+    .Attr("metadata: string = ''")
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "Toutput_types"))
+    .SetShapeFn(shape_inference::ScalarShape);
 
+// TODO(mrry): Validate that the dim-0 slices of `components` have shapes
+// compatible with `output_shapes`.
 REGISTER_OP("TensorSliceDataset")
     .Input("components: Toutput_types")
     .Output("handle: variant")
     .Attr("Toutput_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetIsStateful()  // TODO(b/123753214): Source dataset ops must be marked
-                      // stateful to inhibit constant folding.
-    .SetShapeFn(shape_inference::ScalarShape);  // TODO(mrry): Validate that the
-                                                // dim-0 slices of `components`
-                                                // have shapes compatible with
-                                                // `output_shapes`.
+    .Attr("is_files: bool = false")
+    .Attr("metadata: string = ''")
+    .Attr("replicate_on_split: bool = false")
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "Toutput_types"))
+    .SetForwardTypeFn(full_type::MultiaryUnstack(TFT_DATASET,
+                                                 full_type::UnstackTensor))
+    .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("SparseTensorSliceDataset")
     .Input("indices: int64")
@@ -62,8 +70,8 @@ REGISTER_OP("SparseTensorSliceDataset")
     .Input("dense_shape: int64")
     .Output("handle: variant")
     .Attr("Tvalues: type")
-    .SetIsStateful()  // TODO(b/123753214): Source dataset ops must be marked
-                      // stateful to inhibit constant folding.
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::UnaryTensorContainer(TFT_DATASET, "Tvalues"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("GeneratorDataset")
@@ -79,8 +87,10 @@ REGISTER_OP("GeneratorDataset")
     .Attr("Tfinalize_func_args: list(type) >= 0")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetIsStateful()  // TODO(b/123753214): Source dataset ops must be marked
-                      // stateful to inhibit constant folding.
+    .Attr("metadata: string = ''")
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("ZipDataset")
@@ -89,6 +99,9 @@ REGISTER_OP("ZipDataset")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
     .Attr("N: int >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("ConcatenateDataset")
@@ -97,6 +110,9 @@ REGISTER_OP("ConcatenateDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("RepeatDataset")
@@ -105,6 +121,9 @@ REGISTER_OP("RepeatDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle count_shape;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &count_shape));
@@ -117,6 +136,9 @@ REGISTER_OP("TakeDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle count_shape;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &count_shape));
@@ -129,6 +151,9 @@ REGISTER_OP("SkipDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle count_shape;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &count_shape));
@@ -145,6 +170,9 @@ REGISTER_OP("MapDataset")
     .Attr("output_shapes: list(shape) >= 1")
     .Attr("use_inter_op_parallelism: bool = true")
     .Attr("preserve_cardinality: bool = false")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("ParallelMapDataset")
@@ -159,6 +187,27 @@ REGISTER_OP("ParallelMapDataset")
     .Attr("use_inter_op_parallelism: bool = true")
     .Attr("sloppy: bool = false")
     .Attr("preserve_cardinality: bool = false")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn(shape_inference::ScalarShape);
+
+REGISTER_OP("ParallelMapDatasetV2")
+    .Input("input_dataset: variant")
+    .Input("other_arguments: Targuments")
+    .Input("num_parallel_calls: int64")
+    .Output("handle: variant")
+    .Attr("f: func")
+    .Attr("Targuments: list(type) >= 0")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .Attr("use_inter_op_parallelism: bool = true")
+    // "true", "false", or "default".
+    .Attr("deterministic: string = 'default'")
+    .Attr("preserve_cardinality: bool = false")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("PrefetchDataset")
@@ -169,6 +218,10 @@ REGISTER_OP("PrefetchDataset")
     .Attr("output_shapes: list(shape) >= 1")
     .Attr("slack_period: int = 0")
     .Attr("legacy_autotune: bool = true")
+    .Attr("buffer_size_min: int = 0")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // buffer_size should be a scalar.
@@ -184,6 +237,9 @@ REGISTER_OP("FlatMapDataset")
     .Attr("Targuments: list(type) >= 0")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("InterleaveDataset")
@@ -196,6 +252,9 @@ REGISTER_OP("InterleaveDataset")
     .Attr("Targuments: list(type) >= 0")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("ParallelInterleaveDatasetV2")
@@ -210,6 +269,48 @@ REGISTER_OP("ParallelInterleaveDatasetV2")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
     .Attr("sloppy: bool = false")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn(shape_inference::ScalarShape);
+
+REGISTER_OP("ParallelInterleaveDatasetV3")
+    .Input("input_dataset: variant")
+    .Input("other_arguments: Targuments")
+    .Input("cycle_length: int64")
+    .Input("block_length: int64")
+    .Input("num_parallel_calls: int64")
+    .Output("handle: variant")
+    .Attr("f: func")
+    // "true", "false", or "default".
+    .Attr("deterministic: string = 'default'")
+    .Attr("Targuments: list(type) >= 0")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn(shape_inference::ScalarShape);
+
+// Like V3, but adds buffer_output_elements and prefetch_input_elements.
+REGISTER_OP("ParallelInterleaveDatasetV4")
+    .Input("input_dataset: variant")
+    .Input("other_arguments: Targuments")
+    .Input("cycle_length: int64")
+    .Input("block_length: int64")
+    .Input("buffer_output_elements: int64")
+    .Input("prefetch_input_elements: int64")
+    .Input("num_parallel_calls: int64")
+    .Output("handle: variant")
+    .Attr("f: func")
+    // "true", "false", or "default".
+    .Attr("deterministic: string = 'default'")
+    .Attr("Targuments: list(type) >= 0")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("FilterDataset")
@@ -220,6 +321,25 @@ REGISTER_OP("FilterDataset")
     .Attr("Targuments: list(type) >= 0")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn(shape_inference::ScalarShape);
+
+REGISTER_OP("ParallelFilterDataset")
+    .Input("input_dataset: variant")
+    .Input("other_arguments: Targuments")
+    .Input("num_parallel_calls: int64")
+    .Output("handle: variant")
+    .Attr("predicate: func")
+    // "true", "false", or "default".
+    .Attr("deterministic: string = 'default'")
+    .Attr("Targuments: list(type) >= 0")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 // This op is no longer supported.
@@ -228,6 +348,8 @@ REGISTER_OP("FilterByLastComponentDataset")
     .Output("output: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("WindowDataset")
@@ -239,6 +361,9 @@ REGISTER_OP("WindowDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // size, shift, stride, and drop_remainder should be scalars.
@@ -249,12 +374,25 @@ REGISTER_OP("WindowDataset")
       return shape_inference::ScalarShape(c);
     });
 
+REGISTER_OP("WindowOp")
+    .Input("inputs: Tinputs")
+    .Output("handle: variant")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .Attr("Tinputs: list(type) >= 1")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn(shape_inference::ScalarShape);
+
 REGISTER_OP("BatchDataset")
     .Input("input_dataset: variant")
     .Input("batch_size: int64")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // batch_size should be a scalar.
@@ -270,12 +408,42 @@ REGISTER_OP("BatchDatasetV2")
     .Attr("parallel_copy: bool = false")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetForwardTypeFn(full_type::ContainerMap(TFT_DATASET, /*input_idx=*/0,
+                                              full_type::BatchTensor))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // batch_size should be a scalar.
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
       // drop_remainder should be a scalar.
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      return shape_inference::ScalarShape(c);
+    });
+
+REGISTER_OP("ParallelBatchDataset")
+    .Input("input_dataset: variant")
+    .Input("batch_size: int64")
+    .Input("num_parallel_calls: int64")
+    .Input("drop_remainder: bool")
+    .Output("handle: variant")
+    .Attr("parallel_copy: bool = false")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    // "true", "false", or "default".
+    .Attr("deterministic: string = 'default'")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle unused;
+      // batch_size should be a scalar.
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
+      // num_parallel_calls should be a scalar.
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      // drop_remainder should be a scalar.
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
       return shape_inference::ScalarShape(c);
     });
 
@@ -287,6 +455,9 @@ REGISTER_OP("ShardDataset")
     .Attr("require_non_empty: bool = false")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // num_shards should be a scalar.
@@ -309,6 +480,9 @@ REGISTER_OP("PaddedBatchDataset")
     .Attr("Toutput_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
     .Attr("N: int >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "Toutput_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // batch_size should be a scalar.
@@ -327,6 +501,9 @@ REGISTER_OP("PaddedBatchDatasetV2")
     .Attr("Toutput_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
     .Attr("N: int >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "Toutput_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // batch_size should be a scalar.
@@ -344,8 +521,11 @@ REGISTER_OP("RangeDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetIsStateful()  // TODO(b/123753214): Source dataset ops must be marked
-                      // stateful to inhibit constant folding.
+    .Attr("metadata: string = ''")
+    .Attr("replicate_on_split: bool = false")
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // start, stop, and step should be scalars.
@@ -355,6 +535,40 @@ REGISTER_OP("RangeDataset")
       return shape_inference::ScalarShape(c);
     });
 
+REGISTER_OP("RewriteDataset")
+    .Input("input_dataset: variant")
+    .Input("rewrite_name: string")
+    .Output("handle: variant")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn(shape_inference::ScalarShape);
+
+REGISTER_OP("AnonymousSeedGenerator")
+    .Input("seed: int64")
+    .Input("seed2: int64")
+    .Input("reshuffle: bool")
+    .Output("handle: resource")
+    .Output("deleter: variant")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Scalar());
+      c->set_output(1, c->Scalar());
+      return OkStatus();
+    });
+
+REGISTER_OP("DatasetCardinality")
+    .Input("input_dataset: variant")
+    .Output("cardinality: int64")
+    .Attr("cardinality_options: string = ''")
+    .SetShapeFn(shape_inference::ScalarShape);
+
+REGISTER_OP("DeleteSeedGenerator")
+    .Input("handle: resource")
+    .Input("deleter: variant")
+    .SetShapeFn(shape_inference::NoOutputs);
+
+// Deprecated in favor of AnonymousSeedGenerator/DeleteSeedGenerator.
 REGISTER_OP("AnonymousRandomSeedGenerator")
     .Input("seed: int64")
     .Input("seed2: int64")
@@ -363,13 +577,21 @@ REGISTER_OP("AnonymousRandomSeedGenerator")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->Scalar());
       c->set_output(1, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
+// Deprecated in favor of AnonymousSeedGenerator/DeleteSeedGenerator.
 REGISTER_OP("DeleteRandomSeedGenerator")
     .Input("handle: resource")
     .Input("deleter: variant")
     .SetShapeFn(shape_inference::NoOutputs);
+
+REGISTER_OP("DummySeedGenerator")
+    .Output("handle: resource")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Scalar());
+      return OkStatus();
+    });
 
 REGISTER_OP("ShuffleDataset")
     .Input("input_dataset: variant")
@@ -380,6 +602,9 @@ REGISTER_OP("ShuffleDataset")
     .Attr("reshuffle_each_iteration: bool = true")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // buffer_size, seed, and seed2 should be scalars.
@@ -396,11 +621,37 @@ REGISTER_OP("ShuffleDatasetV2")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
-      // buffer_size, seed, and seed2 should be scalars.
+      // buffer_size and seed_generator should be scalars.
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      return shape_inference::ScalarShape(c);
+    });
+
+REGISTER_OP("ShuffleDatasetV3")
+    .Input("input_dataset: variant")
+    .Input("buffer_size: int64")
+    .Input("seed: int64")
+    .Input("seed2: int64")
+    .Input("seed_generator: resource")
+    .Output("handle: variant")
+    .Attr("reshuffle_each_iteration: bool = true")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle unused;
+      // buffer_size, seed, seed2, and seed_generator should be scalars.
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
       return shape_inference::ScalarShape(c);
     });
 
@@ -413,6 +664,10 @@ REGISTER_OP("ShuffleAndRepeatDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("reshuffle_each_iteration: bool = true")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // buffer_size, seed, seed2, and count should be scalars.
@@ -423,13 +678,38 @@ REGISTER_OP("ShuffleAndRepeatDataset")
       return shape_inference::ScalarShape(c);
     });
 
+REGISTER_OP("ShuffleAndRepeatDatasetV2")
+    .Input("input_dataset: variant")
+    .Input("buffer_size: int64")
+    .Input("seed: int64")
+    .Input("seed2: int64")
+    .Input("count: int64")
+    .Input("seed_generator: resource")
+    .Output("handle: variant")
+    .Attr("reshuffle_each_iteration: bool = true")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle unused;
+      // buffer_size, seed, seed2, count, and seed_generator should be scalars.
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
+      return shape_inference::ScalarShape(c);
+    });
+
 REGISTER_OP("AnonymousMemoryCache")
     .Output("handle: resource")
     .Output("deleter: variant")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->Scalar());
       c->set_output(1, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("DeleteMemoryCache")
@@ -437,12 +717,23 @@ REGISTER_OP("DeleteMemoryCache")
     .Input("deleter: variant")
     .SetShapeFn(shape_inference::NoOutputs);
 
+REGISTER_OP("DummyMemoryCache")
+    .Output("handle: resource")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Scalar());
+      return OkStatus();
+    });
+
 REGISTER_OP("CacheDataset")
     .Input("input_dataset: variant")
     .Input("filename: string")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    // TODO(mdan): Should these use type inference instead?
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // filename should be a scalar.
@@ -457,6 +748,9 @@ REGISTER_OP("CacheDatasetV2")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // filename should be a scalar.
@@ -470,9 +764,11 @@ REGISTER_OP("TextLineDataset")
     .Input("filenames: string")
     .Input("compression_type: string")
     .Input("buffer_size: int64")
+    .Attr("metadata: string = ''")
     .Output("handle: variant")
-    .SetIsStateful()  // TODO(b/123753214): Source dataset ops must be marked
-                      // stateful to inhibit constant folding.
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::UnaryTensorContainer(TFT_DATASET,
+                                                        TFT_STRING))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // `filenames` must be a scalar or a vector.
@@ -490,9 +786,11 @@ REGISTER_OP("FixedLengthRecordDataset")
     .Input("record_bytes: int64")
     .Input("footer_bytes: int64")
     .Input("buffer_size: int64")
+    .Attr("metadata: string = ''")
     .Output("handle: variant")
-    .SetIsStateful()  // TODO(b/123753214): Source dataset ops must be marked
-                      // stateful to inhibit constant folding.
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::UnaryTensorContainer(TFT_DATASET,
+                                                        TFT_STRING))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // `filenames` must be a scalar or a vector.
@@ -513,9 +811,11 @@ REGISTER_OP("FixedLengthRecordDatasetV2")
     .Input("footer_bytes: int64")
     .Input("buffer_size: int64")
     .Input("compression_type: string")
+    .Attr("metadata: string = ''")
     .Output("handle: variant")
-    .SetIsStateful()  // TODO(b/123753214): Source dataset ops must be marked
-                      // stateful to inhibit constant folding.
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::UnaryTensorContainer(TFT_DATASET,
+                                                        TFT_STRING))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // `filenames` must be a scalar or a vector.
@@ -533,9 +833,11 @@ REGISTER_OP("TFRecordDataset")
     .Input("filenames: string")
     .Input("compression_type: string")
     .Input("buffer_size: int64")
+    .Attr("metadata: string = ''")
     .Output("handle: variant")
-    .SetIsStateful()  // TODO(b/123753214): Source dataset ops must be marked
-                      // stateful to inhibit constant folding.
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::UnaryTensorContainer(TFT_DATASET,
+                                                        TFT_STRING))
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // `filenames` must be a scalar or a vector.
@@ -544,6 +846,29 @@ REGISTER_OP("TFRecordDataset")
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
       // `buffer_size` could only be a scalar.
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      return shape_inference::ScalarShape(c);
+    });
+
+REGISTER_OP("TFRecordDatasetV2")
+    .Input("filenames: string")
+    .Input("compression_type: string")
+    .Input("buffer_size: int64")
+    .Input("byte_offsets: int64")
+    .Attr("metadata: string = ''")
+    .Output("handle: variant")
+    .SetDoNotOptimize()  // TODO(b/123753214): See comment in dataset_ops.cc.
+    .SetTypeConstructor(full_type::UnaryTensorContainer(TFT_DATASET,
+                                                        TFT_STRING))
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle unused;
+      // `filenames` must be a scalar or a vector.
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(0), 1, &unused));
+      // `compression_type` could only be a scalar.
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
+      // `buffer_size` could only be a scalar.
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      // `byte_offsets` must be a scalar or a vector.
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(3), 1, &unused));
       return shape_inference::ScalarShape(c);
     });
 
@@ -577,7 +902,16 @@ REGISTER_OP("AnonymousIteratorV2")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->Scalar());
       c->set_output(1, c->Scalar());
-      return Status::OK();
+      return OkStatus();
+    });
+
+REGISTER_OP("AnonymousIteratorV3")
+    .Output("handle: resource")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Scalar());
+      return OkStatus();
     });
 
 REGISTER_OP("DeleteIterator")
@@ -595,6 +929,8 @@ REGISTER_OP("DeleteMultiDeviceIterator")
 REGISTER_OP("MakeIterator")
     .Input("dataset: variant")
     .Input("iterator: resource")
+    .SetTypeConstructor(full_type::NoOutputs())
+    .SetReverseTypeFn(1, full_type::MapCovariant(TFT_DATASET, TFT_ITERATOR, 0))
     .SetShapeFn(shape_inference::NoOutputs);
 
 REGISTER_OP("OneShotIterator")
@@ -607,42 +943,19 @@ REGISTER_OP("OneShotIterator")
     .SetIsStateful()
     .SetShapeFn(shape_inference::ScalarShape);
 
-namespace {
-
-Status IteratorGetNextShapeFn(shape_inference::InferenceContext* c) {
-  shape_inference::ShapeHandle unused;
-  TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 0, &unused));
-  std::vector<PartialTensorShape> output_shapes;
-  TF_RETURN_IF_ERROR(c->GetAttr("output_shapes", &output_shapes));
-  if (output_shapes.size() != c->num_outputs()) {
-    return errors::InvalidArgument(
-        "`output_shapes` must be the same length as `output_types` (",
-        output_shapes.size(), " vs. ", c->num_outputs());
-  }
-  for (size_t i = 0; i < output_shapes.size(); ++i) {
-    shape_inference::ShapeHandle output_shape_handle;
-    TF_RETURN_IF_ERROR(c->MakeShapeFromPartialTensorShape(
-        output_shapes[i], &output_shape_handle));
-    c->set_output(static_cast<int>(i), output_shape_handle);
-  }
-  return Status::OK();
-}
-
-}  // namespace
-
 REGISTER_OP("IteratorGetNext")
     .Input("iterator: resource")
     .Output("components: output_types")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetShapeFn(IteratorGetNextShapeFn);
+    .SetShapeFn(shape_inference::DatasetIteratorShape);
 
 REGISTER_OP("IteratorGetNextSync")
     .Input("iterator: resource")
     .Output("components: output_types")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetShapeFn(IteratorGetNextShapeFn);
+    .SetShapeFn(shape_inference::DatasetIteratorShape);
 
 // TODO(b/124308596): Instead of conservatively marking this op as stateful,
 // implement a mechanism to determine whether `dataset` has a side-effect
@@ -653,8 +966,9 @@ REGISTER_OP("DatasetToSingleElement")
     .Output("components: output_types")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
     .SetIsStateful()
-    .SetShapeFn(IteratorGetNextShapeFn);
+    .SetShapeFn(shape_inference::DatasetIteratorShape);
 
 // TODO(b/124308596): Instead of conservatively marking this op as stateful,
 // implement a mechanism to determine whether `dataset` has a side-effect
@@ -671,8 +985,9 @@ REGISTER_OP("ReduceDataset")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
     .Attr("use_inter_op_parallelism: bool = true")
+    .Attr("metadata: string = ''")
     .SetIsStateful()
-    .SetShapeFn(IteratorGetNextShapeFn);
+    .SetShapeFn(shape_inference::DatasetIteratorShape);
 
 REGISTER_OP("IteratorToStringHandle")
     .Input("resource_handle: resource")
@@ -695,8 +1010,12 @@ REGISTER_OP("IteratorFromStringHandleV2")
 
 REGISTER_OP("SerializeIterator")
     .Input("resource_handle: resource")
+    .Attr("external_state_policy: int = 0")
     .Output("serialized: variant")
-    .SetShapeFn(shape_inference::ScalarShape);
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Vector(c->UnknownDim()));
+      return OkStatus();
+    });
 
 REGISTER_OP("DeserializeIterator")
     .Input("resource_handle: resource")
@@ -716,6 +1035,7 @@ REGISTER_OP("DatasetToGraphV2")
     .Attr("external_state_policy: int = 0")
     .Attr("strip_device_assignment: bool = false")
     .Output("graph: string")
+    .SetForwardTypeFn(full_type::Encode(TFT_STRING, 0))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("OptimizeDataset")
@@ -725,35 +1045,31 @@ REGISTER_OP("OptimizeDataset")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
     .Attr("optimization_configs: list(string) = []")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
-REGISTER_OP("OptionalFromValue")
-    .Input("components: Toutput_types")
-    .Output("optional: variant")
-    .Attr("Toutput_types: list(type) >= 1")
-    .SetShapeFn(shape_inference::ScalarShape);
-
-REGISTER_OP("OptionalNone")
-    .Output("optional: variant")
-    .SetShapeFn(shape_inference::ScalarShape);
-
-REGISTER_OP("OptionalHasValue")
-    .Input("optional: variant")
-    .Output("has_value: bool")
-    .SetShapeFn(shape_inference::ScalarShape);
-
-REGISTER_OP("OptionalGetValue")
-    .Input("optional: variant")
-    .Output("components: output_types")
+REGISTER_OP("OptimizeDatasetV2")
+    .Input("input_dataset: variant")
+    .Input("optimizations_enabled: string")
+    .Input("optimizations_disabled: string")
+    .Input("optimizations_default: string")
+    .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetShapeFn(IteratorGetNextShapeFn);
+    .Attr("optimization_configs: list(string) = []")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("IteratorGetNextAsOptional")
     .Input("iterator: resource")
     .Output("optional: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_OPTIONAL,
+                                                           "output_types"))
+    .SetForwardTypeFn(full_type::MapCovariant(TFT_ITERATOR, TFT_OPTIONAL, 0))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("ModelDataset")
@@ -761,8 +1077,11 @@ REGISTER_OP("ModelDataset")
     .Output("handle: variant")
     .Attr("algorithm: int = 0")
     .Attr("cpu_budget: int = 0")
+    .Attr("ram_budget: int = 0")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 // TODO(b/124308749): Add a stateful version of MapDefun and use it when `f`
@@ -788,7 +1107,7 @@ REGISTER_OP("MapDefun")
             output_shapes.size(), " vs. ", c->num_outputs(), ")");
       }
 
-      int64 dim_zero = -1;
+      int64_t dim_zero = -1;
       for (size_t i = 0; i < t_args.size(); ++i) {
         if (c->Rank(c->input(i)) == 0) {
           return errors::InvalidArgument(
@@ -816,7 +1135,7 @@ REGISTER_OP("MapDefun")
             c->MakeShapeFromPartialTensorShape(s, &output_shape_handle));
         c->set_output(static_cast<int>(i), output_shape_handle);
       }
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("WrapDatasetVariant")
@@ -838,7 +1157,17 @@ REGISTER_OP("AnonymousMultiDeviceIterator")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->Scalar());
       c->set_output(1, c->Scalar());
-      return Status::OK();
+      return OkStatus();
+    });
+
+REGISTER_OP("AnonymousMultiDeviceIteratorV3")
+    .Output("handle: resource")
+    .Attr("devices: list(string) >= 1")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Scalar());
+      return OkStatus();
     });
 
 REGISTER_OP("MultiDeviceIterator")
@@ -864,11 +1193,12 @@ REGISTER_OP("MultiDeviceIteratorGetNextFromShard")
     .Output("components: output_types")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetShapeFn(IteratorGetNextShapeFn);
+    .SetShapeFn(shape_inference::DatasetIteratorShape);
 
 REGISTER_OP("MultiDeviceIteratorToStringHandle")
     .Input("multi_device_iterator: resource")
     .Output("string_handle: string")
+    .SetForwardTypeFn(full_type::Encode(TFT_STRING, 0))
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("MultiDeviceIteratorFromStringHandle")
@@ -876,6 +1206,33 @@ REGISTER_OP("MultiDeviceIteratorFromStringHandle")
     .Output("multi_device_iterator: resource")
     .Attr("output_types: list(type) >= 0 = []")
     .Attr("output_shapes: list(shape) >= 0 = []")
+    .SetForwardTypeFn(full_type::Decode(TFT_STRING, 0))
+    .SetShapeFn(shape_inference::ScalarShape);
+
+REGISTER_OP("OptionsDataset")
+    .Input("input_dataset: variant")
+    .Output("handle: variant")
+    .Attr("serialized_options: string")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .Attr("metadata: string = ''")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
+    .SetShapeFn(shape_inference::ScalarShape);
+
+REGISTER_OP("GetOptions")
+    .Input("input_dataset: variant")
+    .Output("serialized_options: string")
+    .SetShapeFn(shape_inference::ScalarShape);
+
+REGISTER_OP("FinalizeDataset")
+    .Input("input_dataset: variant")
+    .Output("handle: variant")
+    .Attr("has_captured_ref: bool = false")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .SetTypeConstructor(full_type::VariadicTensorContainer(TFT_DATASET,
+                                                           "output_types"))
     .SetShapeFn(shape_inference::ScalarShape);
 
 }  // namespace tensorflow

@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/command_queue.h"
 
+#include <memory>
+
 #include "absl/memory/memory.h"
 #include "tensorflow/lite/delegates/gpu/common/gpu_info.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
@@ -30,17 +32,18 @@ namespace {
 
 class DefaultCommandQueue : public CommandQueue {
  public:
-  Status Dispatch(const GlProgram& program, const uint3& workgroups) override {
+  absl::Status Dispatch(const GlProgram& program,
+                        const uint3& workgroups) override {
     RETURN_IF_ERROR(program.Dispatch(workgroups));
     return TFLITE_GPU_CALL_GL(glMemoryBarrier, GL_ALL_BARRIER_BITS);
   }
 
-  Status WaitForCompletion() override {
+  absl::Status WaitForCompletion() override {
     // TODO(akulik): Maybe let the user choose which wait method to use.
     return GlActiveSyncWait();
   }
 
-  Status Flush() override { return OkStatus(); }
+  absl::Status Flush() override { return absl::OkStatus(); }
 };
 
 // On Adreno do flush periodically as this affects performance. Command queue
@@ -54,26 +57,27 @@ class AdrenoCommandQueue : public DefaultCommandQueue {
   explicit AdrenoCommandQueue(int flush_every_n)
       : flush_every_n_(flush_every_n) {}
 
-  Status Dispatch(const GlProgram& program, const uint3& workgroups) final {
+  absl::Status Dispatch(const GlProgram& program,
+                        const uint3& workgroups) final {
     RETURN_IF_ERROR(DefaultCommandQueue::Dispatch(program, workgroups));
     if ((++program_counter_ % flush_every_n_) == 0) {
       glFlush();
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 
-  Status WaitForCompletion() override {
+  absl::Status WaitForCompletion() override {
     program_counter_ = 0;
     return DefaultCommandQueue::WaitForCompletion();
   }
 
-  Status Flush() final {
+  absl::Status Flush() final {
     // Flush exactly once after the last dispatch.
     if (program_counter_ != 0) {
       program_counter_ = 0;
       glFlush();
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -84,17 +88,17 @@ class AdrenoCommandQueue : public DefaultCommandQueue {
 }  // namespace
 
 std::unique_ptr<CommandQueue> NewCommandQueue(const GpuInfo& gpu_info) {
-  if (gpu_info.type == GpuType::ADRENO) {
+  if (gpu_info.IsAdreno()) {
     int flush_every_n = 1;
     // On Adreno 630 and Adreno 505 there is up to 2x performance boost when
     // glFlush happens not so often.
-    if (gpu_info.gpu_model == GpuModel::ADRENO630 ||
-        gpu_info.gpu_model == GpuModel::ADRENO505) {
+    if (gpu_info.adreno_info.adreno_gpu == AdrenoGpu::kAdreno630 ||
+        gpu_info.adreno_info.adreno_gpu == AdrenoGpu::kAdreno505) {
       flush_every_n = 10;
     }
-    return absl::make_unique<AdrenoCommandQueue>(flush_every_n);
+    return std::make_unique<AdrenoCommandQueue>(flush_every_n);
   }
-  return absl::make_unique<DefaultCommandQueue>();
+  return std::make_unique<DefaultCommandQueue>();
 }
 
 }  // namespace gl

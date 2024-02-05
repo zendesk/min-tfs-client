@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/eager/eager_op_rewrite_registry.h"
 
+#include <memory>
+
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -22,37 +24,47 @@ namespace tensorflow {
 class TestEagerOpRewrite : public EagerOpRewrite {
  public:
   TestEagerOpRewrite(string name, string file, string line)
-      : EagerOpRewrite(name, file, line), executor_(/*async=*/false) {}
+      : EagerOpRewrite(name, file, line),
+        executor_(/*async=*/false, /*enable_streaming_enqueue=*/true) {}
   static int count_;
   EagerExecutor executor_;
   Status Run(EagerOperation* orig_op,
              std::unique_ptr<tensorflow::EagerOperation>* out_op) override {
     ++count_;
-    const tensorflow::AttrTypeMap* types;
-    bool is_function = false;
-    const string kNewOp = "NoOp";
-    TF_RETURN_IF_ERROR(
-        tensorflow::AttrTypeMapForOp(kNewOp.c_str(), &types, &is_function));
     // Create a new NoOp Eager operation.
-    out_op->reset(new tensorflow::EagerOperation(
-        nullptr, kNewOp.c_str(), is_function, types, &executor_));
-    return Status::OK();
+    tensorflow::EagerOperation* op =
+        new tensorflow::EagerOperation(&orig_op->EagerContext());
+    TF_RETURN_IF_ERROR(op->Reset("NoOp", nullptr, false, &executor_));
+    out_op->reset(op);
+    return OkStatus();
   }
 };
 
 int TestEagerOpRewrite::count_ = 0;
 
-REGISTER_REWRITE(EagerOpRewriteRegistry::PRE_EXECUTION, TestEagerOpRewrite);
+// Register two rewriter passes during the PRE_EXECUTION phase
+REGISTER_REWRITE(EagerOpRewriteRegistry::PRE_EXECUTION, 10000,
+                 TestEagerOpRewrite);
+REGISTER_REWRITE(EagerOpRewriteRegistry::PRE_EXECUTION, 10001,
+                 TestEagerOpRewrite);
 
 TEST(EagerOpRewriteRegistryTest, RegisterRewritePass) {
   EXPECT_EQ(0, TestEagerOpRewrite::count_);
-  EagerOperation* orig_op = nullptr;
+  StaticDeviceMgr device_mgr(DeviceFactory::NewDevice(
+      "CPU", {}, "/job:localhost/replica:0/task:0/device:CPU:0"));
+  tensorflow::EagerContext* ctx = new tensorflow::EagerContext(
+      SessionOptions(),
+      tensorflow::ContextDevicePlacementPolicy::DEVICE_PLACEMENT_SILENT, false,
+      &device_mgr, false, nullptr, nullptr, nullptr,
+      /*run_eager_op_as_function=*/true);
+  EagerOperation orig_op(ctx);
   std::unique_ptr<tensorflow::EagerOperation> out_op;
-  EXPECT_EQ(Status::OK(),
+  EXPECT_EQ(OkStatus(),
             EagerOpRewriteRegistry::Global()->RunRewrite(
-                EagerOpRewriteRegistry::PRE_EXECUTION, orig_op, &out_op));
-  EXPECT_EQ(1, TestEagerOpRewrite::count_);
+                EagerOpRewriteRegistry::PRE_EXECUTION, &orig_op, &out_op));
+  EXPECT_EQ(2, TestEagerOpRewrite::count_);
   EXPECT_EQ("NoOp", out_op->Name());
+  ctx->Unref();
 }
 
 }  // namespace tensorflow

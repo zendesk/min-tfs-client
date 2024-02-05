@@ -30,12 +30,12 @@ namespace tensorflow {
 
 ReaderBase::ReaderBase(const string& name) : name_(name) {}
 
-int64 ReaderBase::NumRecordsProduced() {
+int64_t ReaderBase::NumRecordsProduced() {
   mutex_lock lock(mu_);
   return num_records_produced_;
 }
 
-int64 ReaderBase::NumWorkUnitsCompleted() {
+int64_t ReaderBase::NumWorkUnitsCompleted() {
   mutex_lock lock(mu_);
   return work_finished_;
 }
@@ -50,7 +50,7 @@ Status ReaderBase::ResetLocked() {
   work_finished_ = 0;
   num_records_produced_ = 0;
   work_.clear();
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ReaderBase::SerializeState(tstring* state) {
@@ -75,16 +75,16 @@ Status ReaderBase::RestoreStateLocked(const tstring& state) {
   return errors::Unimplemented("Reader RestoreState");
 }
 
-int64 ReaderBase::ReadUpTo(const int64 num_records, QueueInterface* queue,
-                           std::vector<tstring>* keys,
-                           std::vector<tstring>* values,
-                           OpKernelContext* context) {
+int64_t ReaderBase::ReadUpTo(const int64_t num_records, QueueInterface* queue,
+                             std::vector<tstring>* keys,
+                             std::vector<tstring>* values,
+                             OpKernelContext* context) {
   mutex_lock lock(mu_);
-  int64 records_produced_this_call = 0;
+  int64_t records_produced_this_call = 0;
   while (true) {
     // Records produced by this iteration of the ReadUpToLocked call.
-    int64 num_records_produced = 0;
-    int64 remaining = num_records - records_produced_this_call;
+    int64_t num_records_produced = 0;
+    int64_t remaining = num_records - records_produced_this_call;
     if (remaining == 0) {
       return records_produced_this_call;
     }
@@ -133,9 +133,10 @@ int64 ReaderBase::ReadUpTo(const int64 num_records, QueueInterface* queue,
 }
 
 // Default implementation just reads one record at a time.
-Status ReaderBase::ReadUpToLocked(int64 num_records, std::vector<tstring>* keys,
-                                  std::vector<tstring>* values, int64* num_read,
-                                  bool* at_end) {
+Status ReaderBase::ReadUpToLocked(int64_t num_records,
+                                  std::vector<tstring>* keys,
+                                  std::vector<tstring>* values,
+                                  int64_t* num_read, bool* at_end) {
   bool produced = false;
   tstring key;
   tstring value;
@@ -180,7 +181,7 @@ void ReaderBase::Read(QueueInterface* queue, tstring* key, tstring* value,
     if (!status.ok() && produced) {
       status = errors::Internal(
           "ReadLocked() for ", name(),
-          " set *produced=true *and* returned an error: ", status.ToString());
+          " set *produced=true *and* returned an error: ", status.message());
     }
     if (status.ok() && at_end) {
       status = OnWorkFinishedLocked();
@@ -228,16 +229,7 @@ void ReaderBase::SaveBaseState(ReaderBaseState* state) const {
   state->set_work_started(work_started_);
   state->set_work_finished(work_finished_);
   state->set_num_records_produced(num_records_produced_);
-  // Unfortunately, external proto does not accept string_view.
-#if defined(PLATFORM_GOOGLE)
-  // TODO(dero): Remove NOLINT after USE_TSTRING is enabled.  The external proto
-  // compiler does not create an overloaded set method that accepts
-  // absl::string_view, and string_view to std::string is an explicit
-  // conversion.
-  state->set_current_work(StringPiece(work_));  // NOLINT
-#else
-  state->set_current_work(string(work_));
-#endif
+  state->set_current_work(work_.data(), work_.size());
 }
 
 tstring ReaderBase::KeyName(const tstring& key) const {
@@ -269,7 +261,7 @@ Status ReaderBase::RestoreBaseState(const ReaderBaseState& state) {
         "Inconsistent work started vs. finished when restoring in ", name(),
         ": ", debug_string);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

@@ -15,10 +15,8 @@
 """Tests for ops which manipulate lists of tensors via bridge."""
 
 # pylint: disable=g-bad-name
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 import os
+
 from absl.testing import parameterized
 import numpy as np
 from tensorflow.compiler.tests import xla_test
@@ -102,8 +100,8 @@ class ListOpsTest(parameterized.TestCase, xla_test.XLATestCase):
       l = list_ops.tensor_list_push_back(
           l, constant_op.constant(1.0, shape=(7, 15)))
       _, e = list_ops.tensor_list_pop_back(l, element_dtype=dtypes.float32)
-      with self.assertRaisesRegexp(errors.InvalidArgumentError,
-                                   "Set the max number of elements"):
+      with self.assertRaisesRegex(errors.InvalidArgumentError,
+                                  "Set the max number of elements"):
         self.assertAllEqual(sess.run(e), 1.0 * np.ones((7, 15)))
 
   def testEmptyTensorListMax(self):
@@ -173,7 +171,7 @@ class ListOpsTest(parameterized.TestCase, xla_test.XLATestCase):
           element_dtype=dtypes.float32, element_shape=None, max_num_elements=2)
       l = list_ops.tensor_list_push_back(l, [3.0, 4.0])
       # Pushing an element with a different shape should raise an error.
-      with self.assertRaisesRegexp(errors.InternalError, "shape"):
+      with self.assertRaisesRegex(errors.InternalError, "shape"):
         l = list_ops.tensor_list_push_back(l, 5.)
         self.evaluate(
             list_ops.tensor_list_stack(l, element_dtype=dtypes.float32))
@@ -237,6 +235,17 @@ class ListOpsTest(parameterized.TestCase, xla_test.XLATestCase):
       z = list_ops.tensor_list_stack(z, element_dtype=dtypes.float32)
       self.assertAllEqual(z.shape.as_list(), [None])
       self.assertAllEqual(z, [0.0, 0.0])
+
+  def testInvalidSplitLength(self):
+    with self.session(), self.test_scope():
+      tensor_list_split = list_ops.tensor_list_split(
+          tensor=[1], element_shape=[-1], lengths=[0]
+      )
+      with self.assertRaisesRegex(
+          errors.UnimplementedError, "All lengths must be positive"
+      ):
+        self.evaluate(tensor_list_split)
+
 
 if __name__ == "__main__":
   os.environ["TF_XLA_FLAGS"] = ("--tf_xla_min_cluster_size=2 " +

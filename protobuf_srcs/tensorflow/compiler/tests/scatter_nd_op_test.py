@@ -14,16 +14,13 @@
 # ==============================================================================
 """Tests for tensorflow.ops.tf.scatter_nd."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import functools
 
 import numpy as np
 
 from tensorflow.compiler.tests import xla_test
 from tensorflow.python.framework import errors
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.platform import test
 
@@ -161,6 +158,7 @@ class ScatterNdTest(xla_test.XLATestCase):
     expected = np.zeros([2, 2], dtype=np.int32)
     self.assertAllEqual(expected, self._runScatterNd(indices, updates, [2, 2]))
 
+  @test_util.disable_mlir_bridge("Error messages differ")
   def testRank3InvalidShape1(self):
     indices = np.zeros([3, 2, 2], np.int32)
     updates = np.zeros([2, 2, 2], np.int32)
@@ -168,6 +166,7 @@ class ScatterNdTest(xla_test.XLATestCase):
                                              "Must have updates.shape"):
       self._runScatterNd(indices, updates, [2, 2, 2])
 
+  @test_util.disable_mlir_bridge("Error messages differ")
   def testRank3InvalidShape2(self):
     indices = np.zeros([2, 2, 1], np.int32)
     updates = np.zeros([2, 2], np.int32)
@@ -218,6 +217,29 @@ class ScatterNdTensorTest(xla_test.XLATestCase):
         self._runScatter(array_ops.tensor_scatter_update),
         np.array([1, 11, 1, 10, 9, 1, 1, 12], dtype=np.float32))
 
+
+class ScatterNdTensorScalarUpdateTest(xla_test.XLATestCase):
+
+  def _runScatter(self, op):
+    indices_np = np.array([[4], [3], [1], [7]], dtype=np.int32)
+    updates_np = np.array(9, dtype=np.float32)
+    with self.session() as sess, self.test_scope():
+      indices = array_ops.placeholder(indices_np.dtype, shape=indices_np.shape)
+      updates = array_ops.placeholder(updates_np.dtype, shape=updates_np.shape)
+      t = array_ops.ones([8], dtype=np.float32)
+
+      out = op(t, indices, updates)
+      return sess.run(out, feed_dict={indices: indices_np, updates: updates_np})
+
+  def testUpdate(self):
+    self.assertAllEqual(
+        self._runScatter(array_ops.tensor_scatter_update),
+        np.array([1, 9, 1, 9, 9, 1, 1, 9], dtype=np.float32))
+
+  def testAdd(self):
+    self.assertAllEqual(
+        self._runScatter(array_ops.tensor_scatter_add),
+        np.array([1, 10, 1, 10, 10, 1, 1, 10], dtype=np.float32))
 
 if __name__ == "__main__":
   test.main()

@@ -20,19 +20,21 @@ limitations under the License.
 
 #include <vector>
 
-#include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_expression.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/status_macros.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "tensorflow/compiler/tf2xla/xla_helpers.h"
+#include "xla/client/xla_builder.h"
+#include "xla/client/xla_computation.h"
+#include "xla/status_macros.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/resource_mgr.h"
+#include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/platform/macros.h"
 
 namespace tensorflow {
 
 class XlaOpKernelContext;
+class XlaCompiler;
 
 // The XlaContext is the data structure that holds the state of an XLA
 // compilation, that is accessible from OpKernelContexts when compiling a
@@ -44,12 +46,21 @@ class XlaContext : public ResourceBase {
 
   // Creates a new XlaContext. See the documentation on the class data fields
   // for descriptions of the arguments.
-  XlaContext(XlaCompiler* compiler, xla::XlaBuilder* builder);
+  XlaContext(XlaCompiler* compiler, xla::XlaBuilder* builder,
+             const Graph* graph);
 
   // Virtual method defined by ResourceBase.
   string DebugString() const override;
 
   XlaCompiler* compiler() const { return compiler_; }
+
+  const AbstractStackTrace* StackTraceForNodeName(const std::string& name) {
+    const auto& it = stack_traces_.find(name);
+    if (it != stack_traces_.end()) {
+      return it->second.get();
+    }
+    return nullptr;
+  }
 
   // Returns the XlaBuilder that Ops use for compiling new expressions.
   xla::XlaBuilder* builder() { return builder_; }
@@ -86,6 +97,11 @@ class XlaContext : public ResourceBase {
   // separate specialization of the computation for each DataType.
   const xla::XlaComputation* GetOrCreateAdd(const DataType type);
 
+  // Get an XLA lambda to compute LogAddExp. This is cached in the
+  // XlaContext since it may be used by multiple Ops. There is a
+  // separate specialization of the computation for each DataType.
+  const xla::XlaComputation* GetOrCreateLogAddExp(const DataType type);
+
   // Get an XLA lambda to compute Mul. This is cached in the
   // XlaContext since it may be used by multiple Ops. There is a
   // separate specialization of the computation for each DataType.
@@ -94,11 +110,27 @@ class XlaContext : public ResourceBase {
   // The name of the XlaContext resource during symbolic graph execution.
   static const char kXlaContextResourceName[];
 
+  // Records the collective information from the nested compilation `result`.
+  Status RecordCollectiveInfoFromNestedCompilationResult(
+      const XlaCompilationResult& result);
+
+  // Records the collective configurations for all the collectives in the XLA
+  // cluster and returns the channel_id to be used for the next collective.
+  StatusOr<int64_t> RecordCollectiveInfo(int group_key, int group_size);
+
+  const std::optional<XlaCompilationResult::CollectiveInfo>&
+  GetCollectiveInfo() {
+    return collective_info_;
+  }
+
  private:
   XlaCompiler* const compiler_;
 
   // The XlaBuilder used to construct the subgraph's compiled representation.
   xla::XlaBuilder* builder_;
+
+  // Stack traces for the graph used for compilation.
+  StackTracesMap stack_traces_;
 
   // Arguments to the Tensorflow graph, indexed by _Arg index.
   // Includes both compile-time constant arguments and runtime parameters.
@@ -109,6 +141,10 @@ class XlaContext : public ResourceBase {
 
   // Holds ownership of resources. The resources are not ordered.
   std::vector<std::unique_ptr<XlaResource>> resources_;
+
+  // Information about encountered collective ops. We allow only a
+  // single configuration per cluster.
+  std::optional<XlaCompilationResult::CollectiveInfo> collective_info_;
 
   // Cache of prebuilt computations indexed by their type.
   using ComputationMap = std::map<DataType, xla::XlaComputation>;
@@ -132,10 +168,15 @@ class XlaContext : public ResourceBase {
   // Cached computation to compute Mul of two elements, specialized by type.
   ComputationMap mul_func_;
 
+  // Cached computation to compute Log(Add(Exp())) of two elements, specialized
+  // by type.
+  ComputationMap log_add_exp_func_;
+
   // Cached computation to compute Sigmoid of an element, specialized by type.
   ComputationMap sigmoid_func_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(XlaContext);
+  XlaContext(const XlaContext&) = delete;
+  void operator=(const XlaContext&) = delete;
 };
 
 }  // namespace tensorflow

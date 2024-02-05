@@ -16,7 +16,15 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_FRAMEWORK_RESOURCE_VAR_H_
 #define TENSORFLOW_CORE_FRAMEWORK_RESOURCE_VAR_H_
 
-#include "tensorflow/core/framework/resource_mgr.h"
+#include <string>
+
+#include "tensorflow/core/framework/resource_base.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/lib/core/status.h"
+
+// Forward declarations to avoid introducing a dependency on headers in
+// "tensorflow/core/graph/...".
+class GraphDefBuilder;
 
 namespace tensorflow {
 
@@ -60,6 +68,9 @@ namespace tensorflow {
 class Var : public ResourceBase {
  public:
   explicit Var(DataType dtype) : tensor_(dtype) {}
+  explicit Var(DataType dtype, std::string& debug_name) : tensor_(dtype) {
+    debug_name_ = debug_name;
+  }
 
   // When locking multiple variables, the locks must be acquired in order of
   // increasing mu() address.
@@ -67,18 +78,30 @@ class Var : public ResourceBase {
   mutex* mu() { return &mu_; }
   Tensor* tensor() { return &tensor_; }
 
-  string DebugString() const override {
+  // Uninitializes the variable, by reverting the state of the tensor to
+  // the state when the variable is first created.
+  void Uninitialize() {
+    // move frees the buffer of the tensor after unused goes out of scope.
+    Tensor unused = std::move(tensor_);
+    is_initialized = false;
+  }
+
+  Status AsGraphDef(GraphDefBuilder* builder, Node** out) const override;
+
+  std::string DebugString() const override {
     return strings::StrCat(DataTypeString(tensor_.dtype()), "/",
                            tensor_.shape().DebugString());
   }
+
+  std::string MakeRefCountingHandleName(int64_t resource_id) const override;
 
   // Only used in the resource variable path. In resource variables,
   // tensor.IsInitialized() can be true (i.e. have memory allocated to it) while
   // there is not a good value there due to a race condition, and it's possible
   // to stumble upon this during variable.initialized_value(). So it's best to
   // just store directly whether the variable is initialized.
-  bool is_initialized = false;  // GUARDED_BY(mu_) but annotalysis doesn't like
-                                // it.
+  bool is_initialized = false;  // TF_GUARDED_BY(mu_) but annotalysis doesn't
+                                // like it.
 
   // Also fake-guarded by mu_. Should be set to True whenever any sparse
   // operation uses the variable. Once this is true no tensor is allowed to
@@ -90,29 +113,31 @@ class Var : public ResourceBase {
  private:
   mutex mu_;
   Tensor tensor_;
+  std::string debug_name_;
 
   ~Var() override {}
-  TF_DISALLOW_COPY_AND_ASSIGN(Var);
+  Var(const Var&) = delete;
+  void operator=(const Var&) = delete;
 };
 
 // Does unlock and unref automatically when going out of scope, and also
 // supports early manual release.
-class SCOPED_LOCKABLE ScopedUnlockUnrefVar {
+class TF_SCOPED_LOCKABLE ScopedUnlockUnrefVar {
  public:
-  explicit ScopedUnlockUnrefVar(Var* var) EXCLUSIVE_LOCK_FUNCTION(var_->mu())
+  explicit ScopedUnlockUnrefVar(Var* var) TF_EXCLUSIVE_LOCK_FUNCTION(var_->mu())
       : var_(var) {
     if (var_) {
       var_->mu()->lock();
     }
   }
-  void Release() UNLOCK_FUNCTION() {
+  void Release() TF_UNLOCK_FUNCTION() {
     if (var_) {
       var_->mu()->unlock();
       var_->Unref();
       var_ = nullptr;
     }
   }
-  ~ScopedUnlockUnrefVar() UNLOCK_FUNCTION() { Release(); }
+  ~ScopedUnlockUnrefVar() TF_UNLOCK_FUNCTION() { Release(); }
 
  private:
   Var* var_;

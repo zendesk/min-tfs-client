@@ -13,14 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
-
 #include "tensorflow/core/common_runtime/constant_folding.h"
-#include "tensorflow/core/graph/graph_constructor.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/subgraph.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/public/session.h"
+#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
 #include "tensorflow/tools/graph_transforms/transform_utils.h"
 
 namespace tensorflow {
@@ -36,7 +35,7 @@ Status RemoveNodes(const GraphDef& input_graph_def,
         "remove_nodes expects at least one 'op'"
         "argument, e.g. remove_nodes(op=Identity)");
   }
-  int32 max_inputs;
+  int32_t max_inputs;
   TF_RETURN_IF_ERROR(
       context.GetOneInt32Parameter("max_inputs", 1, &max_inputs));
 
@@ -77,7 +76,7 @@ Status RemoveNodes(const GraphDef& input_graph_def,
               if (required_nodes.count(replace_node.name())) {
                 LOG(INFO) << "Skipping replacement for " << replace_node.name();
                 CopyOriginalMatch(match, new_nodes);
-                return Status::OK();
+                return OkStatus();
               }
               const NodeDef& input_node = match.inputs[0].node;
               string target_name = input_node.name();
@@ -95,7 +94,7 @@ Status RemoveNodes(const GraphDef& input_graph_def,
                   "^" + input_node.name();
               new_nodes->push_back(input_node);
               any_nodes_removed = true;
-              return Status::OK();
+              return OkStatus();
             },
             {true}, &replaced_graph_def));
         // Make sure all references to removed nodes now point to their inputs.
@@ -107,7 +106,7 @@ Status RemoveNodes(const GraphDef& input_graph_def,
   }
 
   *output_graph_def = current_graph_def;
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("remove_nodes", RemoveNodes);

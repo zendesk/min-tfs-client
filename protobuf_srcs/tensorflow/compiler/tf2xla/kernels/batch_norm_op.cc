@@ -14,15 +14,21 @@ limitations under the License.
 ==============================================================================*/
 
 // XLA implementation of BatchNorm operations.
+#include <algorithm>
+#include <numeric>
+#include <string>
+#include <vector>
+
 #include "tensorflow/compiler/tf2xla/kernels/relu_op.h"
+#include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/lib/math.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/util.h"
+#include "xla/client/lib/constants.h"
+#include "xla/client/lib/math.h"
+#include "xla/client/xla_builder.h"
+#include "xla/util.h"
 #include "tensorflow/core/util/tensor_format.h"
 
 namespace tensorflow {
@@ -37,6 +43,8 @@ class FusedBatchNormOp : public XlaOpKernel {
       : XlaOpKernel(ctx) {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("epsilon", &epsilon_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("is_training", &is_training_));
+    OP_REQUIRES_OK(
+        ctx, ctx->GetAttr("exponential_avg_factor", &exponential_avg_factor_));
     string data_format_str;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("data_format", &data_format_str));
     OP_REQUIRES(
@@ -105,12 +113,12 @@ class FusedBatchNormOp : public XlaOpKernel {
         ctx->SetOutput(0, converted);
       }
 
-      ctx->SetOutput(1, xla::GetTupleElement(output, 1));
       xla::XlaOp variance = xla::GetTupleElement(output, 2);
       // Apply Bessel's correction.
       int total_input_size = ctx->InputShape(0).num_elements();
       int total_scale_size = ctx->InputShape(1).num_elements();
-      int sample_size = total_input_size / total_scale_size;
+      int sample_size =
+          total_scale_size > 0 ? total_input_size / total_scale_size : 0;
       int sample_size_minus_one = std::max(1, sample_size - 1);
       double factor = static_cast<double>(sample_size) /
                       static_cast<double>(sample_size_minus_one);
@@ -121,16 +129,35 @@ class FusedBatchNormOp : public XlaOpKernel {
       if (input_shape.num_elements() == 0) {
         auto status_or_output_shape = b->GetShape(corrected);
         OP_REQUIRES_OK(ctx, status_or_output_shape.status());
-
+        ctx->SetOutput(1, xla::GetTupleElement(output, 1));
         ctx->SetOutput(
             kVarianceOutputIndex,
             xla::Broadcast(
                 xla::NanValue(b, ctx->output_xla_type(kVarianceOutputIndex)),
-                xla::AsInt64Slice(
-                    status_or_output_shape.ValueOrDie().dimensions())));
+                status_or_output_shape.value().dimensions()));
 
       } else {
-        ctx->SetOutput(2, corrected);
+        if (exponential_avg_factor_ == 1.0f) {
+          ctx->SetOutput(1, xla::GetTupleElement(output, 1));
+          ctx->SetOutput(2, corrected);
+        } else {
+          xla::XlaOp old_mean = ctx->Input(3);
+          xla::XlaOp alpha =
+              xla::ScalarLike(old_mean, 1.0f - exponential_avg_factor_);
+          xla::XlaOp beta = xla::ScalarLike(old_mean, exponential_avg_factor_);
+          // new_running_mean = alpha * old_mean + beta * batch_mean.
+          xla::XlaOp new_running_mean =
+              xla::Add(xla::Mul(old_mean, alpha),
+                       xla::Mul(xla::GetTupleElement(output, 1), beta));
+          ctx->SetOutput(1, new_running_mean);
+
+          xla::XlaOp old_variance = ctx->Input(4);
+          xla::XlaOp new_running_variance = xla::Add(
+              xla::Mul(old_variance, alpha), xla::Mul(corrected, beta));
+          // new_running_variance = alpha * old_variance + beta *
+          // batch_variance.
+          ctx->SetOutput(2, new_running_variance);
+        }
       }
 
       // Output 3 and 4 for "FusedBatchNorm" are currently marked as "reserved
@@ -175,6 +202,7 @@ class FusedBatchNormOp : public XlaOpKernel {
   float epsilon_;
   TensorFormat data_format_;
   bool is_training_;
+  float exponential_avg_factor_;
   bool add_side_input_;
   bool apply_relu_;
   bool is_on_gpu_;
@@ -210,7 +238,7 @@ class FusedBatchNormOpEx : public FusedBatchNormOp {
 
 REGISTER_XLA_OP(Name("FusedBatchNorm"), FusedBatchNormOp);
 REGISTER_XLA_OP(Name("FusedBatchNormV2"), FusedBatchNormOp);
-REGISTER_XLA_OP(Name("FusedBatchNormV3"), FusedBatchNormOpV3);
+REGISTER_XLA_OP(Name("FusedBatchNormV3"), MlirXlaOpKernel);
 REGISTER_XLA_OP(Name("_FusedBatchNormEx"), FusedBatchNormOpEx);
 
 class FusedBatchNormGradOp : public XlaOpKernel {
@@ -275,7 +303,7 @@ class FusedBatchNormGradOp : public XlaOpKernel {
       offset_backprop = xla::GetTupleElement(output, 2);
     } else {
       // Reduce over all dimensions except the feature dim.
-      std::vector<int64> reduction_dims(input_dims - 1);
+      std::vector<int64_t> reduction_dims(input_dims - 1);
       std::iota(reduction_dims.begin(), reduction_dims.begin() + feature_index,
                 0);
       std::iota(reduction_dims.begin() + feature_index, reduction_dims.end(),
@@ -327,7 +355,7 @@ class FusedBatchNormGradOp : public XlaOpKernel {
 
 REGISTER_XLA_OP(Name("FusedBatchNormGrad"), FusedBatchNormGradOp);
 REGISTER_XLA_OP(Name("FusedBatchNormGradV2"), FusedBatchNormGradOp);
-REGISTER_XLA_OP(Name("FusedBatchNormGradV3"), FusedBatchNormGradOp);
+REGISTER_XLA_OP(Name("FusedBatchNormGradV3"), MlirXlaOpKernel);
 
 }  // namespace
 }  // namespace tensorflow

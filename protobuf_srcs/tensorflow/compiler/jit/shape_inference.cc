@@ -17,7 +17,10 @@ limitations under the License.
 
 #include "tensorflow/compiler/jit/shape_inference_helpers.h"
 #include "tensorflow/core/common_runtime/shape_refiner.h"
+#include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/shape_inference.h"
+#include "tensorflow/core/framework/tensor.pb.h"
+#include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/util/dump_graph.h"
 
@@ -30,16 +33,16 @@ Status ShapeHandleToTensorShape(shape_inference::InferenceContext* context,
                                 const shape_inference::ShapeHandle& handle,
                                 PartialTensorShape* shape) {
   // The default is already unknown
-  if (!context->RankKnown(handle)) return Status::OK();
+  if (!context->RankKnown(handle)) return OkStatus();
 
-  std::vector<int64> dims(context->Rank(handle));
-  for (int32 i = 0; i < dims.size(); ++i) {
+  std::vector<int64_t> dims(context->Rank(handle));
+  for (int32_t i = 0, end = dims.size(); i < end; ++i) {
     dims[i] = context->Value(context->Dim(handle, i));
   }
   return PartialTensorShape::MakePartialShape(dims.data(), dims.size(), shape);
 }
 
-Status PropagateShapes(const Graph& graph,
+Status PropagateShapes(Graph* graph,
                        const std::map<int, InferredShape>& arg_shapes,
                        const std::vector<BackEdgeHelper::BackEdge>& back_edges,
                        ShapeRefiner* shape_refiner) {
@@ -54,7 +57,7 @@ Status PropagateShapes(const Graph& graph,
   // shapes.
   // TODO(phawkins): handle cyclic graphs.
   std::vector<Node*> order;
-  GetReversePostOrder(graph, &order);
+  GetReversePostOrder(*graph, &order);
 
   for (Node* n : order) {
     // Ignore the status returned by the shape_refiner. We want the best effort
@@ -99,6 +102,64 @@ Status PropagateShapes(const Graph& graph,
       }
     }
 
+    // Sometimes we have VariableShape nodes in while loop (after Enter nodes).
+    // They won't be constant-folded because TensorFlow constant folding does
+    // not handle Enter nodes (and thus does not handle any nodes after Enter
+    // nodes). We try to replace such VariableShape nodes with Const nodes here.
+    if (n->type_string() == "VariableShape") {
+      shape_inference::InferenceContext* context = shape_refiner->GetContext(n);
+      auto handle_shapes_and_types = context->input_handle_shapes_and_types(0);
+      if (handle_shapes_and_types && !handle_shapes_and_types->empty()) {
+        shape_inference::ShapeHandle handle =
+            handle_shapes_and_types->at(0).shape;
+        TensorShapeProto shape_proto;
+        context->ShapeHandleToProto(handle, &shape_proto);
+        if (!shape_proto.unknown_rank()) {
+          NodeDef const_def;
+          const_def.set_op("Const");
+          Node* var_node;
+          TF_RETURN_IF_ERROR(n->input_node(0, &var_node));
+          const_def.set_name(
+              graph->NewName(absl::StrCat("var_shape_", var_node->name())));
+          DataType dtype = n->output_type(0);
+          AddNodeAttr("dtype", dtype, &const_def);
+          TensorProto value;
+          value.set_dtype(dtype);
+          value.mutable_tensor_shape()->add_dim()->set_size(
+              shape_proto.dim_size());
+          for (const auto& dim : shape_proto.dim()) {
+            if (dtype == DT_INT32) {
+              value.add_int_val(dim.size());
+            } else {
+              value.add_int64_val(dim.size());
+            }
+          }
+          AddNodeAttr("value", value, &const_def);
+          for (auto const& attr : n->attrs()) {
+            if (*attr.first.begin() == '_') {
+              AddNodeAttr(attr.first, attr.second, &const_def);
+            }
+          }
+
+          TF_ASSIGN_OR_RETURN(Node * const_node, graph->AddNode(const_def));
+          graph->AddControlEdge(var_node, const_node);
+          std::vector<const Edge*> out_edges(n->out_edges().begin(),
+                                             n->out_edges().end());
+          for (const Edge* e : out_edges) {
+            if (e->IsControlEdge()) {
+              graph->AddControlEdge(const_node, e->dst());
+              graph->RemoveEdge(e);
+            } else {
+              Node* dst = e->dst();
+              int dst_input = e->dst_input();
+              graph->RemoveEdge(e);
+              graph->AddEdge(const_node, 0, dst, dst_input);
+            }
+          }
+        }
+      }
+    }
+
     // Merge node causes a loop so we remove NextIteration->Merge edge before
     // performing shape inference. But removing those edges also prevents us
     // from inferring output shape for Merge node (we need shapes for all its
@@ -138,7 +199,7 @@ Status PropagateShapes(const Graph& graph,
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Store the shapes of the output tensors in a map
@@ -174,7 +235,7 @@ Status StoreOutputShapes(const Graph& graph, const ShapeRefiner& shape_refiner,
               << output.handle_shape.DebugString();
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -196,7 +257,7 @@ Status InferShapes(Graph* graph, const std::map<int, InferredShape>& arg_shapes,
   // the shape inference is complete.
   BackEdgeHelper back_edge;
   TF_RETURN_IF_ERROR(back_edge.Remove(graph));
-  TF_RETURN_IF_ERROR(PropagateShapes(*graph, arg_shapes,
+  TF_RETURN_IF_ERROR(PropagateShapes(graph, arg_shapes,
                                      back_edge.RemovedEdges(), &shape_refiner));
   TF_RETURN_IF_ERROR(back_edge.Replace());
 
@@ -206,8 +267,8 @@ Status InferShapes(Graph* graph, const std::map<int, InferredShape>& arg_shapes,
   return StoreOutputShapes(*graph, shape_refiner, shape_info);
 }
 
-xla::StatusOr<InferredShape> MergeInferredShapes(const InferredShape& a,
-                                                 const InferredShape& b) {
+StatusOr<InferredShape> MergeInferredShapes(const InferredShape& a,
+                                            const InferredShape& b) {
   InferredShape result;
   TF_RETURN_IF_ERROR(a.shape.MergeWith(b.shape, &result.shape));
 

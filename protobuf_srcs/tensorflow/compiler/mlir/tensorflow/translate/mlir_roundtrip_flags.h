@@ -16,6 +16,9 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSLATE_MLIR_ROUNDTRIP_FLAGS_H_
 #define TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSLATE_MLIR_ROUNDTRIP_FLAGS_H_
 
+#include <optional>
+#include <string>
+
 #include "absl/container/flat_hash_set.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -26,7 +29,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-struct ArrayInfo {
+struct ArrayInfoBase {
   // The node type when the input node is imported. Typically needs to be
   // specified when passing arbitrary nodes (some node attributes are removed).
   DataType imported_dtype;
@@ -35,16 +38,28 @@ struct ArrayInfo {
   TensorShapeProto shape;
 };
 
+struct ArrayInfo : public ArrayInfoBase {
+  using SubTypeInfo = ArrayInfoBase;
+  // DT_RESOURCE and DT_VARIANT have subtypes
+  std::vector<SubTypeInfo> subtypes;
+};
+
 struct GraphImportConfig {
+  // Returns string representation of config.
+  std::string str() const;
+
   using InputArrays =
-      llvm::MapVector<string, ArrayInfo, llvm::StringMap<unsigned>>;
+      llvm::MapVector<std::string, ArrayInfo, llvm::StringMap<unsigned>>;
+  // The name assigned to the function which is the import result of the given
+  // graph. If empty, a default one will be used.
+  std::string graph_func_name;
   // Maps input node names to node data types and shapes.
   InputArrays inputs;
-  // Output node names.
-  absl::flat_hash_set<string> output_arrays;
-  // nodes:index strings for the output as specified on the command line.
-  std::vector<string> output_arrays_order;
-  // setting prune_unused_nodes to true, would prune unreachable nodes if
+  // name:index strings for the data outputs.
+  std::vector<string> outputs;
+  // name strings for the control outputs.
+  std::vector<string> control_outputs;
+  // Setting prune_unused_nodes to true, would prune unreachable nodes if
   // output_arrays is specified.
   bool prune_unused_nodes = false;
   // If true, inputs of type LegacyFedInput are replaced with Placeholder ops.
@@ -57,9 +72,33 @@ struct GraphImportConfig {
   // If true, upgrade legacy features of the graph (for instance, functionalize
   // control-flow).
   bool upgrade_legacy = false;
-  // If true, add pseudo input nodes (nodes with ".input" appended consuming a
-  // hoisted arg).
-  bool add_pseudo_input_nodes = true;
+  // If true, functionalization is restricted to nodes that will be
+  // XLA-compiled. This is only needed if
+  // - `upgrade_legacy` is true
+  // - upgrading legacy features of the graph (which includes functionalization)
+  //   runs before compilation cluster extraction (as for MLIR-based TPU bridge)
+  // - session runtime is used (session runtime has issues with function names
+  //   rewritten by functionalization).
+  // Otherwise, this parameter should be set to false.
+  bool restrict_functionalization_to_compiled_nodes = false;
+  // If true, enables shape inference on input.
+  // TODO(jpienaar): This will be removed shortly.
+  bool enable_shape_inference = true;
+  // _output_shapes is an unregistered attribute which is used during
+  // GraphConstructor::ConvertGraph to override shapes. It is unfortunately
+  // not always set correctly (which is undesirable and should be addressed)
+  // so make it opt-in to consider it unconditionally also when importing the
+  // graph.
+  bool unconditionally_use_set_output_shapes = false;
+  // If set, use the value as the device type and mark the function graph for
+  // XLA compilation.
+  string xla_compile_device_type;
+  // If true, enables moving ops to different devices or moving unsupported ops
+  // out of a compilation cluster.
+  bool enable_soft_placement = false;
+  // If true, a function attribute, `tf._original_func_name`, will be set in
+  // functions which contains the corresponding original TF function name.
+  bool set_original_tf_func_name = false;
 };
 
 struct GraphExportConfig {
@@ -69,19 +108,21 @@ struct GraphExportConfig {
   bool export_library = true;
   // Whether to export debug original node name in the GraphDef.
   bool export_debug_info = true;
-  // If true, the main graph will be treated as a function.
-  bool graph_as_function = false;
+  // Whether to export the entry function to function library instead of the
+  // graph.
+  bool export_entry_func_to_flib = false;
+  // Whether to export functions using the name set in the attribute
+  // `tf._original_func_name` if it exists.
+  bool export_original_tf_func_name = false;
 };
 
 // Parses the command line flag strings to the specification of nodes in
 // the Graph.
 Status ParseOutputArrayInfo(absl::string_view array_names,
-                            absl::flat_hash_set<string>* array,
-                            std::vector<string>* order);
+                            std::vector<string>* outputs);
 
 Status ParseOutputArrayInfo(const std::vector<string>& output_names,
-                            absl::flat_hash_set<string>* array,
-                            std::vector<string>* order);
+                            std::vector<string>* outputs);
 
 // Parses the command line flag strings to the specification of nodes in
 // the Graph. `data_types` input string can be empty since the flag is optional.
@@ -90,10 +131,29 @@ Status ParseInputArrayInfo(absl::string_view array_names,
                            absl::string_view shapes,
                            GraphImportConfig::InputArrays* inputs);
 
-Status ParseInputArrayInfo(const std::vector<string>& node_names,
-                           const std::vector<string>& node_dtypes,
-                           const std::vector<std::vector<int>>& node_shapes,
-                           GraphImportConfig::InputArrays* inputs);
+Status ParseInputArrayInfo(
+    const std::vector<string>& node_names,
+    const std::vector<string>& node_dtypes,
+    const std::vector<std::optional<std::vector<int>>>& node_shapes,
+    GraphImportConfig::InputArrays* inputs);
+
+// Parses shapes from the given string into shapes_vector which is a structured
+// format.
+// NOTE: If shapes_str is empty, shapes_vector will also be empty.
+Status ParseNodeShapes(
+    absl::string_view shapes_str,
+    std::vector<std::optional<std::vector<int>>>& shapes_vector);
+
+// Parses names from the given string into the names_vector.
+// NOTE: If names_str is empty, names_vector will also be empty.
+Status ParseNodeNames(absl::string_view names_str,
+                      std::vector<std::string>& names_vector);
+
+// Parses data types from the given string into the data_type_vector.
+// NOTE: If data_types_str is empty, data_type_vector will also be empty.
+Status ParseNodeDataTypes(absl::string_view data_types_str,
+                          std::vector<std::string>& data_type_vector);
+
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSLATE_MLIR_ROUNDTRIP_FLAGS_H_

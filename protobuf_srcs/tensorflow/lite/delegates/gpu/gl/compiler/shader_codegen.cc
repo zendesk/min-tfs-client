@@ -16,7 +16,10 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/gl/compiler/shader_codegen.h"
 
 #include <algorithm>
+#include <string>
+#include <utility>
 
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/lite/delegates/gpu/common/gpu_info.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
@@ -24,35 +27,58 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/gl/compiler/variable_accessor.h"
 #include "tensorflow/lite/delegates/gpu/gl/variable.h"
 
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif  // __ANDROID__
+
 namespace tflite {
 namespace gpu {
 namespace gl {
 
 ShaderCodegen::ShaderCodegen(const CompilationOptions& options,
                              const GpuInfo& gpu_info)
-    : options_(options), gpu_type_(gpu_info.type) {}
+    : options_(options),
+      gpu_type_(gpu_info.vendor),
+      inline_parameters_(options.inline_parameters) {
+#ifdef __ANDROID__
+  if (gpu_info.IsAdreno() &&
+      gpu_info.adreno_info.adreno_gpu == AdrenoGpu::kAdreno730) {
+    char sdk_version[PROP_VALUE_MAX];
+    __system_property_get("ro.build.version.sdk", sdk_version);
+    if (!strcmp(sdk_version, "31")) inline_parameters_ = false;
+  } else if (gpu_info.IsPowerVR() &&
+             !gpu_info.powervr_info.IsBetterThan(PowerVRGpu::kRogueGm9xxx)) {
+    inline_parameters_ = false;
+  }
+#endif  // __ANDROID__
+}
 
-Status ShaderCodegen::Build(CompiledNodeAttributes attr,
-                            ShaderCode* shader_code) const {
-  VariableAccessor variable_accessor(options_.inline_parameters,
+absl::Status ShaderCodegen::Build(CompiledNodeAttributes attr,
+                                  ShaderCode* shader_code) const {
+  VariableAccessor variable_accessor(inline_parameters_,
                                      options_.vulkan_support);
-  ObjectAccessor object_accessor(gpu_type_ == GpuType::MALI,
+  ObjectAccessor object_accessor(gpu_type_ == GpuVendor::kMali,
                                  options_.sampler_textures, &variable_accessor);
 
   const auto add_object = [&](const std::string& name, Object&& object) {
     if (!object_accessor.AddObject(name, std::forward<Object>(object))) {
-      return AlreadyExistsError(absl::StrCat("Object \"", name, "\""));
+      return absl::AlreadyExistsError(absl::StrCat("Object \"", name, "\""));
     }
-    return OkStatus();
+    return absl::OkStatus();
   };
 
   const auto add_uniform_parameter = [&](Variable&& variable) {
     const std::string name = variable.name;
+    const Variable& const_ref = variable;
+    if (variable_accessor.IsEmptyVariableLength(const_ref)) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Empty uniform vector value \"", name, "\""));
+    }
     if (!variable_accessor.AddUniformParameter(std::move(variable))) {
-      return AlreadyExistsError(
+      return absl::AlreadyExistsError(
           absl::StrCat("Uniform parameter \"", name, "\""));
     }
-    return OkStatus();
+    return absl::OkStatus();
   };
 
   for (auto&& object : attr.code.objects) {
@@ -62,7 +88,8 @@ Status ShaderCodegen::Build(CompiledNodeAttributes attr,
   for (auto&& variable : attr.code.shared_variables) {
     const std::string name = variable.name;
     if (!variable_accessor.AddSharedVariable(std::move(variable))) {
-      return AlreadyExistsError(absl::StrCat("Shared variable \"", name, "\""));
+      return absl::AlreadyExistsError(
+          absl::StrCat("Shared variable \"", name, "\""));
     }
   }
 
@@ -146,7 +173,7 @@ Status ShaderCodegen::Build(CompiledNodeAttributes attr,
     RETURN_IF_ERROR(preprocessor.Rewrite(main_source_code, &main_source_code));
   }
 
-  if (options_.inline_parameters) {
+  if (inline_parameters_) {
     main_source_code = absl::StrCat(variable_accessor.GetConstDeclarations(),
                                     main_source_code);
   }
@@ -169,7 +196,7 @@ Status ShaderCodegen::Build(CompiledNodeAttributes attr,
       ShaderCode(variable_accessor.GetUniformParameters(),
                  object_accessor.GetObjects(), attr.code.workload,
                  attr.code.workgroup, partial_source_code, attr.node_indices);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace gl

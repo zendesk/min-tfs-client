@@ -104,6 +104,12 @@ TF_ShapeHandle* TF_NewShapeHandle() {
   return reinterpret_cast<TF_ShapeHandle*>(new ShapeHandle);
 }
 
+TF_ShapeHandle* TF_ShapeInferenceContextScalar(TF_ShapeInferenceContext* ctx) {
+  auto* handle = new ShapeHandle;
+  *handle = reinterpret_cast<InferenceContext*>(ctx)->Scalar();
+  return reinterpret_cast<TF_ShapeHandle*>(handle);
+}
+
 TF_ShapeHandle* TF_ShapeInferenceContextVectorFromSize(
     TF_ShapeInferenceContext* ctx, size_t size) {
   auto* handle = new ShapeHandle;
@@ -137,7 +143,7 @@ void TF_ShapeInferenceContextGetInput(TF_ShapeInferenceContext* ctx, int i,
                                       TF_Status* status) {
   TF_SetStatus(status, TF_OK, "");
   auto* cc_ctx = reinterpret_cast<InferenceContext*>(ctx);
-  if (0 < i || i >= cc_ctx->num_inputs()) {
+  if (i < 0 || i >= cc_ctx->num_inputs()) {
     TF_SetStatus(status, TF_INVALID_ARGUMENT, "input index out of range");
   }
   if (TF_GetCode(status) == TF_OK) {
@@ -157,7 +163,7 @@ void TF_ShapeInferenceContextSetOutput(TF_ShapeInferenceContext* ctx, int i,
                                        TF_Status* status) {
   TF_SetStatus(status, TF_OK, "");
   auto* cc_ctx = reinterpret_cast<InferenceContext*>(ctx);
-  if (0 < i || i >= cc_ctx->num_outputs()) {
+  if (i < 0 || i >= cc_ctx->num_outputs()) {
     TF_SetStatus(status, TF_INVALID_ARGUMENT, "output index out of range");
   }
   if (TF_GetCode(status) == TF_OK) {

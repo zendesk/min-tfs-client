@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define EIGEN_USE_GPU
 
 #include "tensorflow/core/kernels/topk_op.h"
@@ -22,7 +22,7 @@ limitations under the License.
 namespace tensorflow {
 using Eigen::GpuDevice;
 
-template struct functor::TopKFunctor<GPUDevice, int32>;
+template struct functor::TopKFunctor<GPUDevice, int32, int32>;
 }  // namespace tensorflow
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM

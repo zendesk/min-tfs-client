@@ -16,13 +16,14 @@ limitations under the License.
 // Util methods to read and write String tensors.
 // String tensors are considered to be char tensor with protocol.
 //   [0, 3] 4 bytes: N, num of strings in the tensor in little endian.
-//   [(i+1)*4, (i+1)*4+3] 4 bytes: offset of i-th string in little endian.
-//   [(N+2)*4, (N+2)*4+3] 4 bytes: length of the whole char buffer.
+//   [(i+1)*4, (i+1)*4+3] 4 bytes: offset of i-th string in little endian,
+//                                 for i from 0 to N-1.
+//   [(N+1)*4, (N+1)*4+3] 4 bytes: length of the whole char buffer.
 //   [offset(i), offset(i+1) - 1] : content of i-th string.
 // Example of a string tensor:
 // [
 //   2, 0, 0, 0,     # 2 strings.
-//   16, 0, 0, 0,    # 0-th string starts from index 12.
+//   16, 0, 0, 0,    # 0-th string starts from index 16.
 //   18, 0, 0, 0,    # 1-st string starts from index 18.
 //   18, 0, 0, 0,    # total length of array.
 //   'A', 'B',       # 0-th string [16..17]: "AB"
@@ -40,35 +41,47 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_STRING_UTIL_H_
 #define TENSORFLOW_LITE_STRING_UTIL_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <limits>
 #include <vector>
 
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/string_type.h"
 
 namespace tflite {
 
-// Convenient structure to store string pointer and length.
+// Convenient structure to store string pointer and length. Note that
+// methods on DynamicBuffer enforce that the whole buffer (and by extension
+// every contained string) is of max length (2ul << 30) - 1. See
+// string_util.cc for more info.
 typedef struct {
   const char* str;
-  int len;
+  size_t len;
 } StringRef;
+
+constexpr uint64_t kDefaultMaxLength = std::numeric_limits<int>::max();
 
 // DynamicBuffer holds temporary buffer that will be used to create a dynamic
 // tensor. A typical usage is to initialize a DynamicBuffer object, fill in
 // content and call CreateStringTensor in op.Eval().
 class DynamicBuffer {
  public:
-  DynamicBuffer() : offset_({0}) {}
+  explicit DynamicBuffer(size_t max_length = kDefaultMaxLength)
+      : offset_({0}), max_length_(max_length) {}
 
   // Add string to dynamic buffer by resizing the buffer and copying the data.
-  void AddString(const StringRef& string);
+  TfLiteStatus AddString(const StringRef& string);
 
   // Add string to dynamic buffer by resizing the buffer and copying the data.
-  void AddString(const char* str, size_t len);
+  TfLiteStatus AddString(const char* str, size_t len);
 
   // Join a list of string with separator, and add as a single string to the
   // buffer.
   void AddJoinedString(const std::vector<StringRef>& strings, char separator);
+  void AddJoinedString(const std::vector<StringRef>& strings,
+                       StringRef separator);
 
   // Fill content into a buffer and returns the number of bytes stored.
   // The function allocates space for the buffer but does NOT take ownership.
@@ -87,7 +100,15 @@ class DynamicBuffer {
   // Data buffer to store contents of strings, not including headers.
   std::vector<char> data_;
   // Offset of the starting index of each string in data buffer.
-  std::vector<int32_t> offset_;
+  std::vector<size_t> offset_;
+  // Max length in number of characters that we permit the total
+  // buffer containing the concatenation of all added strings to be.
+  // For historical reasons this is limited to 32bit length. At this files
+  // inception, sizes were represented using 32bit which forced an implicit cap
+  // on the size of the buffer. When this was refactored to use size_t (which
+  // could be 64bit) we enforce that the buffer remains at most 32bit length to
+  // avoid a change in behavior.
+  const size_t max_length_;
 };
 
 // Return num of strings in a String tensor.

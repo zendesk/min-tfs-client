@@ -12,6 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -29,7 +30,7 @@ class RemoveSuccessiveTransposeTest : public Test {
  protected:
   RemoveSuccessiveTransposeTest() {}
 
-  void SetUp() override { model_.reset(new toco::Model); }
+  void SetUp() override { model_ = std::make_unique<toco::Model>(); }
 
   void CreateArray(const std::string& name, const std::vector<int>& shape) {
     toco::Array& array = model_->GetOrCreateArray(name);
@@ -94,7 +95,7 @@ TEST_F(RemoveSuccessiveTransposeTest, RemoveTranspose) {
   // Creating a model.
   CreateGraph({1, 0}, {1, 0});
 
-  toco::RemoveSuccesiveTranspose transformation;
+  toco::RemoveSuccessiveTranspose transformation;
   bool modified;
   ASSERT_TRUE(transformation.Run(model_.get(), /*op_index=*/1, &modified).ok());
   EXPECT_TRUE(modified);
@@ -109,7 +110,7 @@ TEST_F(RemoveSuccessiveTransposeTest, DontRemoveNotIdentityTranspose) {
   // Creating a model.
   CreateGraph({0, 2, 1}, {1, 0, 2});
 
-  toco::RemoveSuccesiveTranspose transformation;
+  toco::RemoveSuccessiveTranspose transformation;
   bool modified;
   ASSERT_TRUE(transformation.Run(model_.get(), /*op_index=*/1, &modified).ok());
   EXPECT_FALSE(modified);
@@ -139,7 +140,7 @@ TEST_F(RemoveSuccessiveTransposeTest, DontRemoveTransposeOutputUnused) {
   transpose2_op->outputs = {"InputTransposeTranspose"};
   model_->operators.push_back(std::unique_ptr<toco::Operator>(transpose2_op));
 
-  toco::RemoveSuccesiveTranspose transformation;
+  toco::RemoveSuccessiveTranspose transformation;
   bool modified;
   ASSERT_TRUE(transformation.Run(model_.get(), /*op_index=*/1, &modified).ok());
   EXPECT_FALSE(modified);

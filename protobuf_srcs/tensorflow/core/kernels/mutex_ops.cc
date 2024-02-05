@@ -18,7 +18,7 @@ limitations under the License.
 #include <deque>
 #include <utility>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/shared_ptr_variant.h"
 #include "tensorflow/core/framework/variant.h"
@@ -81,7 +81,7 @@ class Mutex : public ResourceBase {
     CancellationToken token{};
     bool* cancelled = nullptr;
     if (cm) {
-      cancelled = new bool(false);  // GUARDED_BY(mu_);
+      cancelled = new bool(false);  // TF_GUARDED_BY(mu_);
       token = cm->get_cancellation_token();
       const bool already_cancelled =
           !cm->RegisterCallback(token, [this, cancelled]() {
@@ -113,7 +113,7 @@ class Mutex : public ResourceBase {
             delete cancelled;
           }
           if (local_locked) {  // Not cancelled.
-            fn_(Status::OK(),
+            fn_(OkStatus(),
                 SharedLockReleaser{std::make_shared<LockReleaser>(this)});
           } else {
             fn_(errors::Cancelled("Lock acquisition cancelled."),
@@ -125,8 +125,8 @@ class Mutex : public ResourceBase {
 
  private:
   mutex mu_;
-  condition_variable cv_ GUARDED_BY(mu_);
-  bool locked_ GUARDED_BY(mu_);
+  condition_variable cv_ TF_GUARDED_BY(mu_);
+  bool locked_ TF_GUARDED_BY(mu_);
   std::unique_ptr<thread::ThreadPool> thread_pool_;
   string name_;
 };
@@ -146,7 +146,7 @@ class MutexLockOp : public AsyncOpKernel {
                                       [c](Mutex** ptr) {
                                         *ptr = new Mutex(
                                             c, HandleFromInput(c, 0).name());
-                                        return Status::OK();
+                                        return OkStatus();
                                       }),
         done);
 
@@ -211,7 +211,7 @@ class ConsumeMutexLockOp : public OpKernel {
 REGISTER_KERNEL_BUILDER(Name("MutexLock").Device(DEVICE_CPU), MutexLockOp);
 
 REGISTER_KERNEL_BUILDER(Name("MutexLock")
-                            .Device(DEVICE_GPU)
+                            .Device(DEVICE_DEFAULT)
                             .HostMemory("mutex_lock")
                             .HostMemory("mutex"),
                         MutexLockOp);
@@ -220,14 +220,14 @@ REGISTER_KERNEL_BUILDER(
     Name("MutexV2").Device(DEVICE_CPU).HostMemory("resource"),
     ResourceHandleOp<Mutex>);
 
-REGISTER_KERNEL_BUILDER(Name("MutexV2").Device(DEVICE_GPU),
+REGISTER_KERNEL_BUILDER(Name("MutexV2").Device(DEVICE_DEFAULT),
                         ResourceHandleOp<Mutex>);
 
 REGISTER_KERNEL_BUILDER(Name("ConsumeMutexLock").Device(DEVICE_CPU),
                         ConsumeMutexLockOp);
 
 REGISTER_KERNEL_BUILDER(
-    Name("ConsumeMutexLock").Device(DEVICE_GPU).HostMemory("mutex_lock"),
+    Name("ConsumeMutexLock").Device(DEVICE_DEFAULT).HostMemory("mutex_lock"),
     ConsumeMutexLockOp);
 
 }  // namespace tensorflow

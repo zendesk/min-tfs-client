@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for mel_ops."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
@@ -169,8 +165,6 @@ class LinearToMelTest(test.TestCase, parameterized.TestCase):
       return
     with self.assertRaises(ValueError):
       mel_ops.linear_to_mel_weight_matrix(num_mel_bins=0)
-    with self.assertRaises(ValueError):
-      mel_ops.linear_to_mel_weight_matrix(num_spectrogram_bins=0)
     with self.assertRaises(ValueError):
       mel_ops.linear_to_mel_weight_matrix(sample_rate=0.0)
     with self.assertRaises(ValueError):

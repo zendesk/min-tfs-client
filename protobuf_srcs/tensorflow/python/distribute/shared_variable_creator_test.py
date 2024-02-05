@@ -14,14 +14,11 @@
 # ==============================================================================
 """Tests for SharedVariableCreator."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.distribute import shared_variable_creator
 from tensorflow.python.eager import test
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import variable_v1
 
 
 class CanonicalizeVariableNameTest(test.TestCase):
@@ -30,18 +27,18 @@ class CanonicalizeVariableNameTest(test.TestCase):
     return shared_variable_creator._canonicalize_variable_name(name)
 
   def testNoName(self):
-    self.assertEquals("Variable", self._canonicalize(None))
+    self.assertEqual("Variable", self._canonicalize(None))
 
   def testPatternInMiddle(self):
-    self.assertEquals("foo/bar/baz", self._canonicalize("foo_1/bar_1/baz"))
+    self.assertEqual("foo/bar/baz", self._canonicalize("foo_1/bar_1/baz"))
 
   def testPatternAtEnd(self):
-    self.assertEquals("foo", self._canonicalize("foo_1"))
+    self.assertEqual("foo", self._canonicalize("foo_1"))
 
   def testWrongPatterns(self):
-    self.assertEquals("foo_1:0", self._canonicalize("foo_1:0"))
-    self.assertEquals("foo1", self._canonicalize("foo1"))
-    self.assertEquals("foo_a", self._canonicalize("foo_a"))
+    self.assertEqual("foo_1:0", self._canonicalize("foo_1:0"))
+    self.assertEqual("foo1", self._canonicalize("foo1"))
+    self.assertEqual("foo_a", self._canonicalize("foo_a"))
 
 
 class SharedVariableCreatorTest(test.TestCase):
@@ -57,13 +54,13 @@ class SharedVariableCreatorTest(test.TestCase):
       creator_fns.append(creator_fn)
 
     with variable_scope.variable_creator_scope(creator_fns[0]):
-      v0 = variable_scope.variable(1.0, name="foo")
+      v0 = variable_v1.VariableV1(1.0, name="foo")
 
     with variable_scope.variable_creator_scope(creator_fns[1]):
-      v1 = variable_scope.variable(1.0, name="foo")
+      v1 = variable_v1.VariableV1(1.0, name="foo")
 
     with variable_scope.variable_creator_scope(creator_fns[2]):
-      v2 = variable_scope.variable(1.0, name="foo")
+      v2 = variable_v1.VariableV1(1.0, name="foo")
 
     # v1 and v2 should be same as v0
     self.assertIs(v1, v0)

@@ -17,6 +17,7 @@ limitations under the License.
 #include <cstdlib>
 #include <memory>
 #include <set>
+#include <string>
 
 #include "absl/memory/memory.h"
 #include "absl/strings/str_join.h"
@@ -37,7 +38,7 @@ namespace toco {
 namespace {
 // CHECK-fails if the model contains a kUnsupported operation.
 void CheckUnsupportedOperations(const Model& model) {
-  std::set<string> unsupported_ops;
+  std::set<std::string> unsupported_ops;
   for (auto& op : model.operators) {
     if (op->type == OperatorType::kUnsupported) {
       unsupported_ops.insert(
@@ -54,8 +55,8 @@ void MakeGeneralGraphTransformationsSet(
     GraphTransformationsSet* transformations) {
   CHECK(transformations->empty());
   transformations->Add(new ConvertExpandDimsToReshape);
-  transformations->Add(new ConvertMatrixDiagV2ToV1);
-  transformations->Add(new ConvertMatrixSetDiagV2ToV1);
+  transformations->Add(new ConvertMatrixDiagV2OrV3ToV1);
+  transformations->Add(new ConvertMatrixSetDiagV2OrV3ToV1);
   transformations->Add(new ConvertSqueezeToReshape);
   transformations->Add(new ConvertTrivialAddNToAdd);
   transformations->Add(new ConvertTrivialPackToReshape);
@@ -67,7 +68,7 @@ void MakeGeneralGraphTransformationsSet(
   transformations->Add(new PropagateActivationFunctionIntoConstants);
   transformations->Add(new PropagateArrayDataTypes);
   transformations->Add(new PropagateFixedSizes);
-  transformations->Add(new RemoveSuccesiveTranspose);
+  transformations->Add(new RemoveSuccessiveTranspose);
   transformations->Add(new RemoveTensorFlowAssert);
   transformations->Add(new RemoveTensorFlowIdentity);
   transformations->Add(new RemoveTrivialConcatenation);
@@ -172,7 +173,7 @@ void SetFinalDataTypeOnInputs(const TocoFlags& toco_flags, Model* model) {
   }
 
   for (int i = 0; i < model->flags.input_arrays_size(); i++) {
-    string const& array_name = model->flags.input_arrays(i).name();
+    std::string const& array_name = model->flags.input_arrays(i).name();
     auto* array = &model->GetArray(array_name);
     // Note that the notion of changing data types only applies to real-numbers
     // arrays (see the documentation for inference_input_type).
@@ -209,7 +210,7 @@ void SetFinalDataTypeOnInputs(const TocoFlags& toco_flags, Model* model) {
 
 std::unique_ptr<Model> Import(const TocoFlags& toco_flags,
                               const ModelFlags& model_flags,
-                              const string& input_file_contents) {
+                              const std::string& input_file_contents) {
   std::unique_ptr<Model> model;
   switch (toco_flags.input_format()) {
     case TENSORFLOW_GRAPHDEF: {
@@ -353,8 +354,7 @@ tensorflow::Status TransformWithStatus(const TocoFlags& toco_flags,
     // that didn't either have a min/max specified or get one set via
     // HardcodeMinMax or PropagateFakeQuantNumBits. This may require running
     // HardcodeMinMax to move changes through the graph as we make changes.
-    auto propagate_default_min_max =
-        absl::make_unique<PropagateDefaultMinMax>();
+    auto propagate_default_min_max = std::make_unique<PropagateDefaultMinMax>();
     bool has_default_ranges_flag = (toco_flags.has_default_ranges_min() &&
                                     toco_flags.has_default_ranges_max());
     if (has_default_ranges_flag) {
@@ -415,10 +415,10 @@ tensorflow::Status TransformWithStatus(const TocoFlags& toco_flags,
   // is:
   //    Input [1, 20, 1, 20, 1, 64] * ones [1, 3, 1, 3, 1, 1]
   // The problem is if the input is quantized, then the quantization parameters
-  // will be slightly different for the input and the output. (althought the
+  // will be slightly different for the input and the output. (although the
   // difference is really small).
   // But, since we're changing this pattern to be pack-based which enforce
-  // the quantization paramters to be exactly the same.
+  // the quantization parameters to be exactly the same.
   // So we have to wait for all quantization parameters being resolved and
   // propagated and create our own.
   // We may need to revisit this logic later.
@@ -451,13 +451,13 @@ tensorflow::Status TransformWithStatus(const TocoFlags& toco_flags,
   CheckFinalDataTypesSatisfied(*model);
 
   // Estimate and log the number of arithmetic ops
-  int64 ops_count = 0;
+  int64_t ops_count = 0;
   if (EstimateArithmeticOpsCount(*model, &ops_count)) {
     LOG(INFO) << "Estimated count of arithmetic ops: " << ops_count
               << " ops, equivalently " << ops_count / 2 << " MACs";
   }
   model->ops_count = ops_count;
-  int64 params_count = 0;
+  int64_t params_count = 0;
 
   // Compute and log the number of parameters
   for (const auto& array_pair : model->GetArrayMap()) {
@@ -469,11 +469,12 @@ tensorflow::Status TransformWithStatus(const TocoFlags& toco_flags,
     params_count += RequiredBufferSizeForShape(array.shape());
   }
   LOG(INFO) << "Number of parameters: " << params_count;
-  return tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 tensorflow::Status Export(const TocoFlags& toco_flags, const Model& model,
-                          bool allow_custom_ops, string* output_file_contents) {
+                          bool allow_custom_ops,
+                          std::string* output_file_contents) {
   switch (toco_flags.output_format()) {
     case TENSORFLOW_GRAPHDEF:
       ExportTensorFlowGraphDef(model, output_file_contents);
@@ -485,7 +486,8 @@ tensorflow::Status Export(const TocoFlags& toco_flags, const Model& model,
           toco_flags.force_select_tf_ops() || toco_flags.enable_select_tf_ops();
       params.allow_custom_ops = allow_custom_ops;
       params.allow_dynamic_tensors = toco_flags.allow_dynamic_tensors();
-
+      params.disable_per_channel =
+          toco_flags.disable_per_channel_quantization();
       if (toco_flags.post_training_quantize()) {
         if (toco_flags.quantize_to_float16()) {
           params.quantize_weights = tflite::QuantizedBufferType::FLOAT16;
@@ -495,7 +497,7 @@ tensorflow::Status Export(const TocoFlags& toco_flags, const Model& model,
       }
       auto status = toco::tflite::Export(model, output_file_contents, params);
       if (!status.ok()) {
-        LOG(ERROR) << status.error_message();
+        LOG(ERROR) << status.message();
       }
       return status;
     } break;

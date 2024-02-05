@@ -16,8 +16,8 @@ limitations under the License.
 #define EIGEN_USE_THREADS
 
 #include "tensorflow/core/common_runtime/constant_folding.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/common_runtime/threadpool_device.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/subgraph.h"
 #include "tensorflow/core/kernels/quantization_utils.h"
@@ -171,7 +171,7 @@ Status ExtractRangeFromParams(const TransformFuncContext& context,
   const bool has_max = (context.params.count(max_name) != 0);
   *has_range = (has_min || has_max);
   if (!*has_range) {
-    return Status::OK();
+    return OkStatus();
   }
   if (!has_min || !has_max) {
     return errors::InvalidArgument("You must pass both ", min_name, " and ",
@@ -179,7 +179,7 @@ Status ExtractRangeFromParams(const TransformFuncContext& context,
   }
   TF_RETURN_IF_ERROR(context.GetOneFloatParameter(min_name, 0.0f, min_value));
   TF_RETURN_IF_ERROR(context.GetOneFloatParameter(max_name, 0.0f, max_value));
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -218,8 +218,8 @@ Status MergeDuplicateNodes(const GraphDef& input_graph_def,
     // duplicates and can be removed, unless they're stateful.
     std::map<string, string> inputs_to_rename;
     GraphDef merged_graph_def;
-    for (const std::pair<uint64, std::vector<const NodeDef*>> hashed_node_info :
-         hashed_nodes) {
+    for (const std::pair<const uint64, std::vector<const NodeDef*>>&
+             hashed_node_info : hashed_nodes) {
       const std::vector<const NodeDef*>& hash_node_list =
           hashed_node_info.second;
       for (int i = 0; i < hash_node_list.size(); ++i) {
@@ -247,7 +247,7 @@ Status MergeDuplicateNodes(const GraphDef& input_graph_def,
 
   *output_graph_def = current_graph_def;
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Looks for the patterns that indicate there are two eight-bit ops feeding into
@@ -297,7 +297,7 @@ Status RemoveRedundantQuantizations(const GraphDef& input_graph_def,
           CopyOriginalMatch(match, new_nodes);
         }
 
-        return Status::OK();
+        return OkStatus();
       },
       {true}, &replaced_graph_def));
 
@@ -319,7 +319,7 @@ Status QuantizePlaceholders(const GraphDef& input_graph_def,
                                             &has_input_range));
   if (!has_input_range) {
     *output_graph_def = input_graph_def;
-    return Status::OK();
+    return OkStatus();
   }
   std::map<string, string> inputs_to_rename_first_pass;
   std::map<string, string> inputs_to_rename_second_pass;
@@ -382,7 +382,7 @@ Status QuantizePlaceholders(const GraphDef& input_graph_def,
       RenameNodeInputs(first_pass_graph_def, inputs_to_rename_second_pass,
                        std::unordered_set<string>(), output_graph_def));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // During training, FakeQuantWithMinMaxVars ops capture a good min/max range for
@@ -447,11 +447,11 @@ Status ConvertFakeQuantsToRequantize(const GraphDef& input_graph_def,
         AddNodeInput(requantize_node.name() + ":2", &dequantize_node);
         new_nodes->push_back(dequantize_node);
 
-        return Status::OK();
+        return OkStatus();
       },
       {}, output_graph_def));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // We always generate Requantize ops driven by dynamic RequantizationRange
@@ -517,11 +517,11 @@ Status MergeAdjacentRequantizes(const GraphDef& input_graph_def,
         AddNodeInput(fake_requantize_max_node.name(), &requantize_node);
         new_nodes->push_back(requantize_node);
 
-        return Status::OK();
+        return OkStatus();
       },
       {}, output_graph_def));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Sometimes FakeQuantWithMinMaxVars ops are added at the end of a chain of
@@ -573,14 +573,14 @@ Status HoistFakeQuants(const GraphDef& input_graph_def,
             new_nodes->push_back(linear_node);
           }
 
-          return Status::OK();
+          return OkStatus();
         },
         {}, &hoisted_graph_def));
     current_graph_def = hoisted_graph_def;
   }
   *output_graph_def = current_graph_def;
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Converts any float ops that have eight-bit equivalents into their quantized
@@ -726,7 +726,7 @@ Status QuantizeNodes(const GraphDef& input_graph_def,
         // This isn't a float op, so don't quantize it.
         if (!are_all_float) {
           CopyOriginalMatch(match, new_nodes);
-          return Status::OK();
+          return OkStatus();
         }
 
         string namespace_prefix = float_node.name() + "_eightbit";
@@ -918,7 +918,7 @@ Status QuantizeNodes(const GraphDef& input_graph_def,
         AddNodeInput(eight_bit_node_name + ":2", &dequantize_node);
         new_nodes->push_back(dequantize_node);
 
-        return Status::OK();
+        return OkStatus();
       },
       {}, &quantized_graph_def));
   TF_RETURN_IF_ERROR(IsGraphValid(quantized_graph_def));
@@ -946,7 +946,7 @@ Status QuantizeNodes(const GraphDef& input_graph_def,
                                                   output_graph_def));
   TF_RETURN_IF_ERROR(IsGraphValid(*output_graph_def));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("quantize_nodes", QuantizeNodes);

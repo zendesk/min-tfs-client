@@ -13,22 +13,16 @@
 # limitations under the License.
 # ==============================================================================
 """Decorator that provides a warning if the wrapped object is never used."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import copy
 import sys
+import textwrap
 import traceback
-
-import six  # pylint: disable=unused-import
-
+import types
 
 from tensorflow.python.eager import context
 from tensorflow.python.framework import ops
 from tensorflow.python.platform import tf_logging
 from tensorflow.python.util import tf_decorator
-# pylint: enable=g-bad-import-order,g-import-not-at-top
 
 
 class _TFShouldUseHelper(object):
@@ -49,7 +43,7 @@ class _TFShouldUseHelper(object):
     if context.executing_eagerly():
       # If warn_in_eager, sated == False.  Otherwise true.
       self._sated = not warn_in_eager
-    elif ops.get_default_graph()._building_function:  # pylint: disable=protected-access
+    elif ops.inside_function():
       if error_in_function:
         self._sated = False
         ops.add_exit_callback_to_default_func_graph(
@@ -112,7 +106,12 @@ def _new__setattr__(self, key, value):
 def _new__getattribute__(self, key):
   if key not in ('_tf_should_use_helper', '_tf_should_use_wrapped_value'):
     object.__getattribute__(self, '_tf_should_use_helper').sate()
-  if key in ('_tf_should_use_helper', 'mark_used', '__setatt__'):
+  if key in (
+      '_tf_should_use_wrapped_value',
+      '_tf_should_use_helper',
+      'mark_used',
+      '__setattr__',
+  ):
     return object.__getattribute__(self, key)
   return getattr(
       object.__getattribute__(self, '_tf_should_use_wrapped_value'), key)
@@ -128,8 +127,49 @@ def _new_mark_used(self, *args, **kwargs):
   except AttributeError:
     pass
 
+OVERLOADABLE_OPERATORS = {
+    '__add__',
+    '__radd__',
+    '__sub__',
+    '__rsub__',
+    '__mul__',
+    '__rmul__',
+    '__div__',
+    '__rdiv__',
+    '__truediv__',
+    '__rtruediv__',
+    '__floordiv__',
+    '__rfloordiv__',
+    '__mod__',
+    '__rmod__',
+    '__lt__',
+    '__le__',
+    '__gt__',
+    '__ge__',
+    '__ne__',
+    '__eq__',
+    '__and__',
+    '__rand__',
+    '__or__',
+    '__ror__',
+    '__xor__',
+    '__rxor__',
+    '__getitem__',
+    '__pow__',
+    '__rpow__',
+    '__invert__',
+    '__neg__',
+    '__abs__',
+    '__matmul__',
+    '__rmatmul__',
+}
+
 
 _WRAPPERS = {}
+
+
+class ShouldUseWrapper(object):
+  pass
 
 
 def _get_wrapper(x, tf_should_use_helper):
@@ -150,10 +190,22 @@ def _get_wrapper(x, tf_should_use_helper):
   if memoized:
     return memoized(x, tf_should_use_helper)
 
-  tx = copy.deepcopy(type_x)
-  copy_tx = type(tx.__name__, tx.__bases__, dict(tx.__dict__))
+  # Make a copy of `object`
+  tx = copy.deepcopy(ShouldUseWrapper)
+  # Prefer using __orig_bases__, which preserve generic type arguments.
+  bases = getattr(tx, '__orig_bases__', tx.__bases__)
+
+  def set_body(ns):
+    ns.update(tx.__dict__)
+    return ns
+
+  copy_tx = types.new_class(tx.__name__, bases, exec_body=set_body)
   copy_tx.__init__ = _new__init__
   copy_tx.__getattribute__ = _new__getattribute__
+  for op in OVERLOADABLE_OPERATORS:
+    if hasattr(type_x, op):
+      setattr(copy_tx, op, getattr(type_x, op))
+
   copy_tx.mark_used = _new_mark_used
   copy_tx.__setattr__ = _new__setattr__
   _WRAPPERS[type_x] = copy_tx
@@ -182,7 +234,7 @@ def _add_should_use_warning(x, error_in_function=False, warn_in_eager=False):
   if context.executing_eagerly() and not warn_in_eager:
     return x
 
-  if ops.get_default_graph()._building_function and not error_in_function:  # pylint: disable=protected-access
+  if ops.inside_function() and not error_in_function:
     # We don't currently log warnings in tf.function calls, so just skip it.
     return x
 
@@ -231,20 +283,27 @@ def should_use_result(fn=None, warn_in_eager=False, error_in_function=False):
     The wrapped function.
   """
   def decorated(fn):
+    """Decorates the input function."""
     def wrapped(*args, **kwargs):
       return _add_should_use_warning(fn(*args, **kwargs),
                                      warn_in_eager=warn_in_eager,
                                      error_in_function=error_in_function)
+    fn_doc = fn.__doc__ or ''
+    split_doc = fn_doc.split('\n', 1)
+    if len(split_doc) == 1:
+      updated_doc = fn_doc
+    else:
+      brief, rest = split_doc
+      updated_doc = '\n'.join([brief, textwrap.dedent(rest)])
+
+    note = ('\n\nNote: The output of this function should be used. If it is '
+            'not, a warning will be logged or an error may be raised. '
+            'To mark the output as used, call its .mark_used() method.')
     return tf_decorator.make_decorator(
         target=fn,
         decorator_func=wrapped,
         decorator_name='should_use_result',
-        decorator_doc=(
-            (fn.__doc__ or '') +
-            ('\n\n  '
-             '**NOTE** The output of this function should be used.  If it is '
-             'not, a warning will be logged or an error may be raised.  '
-             'To mark the output as used, call its .mark_used() method.')))
+        decorator_doc=updated_doc + note)
 
   if fn is not None:
     return decorated(fn)

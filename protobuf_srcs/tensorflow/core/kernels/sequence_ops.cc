@@ -15,9 +15,13 @@ limitations under the License.
 
 // See docs in ../ops/math_ops.cc.
 
+#include "tensorflow/core/kernels/sequence_ops.h"
+
 #include <cmath>
+#include <type_traits>
 
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -25,9 +29,25 @@ limitations under the License.
 
 namespace tensorflow {
 
-int32 GetValue(int32 v) { return v; }
+using CPUDevice = Eigen::ThreadPoolDevice;
+using GPUDevice = Eigen::GpuDevice;
+
+namespace functor {
 
 template <typename T>
+struct RangeFunctor<CPUDevice, T> {
+  void operator()(OpKernelContext* context, int64_t size, T start, T delta,
+                  typename TTypes<T>::Flat output) const {
+    (void)context;
+    for (int64_t i = 0; i < size; ++i) {
+      output(i) = start + static_cast<T>(i) * delta;
+    }
+  }
+};
+
+}  // namespace functor
+
+template <typename Device, typename T>
 class RangeOp : public OpKernel {
  public:
   explicit RangeOp(OpKernelConstruction* context) : OpKernel(context) {}
@@ -36,13 +56,23 @@ class RangeOp : public OpKernel {
     const Tensor& start_in = context->input(0);
     const Tensor& limit_in = context->input(1);
     const Tensor& delta_in = context->input(2);
-    OP_REQUIRES(context, IsLegacyScalar(start_in.shape()),
+    // TODO(rmlarsen): Disallow legacy use of length-1 vectors as scalars.
+    OP_REQUIRES(context,
+                TensorShapeUtils::IsScalar(start_in.shape()) ||
+                    (TensorShapeUtils::IsVector(start_in.shape()) &&
+                     start_in.shape().dim_size(0) == 1),
                 errors::InvalidArgument("start must be a scalar, not shape ",
                                         start_in.shape().DebugString()));
-    OP_REQUIRES(context, IsLegacyScalar(limit_in.shape()),
+    OP_REQUIRES(context,
+                TensorShapeUtils::IsScalar(limit_in.shape()) ||
+                    (TensorShapeUtils::IsVector(limit_in.shape()) &&
+                     limit_in.shape().dim_size(0) == 1),
                 errors::InvalidArgument("limit must be a scalar, not shape ",
                                         limit_in.shape().DebugString()));
-    OP_REQUIRES(context, IsLegacyScalar(delta_in.shape()),
+    OP_REQUIRES(context,
+                TensorShapeUtils::IsScalar(delta_in.shape()) ||
+                    (TensorShapeUtils::IsVector(delta_in.shape()) &&
+                     delta_in.shape().dim_size(0) == 1),
                 errors::InvalidArgument("delta must be a scalar, not shape ",
                                         delta_in.shape().DebugString()));
     const T start = start_in.scalar<T>()();
@@ -61,42 +91,41 @@ class RangeOp : public OpKernel {
           errors::InvalidArgument(
               "Requires start >= limit when delta < 0: ", start, "/", limit));
     }
-    int64 size = (std::is_integral<T>::value
-                      ? ((std::abs(limit - start) + std::abs(delta) - 1) /
-                         std::abs(delta))
-                      : std::ceil(std::abs((limit - start) / delta)));
-    Tensor* out = nullptr;
-    OP_REQUIRES_OK(context,
-                   context->allocate_output(0, TensorShape({size}), &out));
-    auto flat = out->flat<T>();
-    T val = start;
-    for (int64 i = 0; i < size; ++i) {
-      flat(i) = T(val);
-      val += delta;
+    int64_t size;
+    if constexpr (std::is_integral<T>::value) {
+      size = Eigen::divup(Eigen::numext::abs(limit - start),
+                          Eigen::numext::abs(delta));
+    } else {
+      auto size_auto =
+          Eigen::numext::ceil(Eigen::numext::abs((limit - start) / delta));
+      OP_REQUIRES(
+          context, size_auto <= std::numeric_limits<int64_t>::max(),
+          errors::InvalidArgument("Requires ((limit - start) / delta) <= ",
+                                  std::numeric_limits<int64_t>::max()));
+      size = static_cast<int64_t>(size_auto);
     }
+
+    TensorShape shape;
+    OP_REQUIRES_OK(context, shape.AddDimWithStatus(size));
+    Tensor* out = nullptr;
+    OP_REQUIRES_OK(context, context->allocate_output(0, shape, &out));
+    if (size == 0) return;
+    auto flat = out->flat<T>();
+    functor::RangeFunctor<Device, T>()(context, size, start, delta, flat);
   }
 };
 
-#define REGISTER_KERNEL(DEV, TYPE)                           \
+#define REGISTER_KERNEL(DEV, DEV_TYPE, TYPE)                 \
   REGISTER_KERNEL_BUILDER(Name("Range")                      \
                               .Device(DEV)                   \
                               .HostMemory("start")           \
                               .HostMemory("limit")           \
                               .HostMemory("delta")           \
-                              .HostMemory("output")          \
                               .TypeConstraint<TYPE>("Tidx"), \
-                          RangeOp<TYPE>);
+                          RangeOp<DEV_TYPE, TYPE>);
 
-#define REGISTER_CPU_KERNEL(T) REGISTER_KERNEL(DEVICE_CPU, T)
-#define REGISTER_GPU_KERNEL(T) REGISTER_KERNEL(DEVICE_GPU, T)
-#ifdef TENSORFLOW_USE_SYCL
-#define REGISTER_SYCL_KERNEL(T) REGISTER_KERNEL(DEVICE_SYCL, T)
-TF_CALL_float(REGISTER_SYCL_KERNEL);
-TF_CALL_double(REGISTER_SYCL_KERNEL);
-TF_CALL_int32(REGISTER_SYCL_KERNEL);
-TF_CALL_int64(REGISTER_SYCL_KERNEL);
-#undef REGISTER_SYCL_KERNEL
-#endif  // TENSORFLOW_USE_SYCL
+#define REGISTER_CPU_KERNEL(T) REGISTER_KERNEL(DEVICE_CPU, CPUDevice, T)
+#define REGISTER_GPU_KERNEL(T) REGISTER_KERNEL(DEVICE_GPU, GPUDevice, T)
 
 TF_CALL_float(REGISTER_CPU_KERNEL);
 TF_CALL_double(REGISTER_CPU_KERNEL);
@@ -107,10 +136,19 @@ TF_CALL_int64(REGISTER_CPU_KERNEL);
 
 TF_CALL_float(REGISTER_GPU_KERNEL);
 TF_CALL_double(REGISTER_GPU_KERNEL);
-TF_CALL_int32(REGISTER_GPU_KERNEL);
 TF_CALL_int64(REGISTER_GPU_KERNEL);
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+// Special case to execute int32 on the host with host output.
+REGISTER_KERNEL_BUILDER(Name("Range")
+                            .Device(DEVICE_DEFAULT)
+                            .HostMemory("start")
+                            .HostMemory("limit")
+                            .HostMemory("delta")
+                            .HostMemory("output")
+                            .TypeConstraint<int32_t>("Tidx"),
+                        RangeOp<CPUDevice, int32_t>);
 
 #undef REGISTER_KERNEL
 #undef REGISTER_CPU_KERNEL
@@ -166,25 +204,16 @@ class LinSpaceOp : public OpKernel {
 
 #define REGISTER_KERNEL_ALL_NUMS(dev, T) \
   REGISTER_KERNEL(dev, T, int32);        \
-  REGISTER_KERNEL(dev, T, int64)
+  REGISTER_KERNEL(dev, T, int64_t)
 
 #define REGISTER_CPU_KERNEL(T) REGISTER_KERNEL_ALL_NUMS(DEVICE_CPU, T)
 TF_CALL_float(REGISTER_CPU_KERNEL);
 TF_CALL_double(REGISTER_CPU_KERNEL);
 
-// NOTE(touts): We register the op on GPU but it still runs on CPU
-// because its inputs and outputs are tagged as HostMemory.
-#define REGISTER_GPU_KERNEL(T) REGISTER_KERNEL_ALL_NUMS(DEVICE_GPU, T)
-TF_CALL_float(REGISTER_GPU_KERNEL);
-TF_CALL_double(REGISTER_GPU_KERNEL);
-#undef REGISTER_GPU_KERNEL
-
-#ifdef TENSORFLOW_USE_SYCL
-#define REGISTER_SYCL_KERNEL(T) REGISTER_KERNEL_ALL_NUMS(DEVICE_SYCL, T)
-TF_CALL_float(REGISTER_SYCL_KERNEL);
-TF_CALL_double(REGISTER_SYCL_KERNEL);
-#undef REGISTER_SYCL_KERNEL
-#endif  // TENSORFLOW_USE_SYCL
+#define REGISTER_DEFAULT_KERNEL(T) REGISTER_KERNEL_ALL_NUMS(DEVICE_DEFAULT, T)
+TF_CALL_float(REGISTER_DEFAULT_KERNEL);
+TF_CALL_double(REGISTER_DEFAULT_KERNEL);
+#undef REGISTER_DEFAULT_KERNEL
 
 #undef REGISTER_CPU_KERNEL
 #undef REGISTER_KERNEL_ALL_NUMS

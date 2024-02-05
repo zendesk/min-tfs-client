@@ -1,51 +1,42 @@
-load("//tensorflow:tensorflow.bzl", "py_test")
+load("//tensorflow:strict.default.bzl", "py_strict_library", "py_strict_test")
 
 package(
-    licenses = ["notice"],  # Apache 2.0
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
 )
 
-filegroup(
-    name = "all_files",
-    srcs = glob(
-        ["**/*"],
-        exclude = [
-            "**/METADATA",
-            "**/OWNERS",
-        ],
-    ),
-    visibility = ["//tensorflow:__subpackages__"],
-)
-
-py_library(
-    name = "testing",
-    srcs = [
-        "basic_definitions.py",
-        "decorators.py",
-    ],
-    srcs_version = "PY2AND3",
-    visibility = ["//visibility:public"],
-)
-
-py_library(
+py_strict_library(
     name = "codegen",
     srcs = [
         "codegen.py",
     ],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     visibility = ["//visibility:public"],
     deps = [
-        "//tensorflow/python/autograph/pyct",
-        "//tensorflow/python/autograph/utils",
-        "@gast_archive//:gast",
+        "//tensorflow/python/autograph/pyct:templates",
+        "//third_party/py/numpy",
+        "@pypi_gast//:pkg",
     ],
 )
 
-py_test(
+py_strict_library(
+    name = "decorators",
+    srcs = ["decorators.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_strict_library(
+    name = "basic_definitions",
+    srcs = ["basic_definitions.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_strict_test(
     name = "codegen_test",
     size = "large",
     srcs = ["codegen_test.py"],
-    python_version = "PY2",
-    srcs_version = "PY2AND3",
+    python_version = "PY3",
+    srcs_version = "PY3",
     tags = [
         "manual",
         "no_windows",
@@ -54,8 +45,7 @@ py_test(
     ],
     deps = [
         ":codegen",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/autograph/pyct",
-        "@gast_archive//:gast",
+        "//tensorflow/python/platform:client_testlib",
+        "//third_party/py/numpy",
     ],
 )

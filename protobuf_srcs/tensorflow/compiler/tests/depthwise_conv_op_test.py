@@ -14,16 +14,12 @@
 # ==============================================================================
 """Functional tests for depthwise convolutional operations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
 from tensorflow.compiler.tests import xla_test
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import nn_impl
 from tensorflow.python.ops import nn_ops
@@ -39,7 +35,7 @@ def ReferenceDepthwiseConv2D(input_tensor, filter_tensor, strides, padding,
   convs = []
   in_channels = filter_tensor.shape[2]
   # Use a custom implementation of depthwise conv2d using slicing.
-  for channel in xrange(in_channels):
+  for channel in range(in_channels):
     # Slice the input along channel
     if data_format == "NCHW":
       input_slice = input_tensor[:, channel:channel+1, :, :]
@@ -68,21 +64,21 @@ def ConfigsToTest():
     Tuple (input_size, filter_size, out_size, stride, padding), the depthwise
     convolution parameters.
   """
-  input_sizes = [[4, 5, 5, 48], [4, 8, 8, 84], [4, 17, 17, 48], [4, 9, 27, 8],
-                 [4, 31, 31, 7], [4, 35, 35, 2], [4, 147, 147, 2],
-                 [3, 299, 299, 3], [5, 183, 183, 1]]
-  filter_sizes = [[1, 1, 48, 2], [1, 3, 84, 1], [3, 1, 48, 4], [3, 3, 8, 1],
-                  [3, 3, 7, 1], [5, 5, 2, 1], [3, 3, 2, 8], [2, 2, 3,
-                                                             8], [5, 5, 1, 2]]
-  out_sizes = [[4, 5, 5, 96], [4, 8, 8, 84], [4, 17, 17, 192], [4, 9, 27, 8],
-               [4, 31, 31, 7], [4, 35, 35, 2], [4, 49, 49, 16],
+  input_sizes = [[4, 5, 5, 48], [2, 5, 5, 48], [4, 8, 8, 84], [4, 17, 17, 48],
+                 [4, 9, 27, 8], [4, 31, 31, 7], [4, 35, 35, 2],
+                 [4, 147, 147, 2], [3, 299, 299, 3], [5, 183, 183, 1]]
+  filter_sizes = [[1, 1, 48, 2], [2, 2, 48, 8], [1, 3, 84, 1], [3, 1, 48, 4],
+                  [3, 3, 8, 1], [3, 3, 7, 1], [5, 5, 2, 1], [3, 3, 2, 8],
+                  [2, 2, 3, 8], [5, 5, 1, 2]]
+  out_sizes = [[4, 5, 5, 96], [2, 5, 5, 384], [4, 8, 8, 84], [4, 17, 17, 192],
+               [4, 9, 27, 8], [4, 31, 31, 7], [4, 35, 35, 2], [4, 49, 49, 16],
                [3, 150, 150, 24], [5, 92, 92, 2]]
-  strides = [1, 1, 1, 1, 1, 1, 3, 2, 2]
+  strides = [1, 1, 1, 1, 1, 1, 1, 3, 2, 2]
   # pylint: disable=invalid-name
   VALID = "VALID"
   SAME = "SAME"
   # pylint: enable=invalid-name
-  paddings = [SAME, SAME, SAME, SAME, SAME, SAME, VALID, SAME, SAME, SAME]
+  paddings = [SAME, SAME, SAME, SAME, SAME, SAME, SAME, VALID, SAME, SAME, SAME]
   for i, f, o, s, p in zip(input_sizes, filter_sizes, out_sizes, strides,
                            paddings):
     yield i, f, o, s, p
@@ -220,6 +216,8 @@ class DepthwiseConv2DTest(xla_test.XLATestCase):
     self.assertAllClose(
         np.ravel(native_result), np.ravel(interface_result), rtol=tolerance)
 
+  @test_util.run_without_tensor_float_32(
+      "DepthwiseConv2D may use TF32 when available.")
   def testDepthwiseConv2D(self):
     for index, (input_size, filter_size, _, stride,
                 padding) in enumerate(ConfigsToTest()):
@@ -231,6 +229,8 @@ class DepthwiseConv2DTest(xla_test.XLATestCase):
           self._VerifyValues(
               input_size, filter_size, stride, padding, data_type)
 
+  @test_util.run_without_tensor_float_32(
+      "DepthwiseConv2D may use TF32 when available.")
   def testDepthwiseConv2DFormat(self):
     for index, (input_size, filter_size, _, stride,
                 padding) in enumerate(ConfigsToTest()):
@@ -536,6 +536,8 @@ class DepthwiseConv2DTest(xla_test.XLATestCase):
     cpu_value = _GetVal(use_xla=False)
     self.assertAllClose(cpu_value, gpu_value, rtol=1e-4, atol=1e-4)
 
+  @test_util.run_without_tensor_float_32(
+      "DepthwiseConv2DFilterGrad may use TF32 when available.")
   def testDepthwiseConv2DFilterGradCompare(self):
     for index, (input_size, filter_size, output_size, stride,
                 padding) in enumerate(ConfigsToTest()):
@@ -545,6 +547,8 @@ class DepthwiseConv2DTest(xla_test.XLATestCase):
       self._CompareBackpropFilter(input_size, filter_size, output_size,
                                   stride, padding)
 
+  @test_util.run_without_tensor_float_32(
+      "DepthwiseConv2DFilterGrad may use TF32 when available.")
   def testDepthwiseConv2DFilterGradFormatNCHWCompare(self):
     for index, (input_size, filter_size, output_size, stride,
                 padding) in enumerate(ConfigsToTest()):

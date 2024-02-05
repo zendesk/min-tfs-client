@@ -26,22 +26,22 @@ This includes converting Python lists to TensorArray/TensorList.
 #   * convert to TensorArray only when complete write once behavior can be
 #     guaranteed (e.g. list comprehensions)
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import gast
 
 from tensorflow.python.autograph.core import converter
 from tensorflow.python.autograph.lang import directives
 from tensorflow.python.autograph.pyct import anno
 from tensorflow.python.autograph.pyct import parser
+from tensorflow.python.autograph.pyct import qual_names
 from tensorflow.python.autograph.pyct import templates
+from tensorflow.python.autograph.pyct.static_analysis import activity
 from tensorflow.python.autograph.pyct.static_analysis.annos import NodeAnno
 
 
-# Tags for local state.
-POP_USES = 'pop_uses'
+class _Statement(object):
+
+  def __init__(self):
+    self.pop_uses = None
 
 
 class ListTransformer(converter.Base):
@@ -97,9 +97,10 @@ class ListTransformer(converter.Base):
       target_name = 'list_'
     pop_var_name = self.ctx.namer.new_symbol(target_name, scope.referenced)
 
-    pop_uses = self.get_local(POP_USES, [])
-    pop_uses.append((node, pop_var_name))
-    self.set_local(POP_USES, pop_uses)
+    stmt = self.state[_Statement]
+    if stmt.pop_uses is None:
+      stmt.pop_uses = []
+    stmt.pop_uses.append((node, pop_var_name))
 
     return templates.replace_as_expression('var_name', var_name=pop_var_name)
 
@@ -184,7 +185,7 @@ class ListTransformer(converter.Base):
 
   def _postprocess_statement(self, node):
     """Inserts any separate pop() calls that node may use."""
-    pop_uses = self.get_local(POP_USES, None)
+    pop_uses = self.state[_Statement].pop_uses
     if pop_uses:
       replacements = []
       for original_call_node, pop_var_name in pop_uses:
@@ -192,17 +193,13 @@ class ListTransformer(converter.Base):
             self._generate_pop_operation(original_call_node, pop_var_name))
       replacements.append(node)
       node = replacements
-    self.exit_local_scope()
+    self.state[_Statement].exit()
     return node, None
-
-  # TODO(mdan): Should we have a generic visit_block instead?
-  # Right now it feels that a visit_block would add too much magic that's
-  # hard to follow.
 
   def _visit_and_process_block(self, block):
     return self.visit_block(
         block,
-        before_visit=self.enter_local_scope,
+        before_visit=self.state[_Statement].enter,
         after_visit=self._postprocess_statement)
 
   def visit_FunctionDef(self, node):
@@ -236,4 +233,7 @@ class ListTransformer(converter.Base):
 
 
 def transform(node, ctx):
+  node = qual_names.resolve(node)
+  node = activity.resolve(node, ctx, None)
+
   return ListTransformer(ctx).visit(node)

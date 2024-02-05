@@ -19,15 +19,11 @@ more complex summaries (e.g. audio, image).  Those test live separately in
 tensorflow/python/kernel_tests/summary_v1_*.py.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
 from tensorflow.core.framework import summary_pb2
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import errors
 from tensorflow.python.framework import meta_graph
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
@@ -59,9 +55,9 @@ class SummaryTest(test.TestCase):
       i = constant_op.constant(7)
       with ops.name_scope('outer'):
         im1 = summary_lib.scalar('inner', i, family='family')
-        self.assertEquals(im1.op.name, 'outer/family/inner')
+        self.assertEqual(im1.op.name, 'outer/family/inner')
         im2 = summary_lib.scalar('inner', i, family='family')
-        self.assertEquals(im2.op.name, 'outer/family/inner_1')
+        self.assertEqual(im2.op.name, 'outer/family/inner_1')
       sm1, sm2 = s.run([im1, im2])
     summary = summary_pb2.Summary()
 
@@ -105,7 +101,7 @@ class SummaryTest(test.TestCase):
     values = summary.value
     self.assertEqual(len(values), 3)
     tags = sorted(v.tag for v in values)
-    expected = sorted('outer/inner/image/{}'.format(i) for i in xrange(3))
+    expected = sorted('outer/inner/image/{}'.format(i) for i in range(3))
     self.assertEqual(tags, expected)
 
   @test_util.run_deprecated_v1
@@ -114,15 +110,15 @@ class SummaryTest(test.TestCase):
       i = array_ops.ones((5, 2, 3, 1))
       with ops.name_scope('outer'):
         im = summary_lib.image('inner', i, max_outputs=3, family='family')
-        self.assertEquals(im.op.name, 'outer/family/inner')
+        self.assertEqual(im.op.name, 'outer/family/inner')
       summary_str = s.run(im)
     summary = summary_pb2.Summary()
     summary.ParseFromString(summary_str)
     values = summary.value
     self.assertEqual(len(values), 3)
     tags = sorted(v.tag for v in values)
-    expected = sorted('family/outer/family/inner/image/{}'.format(i)
-                      for i in xrange(3))
+    expected = sorted(
+        'family/outer/family/inner/image/{}'.format(i) for i in range(3))
     self.assertEqual(tags, expected)
 
   @test_util.run_deprecated_v1
@@ -143,7 +139,7 @@ class SummaryTest(test.TestCase):
       i = array_ops.ones((5, 4, 4, 3))
       with ops.name_scope('outer'):
         summ_op = summary_lib.histogram('inner', i, family='family')
-        self.assertEquals(summ_op.op.name, 'outer/family/inner')
+        self.assertEqual(summ_op.op.name, 'outer/family/inner')
       summary_str = s.run(summ_op)
     summary = summary_pb2.Summary()
     summary.ParseFromString(summary_str)
@@ -168,7 +164,7 @@ class SummaryTest(test.TestCase):
     values = summary.value
     self.assertEqual(len(values), 3)
     tags = sorted(v.tag for v in values)
-    expected = sorted('outer/inner/audio/{}'.format(i) for i in xrange(3))
+    expected = sorted('outer/inner/audio/{}'.format(i) for i in range(3))
     self.assertEqual(tags, expected)
 
   @test_util.run_deprecated_v1
@@ -177,16 +173,21 @@ class SummaryTest(test.TestCase):
       i = array_ops.ones((5, 3, 4))
       with ops.name_scope('outer'):
         aud = summary_lib.audio('inner', i, 0.2, max_outputs=3, family='family')
-        self.assertEquals(aud.op.name, 'outer/family/inner')
+        self.assertEqual(aud.op.name, 'outer/family/inner')
       summary_str = s.run(aud)
     summary = summary_pb2.Summary()
     summary.ParseFromString(summary_str)
     values = summary.value
     self.assertEqual(len(values), 3)
     tags = sorted(v.tag for v in values)
-    expected = sorted('family/outer/family/inner/audio/{}'.format(i)
-                      for i in xrange(3))
+    expected = sorted(
+        'family/outer/family/inner/audio/{}'.format(i) for i in range(3))
     self.assertEqual(tags, expected)
+
+  def testAudioSummaryWithInvalidSampleRate(self):
+    with self.assertRaises(errors.InvalidArgumentError):
+      invalid_sample_rate = [22000.0, 22000.0]
+      self.evaluate(summary_lib.audio('', [[1.0]], invalid_sample_rate))
 
   @test_util.run_deprecated_v1
   def testTextSummary(self):
@@ -221,9 +222,9 @@ class SummaryTest(test.TestCase):
     with ops.name_scope('outer'):
       i = constant_op.constant(11)
       summ = summary_lib.scalar('inner', i)
-      self.assertEquals(summ.op.name, 'outer/inner')
+      self.assertEqual(summ.op.name, 'outer/inner')
       summ_f = summary_lib.scalar('inner', i, family='family')
-      self.assertEquals(summ_f.op.name, 'outer/family/inner')
+      self.assertEqual(summ_f.op.name, 'outer/family/inner')
 
     metagraph_def, _ = meta_graph.export_scoped_meta_graph(export_scope='outer')
 
@@ -239,11 +240,11 @@ class SummaryTest(test.TestCase):
         new_summ_str, new_summ_f_str = s.run([new_summ, new_summ_f])
         new_summ_pb = summary_pb2.Summary()
         new_summ_pb.ParseFromString(new_summ_str)
-        self.assertEquals('outer/inner', new_summ_pb.value[0].tag)
+        self.assertEqual('outer/inner', new_summ_pb.value[0].tag)
         new_summ_f_pb = summary_pb2.Summary()
         new_summ_f_pb.ParseFromString(new_summ_f_str)
-        self.assertEquals('family/outer/family/inner',
-                          new_summ_f_pb.value[0].tag)
+        self.assertEqual('family/outer/family/inner',
+                         new_summ_f_pb.value[0].tag)
 
 
 if __name__ == '__main__':

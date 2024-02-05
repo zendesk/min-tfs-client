@@ -15,47 +15,62 @@ limitations under the License.
 
 #include "tensorflow/lite/string_util.h"
 
+#include <stddef.h>
+
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <vector>
 
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/core/c/c_api_types.h"
+#include "tensorflow/lite/core/c/common.h"
 
 namespace tflite {
 
-void DynamicBuffer::AddString(const char* str, size_t len) {
+TfLiteStatus DynamicBuffer::AddString(const char* str, size_t len) {
+  // If `data_.size() + len` is greater than `SIZE_MAX` then the left hand side
+  // will overflow to something less than max_length_. After checking `len <=
+  // max_length_` we can use this subtraction to check for overflow.
+  if (len > max_length_ || data_.size() >= max_length_ - len)
+    return kTfLiteError;
   data_.resize(data_.size() + len);
   memcpy(data_.data() + offset_.back(), str, len);
   offset_.push_back(offset_.back() + len);
+  return kTfLiteOk;
 }
 
-void DynamicBuffer::AddString(const StringRef& string) {
-  AddString(string.str, string.len);
+TfLiteStatus DynamicBuffer::AddString(const StringRef& string) {
+  return AddString(string.str, string.len);
 }
 
 void DynamicBuffer::AddJoinedString(const std::vector<StringRef>& strings,
                                     char separator) {
+  StringRef ref;
+  ref.str = &separator;
+  ref.len = 1;
+  AddJoinedString(strings, ref);
+}
+
+void DynamicBuffer::AddJoinedString(const std::vector<StringRef>& strings,
+                                    StringRef separator) {
   // Resize the data buffer.
-  int total_len = strings.size() - 1;
+  int total_len = (strings.size() - 1) * separator.len;
   for (StringRef ref : strings) {
     total_len += ref.len;
   }
   data_.resize(data_.size() + total_len);
 
-  int current_idx = 0;
-  for (StringRef ref : strings) {
-    char* dst = data_.data() + offset_.back() + current_idx;
-
+  char* dst = data_.data() + offset_.back();
+  for (size_t i = 0; i < strings.size(); ++i) {
     // Fill separator if not first string.
-    if (current_idx != 0) {
-      *dst = separator;
-      ++dst;
-      ++current_idx;
+    if (i != 0) {
+      memcpy(dst, separator.str, separator.len);
+      dst += separator.len;
     }
 
     // Fill content of the string.
-    memcpy(dst, ref.str, ref.len);
-    current_idx += ref.len;
+    memcpy(dst, strings[i].str, strings[i].len);
+    dst += strings[i].len;
   }
   offset_.push_back(offset_.back() + total_len);
 }
@@ -75,11 +90,19 @@ int DynamicBuffer::WriteToBuffer(char** buffer) {
   *buffer = reinterpret_cast<char*>(malloc(bytes));
 
   // Set num of string
+  //
+  // NOTE: The string buffer is accessed here as if it's native endian (instead
+  // of small endian, as documented in the header). This will protentially break
+  // when TFLite is ported to big endian platforms.
+  // TODO(b/165919229): This code will need changing if/when we port to a
+  // big-endian platform.
   memcpy(*buffer, &num_strings, sizeof(int32_t));
 
   // Set offset of strings.
   int32_t start = sizeof(int32_t) * (num_strings + 2);
   for (size_t i = 0; i < offset_.size(); i++) {
+    // TODO(b/165919229): This code will need changing if/when we port to a
+    // big-endian platform.
     int32_t offset = start + offset_[i];
     memcpy(*buffer + sizeof(int32_t) * (i + 1), &offset, sizeof(int32_t));
   }
@@ -89,6 +112,7 @@ int DynamicBuffer::WriteToBuffer(char** buffer) {
   return bytes;
 }
 
+#ifndef TF_LITE_STATIC_MEMORY
 void DynamicBuffer::WriteToTensorAsVector(TfLiteTensor* tensor) {
   auto dims = TfLiteIntArrayCreate(1);
   dims->data[0] = offset_.size() - 1;  // Store number of strings.
@@ -109,9 +133,16 @@ void DynamicBuffer::WriteToTensor(TfLiteTensor* tensor,
                     tensor_buffer, bytes, kTfLiteDynamic, tensor->allocation,
                     tensor->is_variable, tensor);
 }
+#endif  // TF_LITE_STATIC_MEMORY
 
 int GetStringCount(const void* raw_buffer) {
   // The first integers in the raw buffer is the number of strings.
+  //
+  // NOTE: The string buffer is accessed here as if it's native endian (instead
+  // of small endian, as documented in the header). This will protentially break
+  // when TFLite is ported to big endian platforms.
+  // TODO(b/165919229): This code will need changing if/when we port to a
+  // big-endian platform.
   return *static_cast<const int32_t*>(raw_buffer);
 }
 
@@ -121,12 +152,16 @@ int GetStringCount(const TfLiteTensor* tensor) {
 }
 
 StringRef GetString(const void* raw_buffer, int string_index) {
+  // NOTE: The string buffer is accessed here as if it's native endian (instead
+  // of small endian, as documented in the header). This will protentially break
+  // when TFLite is ported to big endian platforms.
+  // TODO(b/165919229): This code will need changing if/when we port to a
+  // big-endian platform.
   const int32_t* offset =
       static_cast<const int32_t*>(raw_buffer) + (string_index + 1);
-  return StringRef{
-      static_cast<const char*>(raw_buffer) + (*offset),
-      (*(offset + 1)) - (*offset),
-  };
+  const size_t string_len = (*(offset + 1)) - (*offset);
+  return StringRef{static_cast<const char*>(raw_buffer) + (*offset),
+                   string_len};
 }
 
 StringRef GetString(const TfLiteTensor* tensor, int string_index) {

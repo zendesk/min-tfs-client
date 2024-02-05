@@ -28,9 +28,9 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/side_effect_util.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/function.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/framework/function_testlib.h"
 #include "tensorflow/core/framework/graph_to_functiondef.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/graph/graph_def_builder.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
@@ -60,7 +60,7 @@ Status AddGraphDefToFunctionLibrary(const GraphDefBuilder& graphdef_builder,
       *graph,
       absl::StrCat("_outside_compilation_shape_inference_", name_suffix),
       fdef));
-  return Status::OK();
+  return OkStatus();
 }
 
 template <class Tkey, class Tvalue>
@@ -295,31 +295,18 @@ bool EqualFunctionDefLibrary(const FunctionDefLibrary& expected,
         << diff << "\nActual: " << actual.DebugString();          \
   } while (false)
 
-// These dummy Op registrations are here because the real Op registrations live
-// in contrib and there can't be a dependence from this test to contrib.
-REGISTER_OP("XlaHostCompute")
-    .Input("inputs: Tinputs")
-    .Output("outputs: Toutputs")
-    .Attr("Tinputs: list(type) >= 0")
-    .Attr("Toutputs: list(type) >= 0")
-    .Attr("ancestors: list(string) >= 0")
-    .Attr("key: string")
-    .Attr("shape_inference_graph: func")
-    .Attr("shapes: list(shape) >= 0")
-    .SetShapeFn(::tensorflow::shape_inference::UnknownShape);
-
 REGISTER_OP("InputTest")
     .Output("o: float")
     .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
       c->set_output(0, c->UnknownShape());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("InputTestShaped")
     .Output("o: float")
     .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
       c->set_output(0, c->Vector(2));
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("UnaryTest")
@@ -329,7 +316,7 @@ REGISTER_OP("UnaryTest")
       ::tensorflow::shape_inference::ShapeHandle o;
       TF_RETURN_IF_ERROR(c->Merge(c->UnknownShape(), c->input(0), &o));
       c->set_output(0, o);
-      return Status::OK();
+      return OkStatus();
     });
 REGISTER_OP("BinaryTest")
     .Input("a: float")
@@ -339,7 +326,7 @@ REGISTER_OP("BinaryTest")
       ::tensorflow::shape_inference::ShapeHandle o;
       TF_RETURN_IF_ERROR(c->Merge(c->UnknownShape(), c->input(0), &o));
       c->set_output(0, o);
-      return Status::OK();
+      return OkStatus();
     });
 REGISTER_OP("BinaryTest2")
     .Input("a: float")
@@ -511,8 +498,8 @@ Status Encapsulate(GraphDef* graphdef, FunctionDefLibrary* library,
   TF_CHECK_OK(DeviceFactory::AddDevices(
       session_options, "/job:localhost/replica:0/task:0", &devices));
   OptimizerOptions opts;
-  auto device_mgr = absl::make_unique<StaticDeviceMgr>(std::move(devices));
-  auto pflr = absl::make_unique<ProcessFunctionLibraryRuntime>(
+  auto device_mgr = std::make_unique<StaticDeviceMgr>(std::move(devices));
+  auto pflr = std::make_unique<ProcessFunctionLibraryRuntime>(
       device_mgr.get(), Env::Default(), /*config=*/nullptr,
       TF_GRAPH_DEF_VERSION, lib_def.get(), opts,
       /*default_thread_pool=*/nullptr, /*cluster_flr=*/nullptr);
@@ -820,7 +807,7 @@ TEST(EncapsulateSubgraphsWithGuaranteeConstOpTest, Simple) {
             EXPECT_FALSE(HasGuaranteeConstAttr(*n));
           }
         }
-        return Status::OK();
+        return OkStatus();
       },
       /*reuse_existing_functions=*/false, &graph_after, &library));
   EXPECT_EQ(2, guaranteed_consts);
@@ -865,7 +852,7 @@ TEST(EncapsulateSubgraphsWithGuaranteeConstOpTest, Add) {
             EXPECT_FALSE(HasGuaranteeConstAttr(*n));
           }
         }
-        return Status::OK();
+        return OkStatus();
       },
       /*reuse_existing_functions=*/false, &graph_after, &library));
   // Only 1 runtime const, which is const_guarantee_add1. Add2 has one const
@@ -946,7 +933,11 @@ TEST(EncapsulateSubgraphsTest, OneFunctionOneOutside) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const DataType>({})},
             {"_outside_compilation_subgraph", "O1"},
             {"_xla_token_input_nodes",
@@ -1113,7 +1104,11 @@ TEST(EncapsulateSubgraphsTest, OneFunctionTwoOutside) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT, DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O2"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph2},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const DataType>({})},
             {"_outside_compilation_subgraph", "O2"},
             {"_xla_token_input_nodes",
@@ -1129,7 +1124,11 @@ TEST(EncapsulateSubgraphsTest, OneFunctionTwoOutside) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph1},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const DataType>({})},
             {"_outside_compilation_subgraph", "O1"},
             {"_xla_token_input_nodes",
@@ -1265,7 +1264,11 @@ TEST(EncapsulateSubgraphsTest, TwoFunctionsTwoOutside) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", NameAttrList()},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes",
              absl::Span<const TensorShapeProto>({shape_proto_expected})},
             {"_outside_compilation_subgraph", "O1"},
@@ -1294,7 +1297,11 @@ TEST(EncapsulateSubgraphsTest, TwoFunctionsTwoOutside) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F2_F2_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", NameAttrList()},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes",
              absl::Span<const TensorShapeProto>({shape_proto_expected})},
             {"_outside_compilation_subgraph", "O1"},
@@ -1427,7 +1434,11 @@ TEST(EncapsulateSubgraphsTest, TwoFunctionsTwoOutsideDependencyFromOutside) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", NameAttrList()},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes",
              absl::Span<const TensorShapeProto>({shape_proto_expected})},
             {"_outside_compilation_subgraph", "O1"},
@@ -1453,7 +1464,11 @@ TEST(EncapsulateSubgraphsTest, TwoFunctionsTwoOutsideDependencyFromOutside) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F2_F2_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", NameAttrList()},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes",
              absl::Span<const TensorShapeProto>({shape_proto_expected})},
             {"_outside_compilation_subgraph", "O1"},
@@ -1565,7 +1580,11 @@ TEST(EncapsulateSubgraphsTest, OutsideCompilationNoInputs) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", NameAttrList()},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes",
              absl::Span<const TensorShapeProto>({shape_proto_expected})},
             {"_outside_compilation_subgraph", "O1"},
@@ -1657,7 +1676,11 @@ TEST(EncapsulateSubgraphsTest, OutsideCompilationControlInput) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", NameAttrList()},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes",
              absl::Span<const TensorShapeProto>({shape_proto_expected})},
             {"_outside_compilation_subgraph", "O1"},
@@ -1764,7 +1787,11 @@ TEST(EncapsulateSubgraphsTest, OutsideCompilationNoOutputs) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const TensorShapeProto>({})},
             {"_outside_compilation_subgraph", "O1"},
             {"_xla_token_input_nodes",
@@ -1874,7 +1901,11 @@ TEST(EncapsulateSubgraphsTest, OutsideCompilationControlOutput) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const TensorShapeProto>({})},
             {"_outside_compilation_subgraph", "O1"},
             {"_xla_token_input_nodes",
@@ -2008,7 +2039,11 @@ TEST(EncapsulateSubgraphsTest,
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph1},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const TensorShapeProto>({})},
             {"_outside_compilation_subgraph", "O1"},
             {"_xla_token_input_nodes",
@@ -2022,7 +2057,11 @@ TEST(EncapsulateSubgraphsTest,
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O2"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph2},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const TensorShapeProto>({})},
             {"_outside_compilation_subgraph", "O2"},
             {"_xla_token_input_nodes",
@@ -2152,7 +2191,11 @@ TEST(EncapsulateSubgraphsTest,
             {"Toutputs", absl::Span<const DataType>({})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O2"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", NameAttrList()},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const TensorShapeProto>({})},
             {"_outside_compilation_subgraph", "O2"},
             {"_xla_token_input_nodes",
@@ -2168,7 +2211,11 @@ TEST(EncapsulateSubgraphsTest,
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const TensorShapeProto>({})},
             {"_outside_compilation_subgraph", "O1"},
             {"_xla_token_input_nodes",
@@ -2295,7 +2342,11 @@ TEST(EncapsulateSubgraphsTest, OutsideCompilationClusterDependency) {
          {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
          {"ancestors", absl::Span<const string>({})},
          {"key", "host_compute_channel_F1_F1_O1"},
+         {"send_key", ""},
+         {"recv_key", ""},
          {"shape_inference_graph", shape_inference_graph},
+         {"tpu_core", 0},
+         {"cost_estimate_ns", 1000000},
          {"shapes", absl::Span<const TensorShapeProto>({})},
          {"_outside_compilation_subgraph", "O1"},
          {"_xla_token_input_nodes",
@@ -2309,7 +2360,11 @@ TEST(EncapsulateSubgraphsTest, OutsideCompilationClusterDependency) {
          {"Toutputs", absl::Span<const DataType>({})},
          {"ancestors", absl::Span<const string>({})},
          {"key", "host_compute_channel_F1_F1_O2"},
+         {"send_key", ""},
+         {"recv_key", ""},
          {"shape_inference_graph", NameAttrList()},
+         {"tpu_core", 0},
+         {"cost_estimate_ns", 1000000},
          {"shapes", absl::Span<const TensorShapeProto>({})},
          {"_outside_compilation_subgraph", "O2"},
          {"_xla_token_input_nodes",
@@ -2324,7 +2379,11 @@ TEST(EncapsulateSubgraphsTest, OutsideCompilationClusterDependency) {
          {"Toutputs", absl::Span<const DataType>({})},
          {"ancestors", absl::Span<const string>({})},
          {"key", "host_compute_channel_F1_F1_O3"},
+         {"send_key", ""},
+         {"recv_key", ""},
          {"shape_inference_graph", NameAttrList()},
+         {"tpu_core", 0},
+         {"cost_estimate_ns", 1000000},
          {"shapes", absl::Span<const TensorShapeProto>({})},
          {"_outside_compilation_subgraph", "O3"},
          {"_xla_token_input_nodes",
@@ -2450,7 +2509,11 @@ TEST(EncapsulateSubgraphsTest, OutsideCompilationNoInputsOrOutputs) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const TensorShapeProto>({})},
             {"_outside_compilation_subgraph", "O1"},
             {"_xla_token_input_nodes",
@@ -2566,7 +2629,11 @@ TEST(EncapsulateSubgraphsTest, OutsideCompilationShapeInference) {
             {"Toutputs", absl::Span<const DataType>({DT_FLOAT})},
             {"ancestors", absl::Span<const string>({})},
             {"key", "host_compute_channel_F1_F1_O1"},
+            {"send_key", ""},
+            {"recv_key", ""},
             {"shape_inference_graph", shape_inference_graph},
+            {"tpu_core", 0},
+            {"cost_estimate_ns", 1000000},
             {"shapes", absl::Span<const DataType>({})},
             {"_outside_compilation_subgraph", "O1"},
             {"_xla_token_input_nodes",
@@ -2634,7 +2701,7 @@ TEST(EncapsulateSubgraphsTest, RefVariablesMarked) {
   Scope root = Scope::NewRootScope().ExitOnError();
   CreateSubgraphTouchingRefVar(root);
 
-  auto graph = absl::make_unique<Graph>(OpRegistry::Global());
+  auto graph = std::make_unique<Graph>(OpRegistry::Global());
   TF_ASSERT_OK(root.ToGraph(graph.get()));
 
   GraphOptimizationPassWrapper wrapper;
@@ -2664,7 +2731,7 @@ TEST(EncapsulateSubgraphsTest, NoRefVarsNoAttr) {
   Scope root = Scope::NewRootScope().ExitOnError();
   CreateSubgraphNotTouchingRefVar(root);
 
-  auto graph = absl::make_unique<Graph>(OpRegistry::Global());
+  auto graph = std::make_unique<Graph>(OpRegistry::Global());
   TF_ASSERT_OK(root.ToGraph(graph.get()));
 
   GraphOptimizationPassWrapper wrapper;

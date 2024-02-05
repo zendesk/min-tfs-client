@@ -18,10 +18,10 @@ limitations under the License.
 #ifndef TFLITE_GPU_BINARY_RELEASE
 
 #include <memory>
-#include <unordered_map>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
-#include "flatbuffers/flatbuffers.h"  // TF:flatbuffers
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "tensorflow/lite/delegates/gpu/common/gpu_info.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
 #include "tensorflow/lite/delegates/gpu/gl/metadata_generated.h"
@@ -62,14 +62,14 @@ class WorkgroupsCalculatorFromMetadata : public WorkgroupsCalculator {
   }
 
  private:
-  std::unordered_map<NodeId, uint3> workgroups_;
+  absl::flat_hash_map<NodeId, uint3> workgroups_;
   std::unique_ptr<WorkgroupsCalculator> default_calculator_;
 };
 
 const data::HardcodedWorkgroups* FindWorkgroups(
     const data::CustomWorkgroups& workgroups, const GpuInfo& gpu_info) {
   for (auto workgroup : *workgroups.hardcoded_workgroups()) {
-    if (workgroup->gpu_info()->c_str() == gpu_info.renderer_name) {
+    if (workgroup->gpu_info()->c_str() == gpu_info.opengl_info.renderer_name) {
       return workgroup;
     }
   }
@@ -87,8 +87,8 @@ std::unique_ptr<WorkgroupsCalculator> NewWorkgroupsCalculatorFromMetadata(
   const data::HardcodedWorkgroups* workgroups =
       FindWorkgroups(*flow_metadata->workgroups(), gpu_info);
   if (!workgroups) return nullptr;
-  return absl::make_unique<WorkgroupsCalculatorFromMetadata>(*workgroups,
-                                                             gpu_info);
+  return std::make_unique<WorkgroupsCalculatorFromMetadata>(*workgroups,
+                                                            gpu_info);
 }
 
 #else  // TFLITE_GPU_BINARY_RELEASE

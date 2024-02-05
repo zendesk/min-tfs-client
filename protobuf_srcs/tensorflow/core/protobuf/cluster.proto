@@ -16,11 +16,12 @@ limitations under the License.
 syntax = "proto3";
 
 package tensorflow;
+
 option cc_enable_arenas = true;
 option java_outer_classname = "ClusterProtos";
 option java_multiple_files = true;
 option java_package = "org.tensorflow.distruntime";
-option go_package = "github.com/tensorflow/tensorflow/tensorflow/go/core/protobuf";
+option go_package = "github.com/tensorflow/tensorflow/tensorflow/go/core/protobuf/for_core_protos_go_proto";
 
 // This file contains protos to be used when defining a TensorFlow
 // cluster.
@@ -73,6 +74,9 @@ message JobDef {
   // If the `name` field contains "worker", and the `tasks` map contains a
   // mapping from 7 to "example.org:2222", then the device prefix
   // "/job:worker/task:7" will be assigned to "example.org:2222".
+  //
+  // If a job has multiple replicas, host-ports will be comma-delimited, with
+  // one entry for each replica.
   map<int32, string> tasks = 2;
 }
 

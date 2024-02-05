@@ -16,7 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_CONSTANT_OP_H_
 #define TENSORFLOW_CORE_KERNELS_CONSTANT_OP_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/platform/macros.h"
@@ -29,11 +29,13 @@ class ConstantOp : public OpKernel {
   explicit ConstantOp(OpKernelConstruction* ctx);
   void Compute(OpKernelContext* ctx) override;
   bool IsExpensive() override { return false; }
+  const Tensor* const_tensor() const override { return &tensor_; };
   ~ConstantOp() override;
 
  private:
   Tensor tensor_;
-  TF_DISALLOW_COPY_AND_ASSIGN(ConstantOp);
+  ConstantOp(const ConstantOp&) = delete;
+  void operator=(const ConstantOp&) = delete;
 };
 
 class PlaceholderOp : public OpKernel {

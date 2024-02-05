@@ -20,7 +20,7 @@ limitations under the License.
 namespace tensorflow {
 
 Status SendTensorsToRendezvous(
-    Rendezvous* rendezvous, DeviceContext* device_context,
+    RendezvousInterface* rendezvous, DeviceContext* device_context,
     const std::vector<AllocatorAttributes>& alloc_attrs,
     const std::vector<string>& keys, gtl::ArraySlice<Tensor> tensors_to_send) {
   if (keys.size() != tensors_to_send.size()) {
@@ -50,16 +50,16 @@ Status SendTensorsToRendezvous(
     TF_RETURN_IF_ERROR(
         rendezvous->Send(parsed, rendez_args, tensors_to_send[i], false));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 void RecvOutputsFromRendezvousAsync(
-    Rendezvous* rendezvous, DeviceContext* device_context,
+    RendezvousInterface* rendezvous, DeviceContext* device_context,
     const std::vector<AllocatorAttributes>& alloc_attrs,
     const std::vector<string>& keys, std::vector<Tensor>* received_tensors,
     StatusCallback done) {
   if (keys.empty()) {
-    done(Status::OK());
+    done(OkStatus());
     return;
   }
   if (!alloc_attrs.empty() && (keys.size() != alloc_attrs.size())) {
@@ -118,7 +118,8 @@ void RecvOutputsFromRendezvousAsync(
   status_cb->Unref();
 }
 
-Status RecvOutputsFromRendezvous(Rendezvous* rendezvous, NamedTensors* out,
+Status RecvOutputsFromRendezvous(RendezvousInterface* rendezvous,
+                                 NamedTensors* out,
                                  const Rendezvous::Args& args) {
   // Receives values requested by the caller.
   Rendezvous::ParsedKey parsed;
@@ -133,7 +134,7 @@ Status RecvOutputsFromRendezvous(Rendezvous* rendezvous, NamedTensors* out,
                                      " was not valid.");
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

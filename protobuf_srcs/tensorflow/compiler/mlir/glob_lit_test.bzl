@@ -6,11 +6,13 @@
 """Lit runner globbing test
 """
 
+load("@bazel_skylib//lib:paths.bzl", "paths")
+
 # Default values used by the test runner.
 _default_test_file_exts = ["mlir", ".pbtxt", ".td"]
-_default_driver = "@local_config_mlir//:run_lit.sh"
+_default_driver = "@llvm-project//mlir:run_lit.sh"
 _default_size = "small"
-_default_tags = ["no_rocm"]
+_default_tags = []
 
 # These are patterns which we should never match, for tests, subdirectories, or
 # test input data files.
@@ -24,7 +26,7 @@ _ALWAYS_EXCLUDE = [
     "**/* */**",
 ]
 
-def _run_lit_test(name, data, size, tags, driver, features):
+def _run_lit_test(name, data, size, tags, driver, features, exec_properties):
     """Runs lit on all tests it can find in `data` under tensorflow/compiler/mlir.
 
     Note that, due to Bazel's hermetic builds, lit only sees the tests that
@@ -41,29 +43,29 @@ def _run_lit_test(name, data, size, tags, driver, features):
               and specifying a default driver will abort the tests.
       features: [str], list of extra features to enable.
     """
-    if driver != _default_driver:
-        fail("There is no present support for custom drivers. Please omit" +
-             " the driver parameter when running this test. If you require" +
-             " custom driver support, please file an issue to request it.")
 
+    # Disable tests on windows for now, to enable testing rest of all xla and mlir.
     native.py_test(
         name = name,
-        srcs = ["@llvm//:lit"],
-        tags = tags,
+        srcs = ["@llvm-project//llvm:lit"],
+        tags = tags + ["no_pip", "no_windows"],
         args = [
-            "tensorflow/compiler/mlir --config-prefix=runlit -v",
+            "tensorflow/compiler/mlir/" + paths.basename(data[-1]) + " --config-prefix=runlit -v",
         ] + features,
         data = data + [
             "//tensorflow/compiler/mlir:litfiles",
-            "@llvm//:FileCheck",
-            "@llvm//:count",
-            "@llvm//:not",
+            "@llvm-project//llvm:FileCheck",
+            "@llvm-project//llvm:count",
+            "@llvm-project//llvm:not",
         ],
+        deps = ["@pypi_lit//:pkg"],
         size = size,
         main = "lit.py",
+        exec_properties = exec_properties,
     )
 
 def glob_lit_tests(
+        name = None,
         exclude = [],
         test_file_exts = _default_test_file_exts,
         default_size = _default_size,
@@ -73,10 +75,12 @@ def glob_lit_tests(
         default_tags = _default_tags,
         tags_override = {},
         driver = _default_driver,
-        features = []):
+        features = [],
+        exec_properties = {}):
     """Creates all plausible Lit tests (and their inputs) under this directory.
 
     Args:
+      name: str, name of the test_suite rule to generate for running all tests.
       exclude: [str], paths to exclude (for tests and inputs).
       test_file_exts: [str], extensions for files that are tests.
       default_size: str, the test size for targets not in "size_override".
@@ -89,6 +93,7 @@ def glob_lit_tests(
               Note: use of a custom driver is not currently supported
               and specifying a default driver will abort the tests.
       features: [str], list of extra features to enable.
+      exec_properties: a dictionary of properties to pass on.
     """
 
     # Ignore some patterns by default for tests and input data.
@@ -101,36 +106,25 @@ def glob_lit_tests(
 
     # Run tests individually such that errors can be attributed to a specific
     # failure.
-    for i in range(len(tests)):
-        curr_test = tests[i]
+    all_tests = []
+    for curr_test in tests:
+        all_tests.append(curr_test + ".test")
 
         # Instantiate this test with updated parameters.
-        lit_test(
-            name = curr_test,
-            data = data + per_test_extra_data.pop(curr_test, []),
-            size = size_override.pop(curr_test, default_size),
-            tags = default_tags + tags_override.pop(curr_test, []),
+        _run_lit_test(
+            name = curr_test + ".test",
+            data = data + [curr_test] + per_test_extra_data.get(curr_test, []),
+            size = size_override.get(curr_test, default_size),
+            tags = default_tags + tags_override.get(curr_test, []),
             driver = driver,
             features = features,
+            exec_properties = exec_properties,
         )
 
-def lit_test(
-        name,
-        data = [],
-        size = _default_size,
-        tags = _default_tags,
-        driver = _default_driver,
-        features = []):
-    """Runs test files under lit.
-
-    Args:
-      name: str, the name of the test.
-      data: [str], labels that should be provided as data inputs.
-      size: str, the size of the test.
-      tags: [str], tags to attach to the test.
-      driver: str, label of the driver shell script.
-              Note: use of a custom driver is not currently supported
-              and specifying a default driver will abort the tests.
-      features: [str], list of extra features to enable.
-    """
-    _run_lit_test(name + ".test", data + [name], size, tags, driver, features)
+    # TODO: remove this check after making it a required param.
+    if name:
+        native.test_suite(
+            name = name,
+            tests = all_tests,
+            tags = ["manual"],
+        )

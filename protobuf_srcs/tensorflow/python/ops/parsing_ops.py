@@ -14,16 +14,10 @@
 # ==============================================================================
 
 """Parsing Ops."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import re
-
-from tensorflow.python.compat import compat
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import control_flow_assert
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import gen_parsing_ops
 from tensorflow.python.ops import math_ops
@@ -33,6 +27,7 @@ from tensorflow.python.ops import parsing_config
 from tensorflow.python.ops.gen_parsing_ops import *
 # pylint: enable=wildcard-import,undefined-variable
 from tensorflow.python.util import deprecation
+from tensorflow.python.util import dispatch
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -80,6 +75,7 @@ def _prepend_none_dimension(features):
 
 
 @tf_export("io.parse_example", v1=[])
+@dispatch.add_dispatch_support
 def parse_example_v2(serialized, features, example_names=None, name=None):
   # pylint: disable=line-too-long
   """Parses `Example` protos into a `dict` of tensors.
@@ -94,8 +90,8 @@ def parse_example_v2(serialized, features, example_names=None, name=None):
   `serialized`.
 
   This op parses serialized examples into a dictionary mapping keys to `Tensor`
-  `SparseTensor`, and `RaggedTensor` objects. `features` is a dict from keys to
-  `VarLenFeature`, `SparseFeature`, `RaggedFeature`, and `FixedLenFeature`
+  `SparseTensor`, and `RaggedTensor` objects. `features` is a Mapping from keys
+  to `VarLenFeature`, `SparseFeature`, `RaggedFeature`, and `FixedLenFeature`
   objects. Each `VarLenFeature` and `SparseFeature` is mapped to a
   `SparseTensor`; each `FixedLenFeature` is mapped to a `Tensor`; and each
   `RaggedFeature` is mapped to a `RaggedTensor`.
@@ -291,7 +287,7 @@ def parse_example_v2(serialized, features, example_names=None, name=None):
   Args:
     serialized: A vector (1-D Tensor) of strings, a batch of binary
       serialized `Example` protos.
-    features: A `dict` mapping feature keys to `FixedLenFeature`,
+    features: A mapping of feature keys to `FixedLenFeature`,
       `VarLenFeature`, `SparseFeature`, and `RaggedFeature` values.
     example_names: A vector (1-D Tensor) of strings (optional), the names of
       the serialized protos in the batch.
@@ -305,7 +301,7 @@ def parse_example_v2(serialized, features, example_names=None, name=None):
     ValueError: if any feature is invalid.
   """
   if not features:
-    raise ValueError("Missing: features was %s." % features)
+    raise ValueError("Argument `features` cannot be None.")
   features = _prepend_none_dimension(features)
   params = _ParseOpParams.from_features(features, [
       VarLenFeature, SparseFeature, FixedLenFeature, FixedLenSequenceFeature,
@@ -317,6 +313,7 @@ def parse_example_v2(serialized, features, example_names=None, name=None):
 
 
 @tf_export(v1=["io.parse_example", "parse_example"])
+@dispatch.add_dispatch_support
 def parse_example(serialized, features, name=None, example_names=None):
   return parse_example_v2(serialized, features, example_names, name)
 
@@ -340,45 +337,31 @@ def _parse_example_raw(serialized, names, params, name):
 
   """
   if params.num_features == 0:
-    raise ValueError("Must provide at least one feature key")
+    raise ValueError("Must provide at least one feature key.")
   with ops.name_scope(name, "ParseExample", [serialized, names]):
     names = [] if names is None else names
-    if compat.forward_compatible(2019, 10, 30) or params.ragged_keys:
-      serialized = ops.convert_to_tensor(serialized, name="serialized")
-      if params.ragged_keys and serialized.shape.ndims is None:
-        raise ValueError("serialized must have statically-known rank to "
-                         "parse ragged features.")
-      outputs = gen_parsing_ops.parse_example_v2(
-          serialized=serialized,
-          names=names,
-          sparse_keys=params.sparse_keys,
-          dense_keys=params.dense_keys,
-          ragged_keys=params.ragged_keys,
-          dense_defaults=params.dense_defaults_vec,
-          num_sparse=len(params.sparse_keys),
-          sparse_types=params.sparse_types,
-          ragged_value_types=params.ragged_value_types,
-          ragged_split_types=params.ragged_split_types,
-          dense_shapes=params.dense_shapes_as_proto,
-          name=name)
-      (sparse_indices, sparse_values, sparse_shapes, dense_values,
-       ragged_values, ragged_row_splits) = outputs
-      # pylint: disable=protected-access
-      ragged_tensors = parsing_config._build_ragged_tensors(
-          serialized.shape, ragged_values, ragged_row_splits)
-    else:
-      outputs = gen_parsing_ops.parse_example(
-          serialized=serialized,
-          names=names,
-          dense_defaults=params.dense_defaults_vec,
-          sparse_keys=params.sparse_keys,
-          sparse_types=params.sparse_types,
-          dense_keys=params.dense_keys,
-          dense_shapes=params.dense_shapes_as_proto,
-          name=name)
-
-      (sparse_indices, sparse_values, sparse_shapes, dense_values) = outputs
-      ragged_tensors = []
+    serialized = ops.convert_to_tensor(serialized, name="serialized")
+    if params.ragged_keys and serialized.shape.ndims is None:
+      raise ValueError("serialized must have statically-known rank to "
+                       "parse ragged features.")
+    outputs = gen_parsing_ops.parse_example_v2(
+        serialized=serialized,
+        names=names,
+        sparse_keys=params.sparse_keys,
+        dense_keys=params.dense_keys,
+        ragged_keys=params.ragged_keys,
+        dense_defaults=params.dense_defaults_vec,
+        num_sparse=len(params.sparse_keys),
+        sparse_types=params.sparse_types,
+        ragged_value_types=params.ragged_value_types,
+        ragged_split_types=params.ragged_split_types,
+        dense_shapes=params.dense_shapes_as_proto,
+        name=name)
+    (sparse_indices, sparse_values, sparse_shapes, dense_values,
+     ragged_values, ragged_row_splits) = outputs
+    # pylint: disable=protected-access
+    ragged_tensors = parsing_config._build_ragged_tensors(
+        serialized.shape, ragged_values, ragged_row_splits)
 
     sparse_tensors = [
         sparse_tensor.SparseTensor(ix, val, shape) for (ix, val, shape)
@@ -390,6 +373,7 @@ def _parse_example_raw(serialized, names, params, name):
 
 
 @tf_export(v1=["io.parse_single_example", "parse_single_example"])
+@dispatch.add_dispatch_support
 def parse_single_example(serialized, features, name=None, example_names=None):
   """Parses a single `Example` proto.
 
@@ -409,7 +393,7 @@ def parse_single_example(serialized, features, name=None, example_names=None):
 
   Args:
     serialized: A scalar string Tensor, a single serialized Example.
-    features: A `dict` mapping feature keys to `FixedLenFeature` or
+    features: A mapping of feature keys to `FixedLenFeature` or
       `VarLenFeature` values.
     name: A name for this operation (optional).
     example_names: (Optional) A scalar string Tensor, the associated name.
@@ -420,15 +404,12 @@ def parse_single_example(serialized, features, name=None, example_names=None):
   Raises:
     ValueError: if any feature is invalid.
   """
-  return parse_single_example_v2_unoptimized(
-      serialized, features, example_names, name
-      )
+  return parse_single_example_v2(serialized, features, example_names, name)
 
 
-# TODO(b/70890287): Combine the implementation of this op and
-# `parse_single_example_v2()` after 1/10/2018.
 @tf_export("io.parse_single_example", v1=[])
-def parse_single_example_v2_unoptimized(
+@dispatch.add_dispatch_support
+def parse_single_example_v2(
     serialized, features, example_names=None, name=None
     ):
   """Parses a single `Example` proto.
@@ -449,7 +430,7 @@ def parse_single_example_v2_unoptimized(
 
   Args:
     serialized: A scalar string Tensor, a single serialized Example.
-    features: A `dict` mapping feature keys to `FixedLenFeature` or
+    features: A mapping of feature keys to `FixedLenFeature` or
       `VarLenFeature` values.
     example_names: (Optional) A scalar string Tensor, the associated name.
     name: A name for this operation (optional).
@@ -461,72 +442,15 @@ def parse_single_example_v2_unoptimized(
     ValueError: if any feature is invalid.
   """
   if not features:
-    raise ValueError("Missing features.")
-  any_ragged_features = any(
-      isinstance(f, RaggedFeature)
-      for f in features.values())
-  if compat.forward_compatible(2019, 10, 30) or any_ragged_features:
-    with ops.name_scope(name, "ParseSingleExample",
-                        [serialized, example_names]):
-      serialized = ops.convert_to_tensor(serialized, name="serialized")
-      serialized = _assert_scalar(serialized, "serialized")
-      return parse_example_v2(serialized, features, example_names, name)
-  if example_names is None:
-    return parse_single_example_v2(serialized, features, name)
-  features = _prepend_none_dimension(features)
-  params = _ParseOpParams.from_features(
-      features,
-      [VarLenFeature, FixedLenFeature, FixedLenSequenceFeature, SparseFeature])
-  outputs = _parse_single_example_raw(serialized, example_names, params, name)
-  return _construct_tensors_for_composite_features(features, outputs)
-
-
-def _parse_single_example_raw(serialized, names, params, name=None):
-  """Parses a single `Example` proto.
-
-  Args:
-    serialized: A scalar string Tensor, a single serialized Example.
-    names: (Optional) A scalar string Tensor, the associated name.
-    params: A `ParseOpParams` containing the parameters for the parse op.
-    name: A name for this operation (optional).
-
-  Returns:
-    A `dict` mapping feature keys to `Tensor` and `SparseTensor` values.
-
-  Raises:
-    ValueError: if any feature is invalid.
-  """
-  if params.num_features == 0:
-    raise ValueError("Must provide at least one feature key")
-  with ops.name_scope(name, "ParseSingleExample", [serialized, names]):
-    serialized = ops.convert_to_tensor(serialized)
+    raise ValueError("Invalid argument: features cannot be None.")
+  with ops.name_scope(name, "ParseSingleExample", [serialized, example_names]):
+    serialized = ops.convert_to_tensor(serialized, name="serialized")
     serialized = _assert_scalar(serialized, "serialized")
-    serialized = array_ops.expand_dims(serialized, 0)
-    if names is not None:
-      names = ops.convert_to_tensor(names)
-      names = _assert_scalar(names, "names")
-      names = array_ops.expand_dims(names, 0)
-
-    outputs = _parse_example_raw(serialized, names, params, name)
-    for d in params.dense_keys:
-      d_name = re.sub("[^A-Za-z0-9_.\\-/]", "_", d)
-      outputs[d] = array_ops.squeeze(
-          outputs[d], [0], name="Squeeze_%s" % d_name)
-    for s in params.sparse_keys:
-      s_name = re.sub("[^A-Za-z0-9_.\\-/]", "_", s)
-      outputs[s] = sparse_tensor.SparseTensor(
-          array_ops.slice(
-              outputs[s].indices, [0, 1], [-1, -1],
-              name="Slice_Indices_%s" % s_name), outputs[s].values,
-          array_ops.slice(
-              outputs[s].dense_shape, [1], [-1],
-              name="Squeeze_Shape_%s" % s_name))
-    for s in params.ragged_keys:
-      outputs[s] = outputs[s].values
-    return outputs
+    return parse_example_v2(serialized, features, example_names, name)
 
 
 @tf_export("io.parse_sequence_example")
+@dispatch.add_dispatch_support
 def parse_sequence_example(serialized,
                            context_features=None,
                            sequence_features=None,
@@ -564,7 +488,7 @@ def parse_sequence_example(serialized,
 
   `sequence_features` contains `VarLenFeature`, `RaggedFeature`, and
   `FixedLenSequenceFeature` objects. Each `VarLenFeature` is mapped to a
-  `SparseTensor`; each `RaggedFeature` is mapped to a `RaggedTensor; and
+  `SparseTensor`; each `RaggedFeature` is mapped to a `RaggedTensor`; and
   each `FixedLenSequenceFeature` is mapped to a `Tensor`, each of the specified
   type. The shape will be `(B,T,) + df.dense_shape` for
   `FixedLenSequenceFeature` `df`, where `B` is the batch size, and `T` is the
@@ -580,10 +504,10 @@ def parse_sequence_example(serialized,
   provides dicts of shape tensors as part of the output. There is one dict for
   the context features, and one for the feature_list features. Context features
   of type `FixedLenFeature`s will not be present, since their shapes are already
-  known by the caller. In situations where the input 'FixedLenFeature`s are of
-  different lengths across examples, the shorter examples will be padded with
-  default datatype values: 0 for numeric types, and the empty string for string
-  types.
+  known by the caller. In situations where the input `FixedLenSequenceFeature`s
+  are of different sequence lengths across examples, the shorter examples will
+  be padded with default datatype values: 0 for numeric types, and the empty
+  string for string types.
 
   Each `SparseTensor` corresponding to `sequence_features` represents a ragged
   vector.  Its indices are `[time, index]`, where `time` is the `FeatureList`
@@ -601,10 +525,10 @@ def parse_sequence_example(serialized,
   Args:
     serialized: A vector (1-D Tensor) of type string containing binary
       serialized `SequenceExample` protos.
-    context_features: A `dict` mapping feature keys to `FixedLenFeature` or
+    context_features: A mapping of feature keys to `FixedLenFeature` or
       `VarLenFeature` or `RaggedFeature` values. These features are associated
       with a `SequenceExample` as a whole.
-    sequence_features: A `dict` mapping feature keys to
+    sequence_features: A mapping of feature keys to
       `FixedLenSequenceFeature` or `VarLenFeature` or `RaggedFeature` values.
       These features are associated with data within the `FeatureList` section
       of the `SequenceExample` proto.
@@ -622,7 +546,8 @@ def parse_sequence_example(serialized,
     ValueError: if any feature is invalid.
   """
   if not (context_features or sequence_features):
-    raise ValueError("Missing features.")
+    raise ValueError("Both `context_features` and `sequence_features` argument "
+                     "are None, but at least one should have values.")
   context_params = _ParseOpParams.from_features(
       context_features, [VarLenFeature, FixedLenFeature, RaggedFeature])
   feature_list_params = _ParseOpParams.from_features(
@@ -674,7 +599,7 @@ def _parse_sequence_example_raw(serialized,
     TypeError: if feature_list.dense_defaults is not either None or a dict.
   """
   if context.num_features + feature_list.num_features == 0:
-    raise ValueError("Must provide at least one feature key")
+    raise ValueError("Must provide at least one feature key.")
   with ops.name_scope(name, "ParseSequenceExample", [serialized]):
     debug_name = [] if debug_name is None else debug_name
 
@@ -687,84 +612,56 @@ def _parse_sequence_example_raw(serialized,
       feature_list_dense_missing_assumed_empty.append(k)
 
     has_ragged = context.ragged_keys or feature_list.ragged_keys
-    if compat.forward_compatible(2019, 10, 26) or has_ragged:
-      serialized = ops.convert_to_tensor(serialized, name="serialized")
-      if has_ragged and serialized.shape.ndims is None:
-        raise ValueError("serialized must have statically-known rank to "
-                         "parse ragged features.")
-      feature_list_dense_missing_assumed_empty_vector = [
-          key in feature_list_dense_missing_assumed_empty
-          for key in feature_list.dense_keys
-      ]
-      outputs = gen_parsing_ops.parse_sequence_example_v2(
-          # Inputs
-          serialized=serialized,
-          debug_name=debug_name,
-          context_sparse_keys=context.sparse_keys,
-          context_dense_keys=context.dense_keys,
-          context_ragged_keys=context.ragged_keys,
-          feature_list_sparse_keys=feature_list.sparse_keys,
-          feature_list_dense_keys=feature_list.dense_keys,
-          feature_list_ragged_keys=feature_list.ragged_keys,
-          feature_list_dense_missing_assumed_empty=(
-              feature_list_dense_missing_assumed_empty_vector),
-          context_dense_defaults=context.dense_defaults_vec,
-          # Attrs
-          Ncontext_sparse=len(context.sparse_keys),
-          Nfeature_list_sparse=len(feature_list.sparse_keys),
-          Nfeature_list_dense=len(feature_list.dense_keys),
-          context_sparse_types=context.sparse_types,
-          context_ragged_value_types=context.ragged_value_types,
-          context_ragged_split_types=context.ragged_split_types,
-          feature_list_dense_types=feature_list.dense_types,
-          feature_list_sparse_types=feature_list.sparse_types,
-          feature_list_ragged_value_types=feature_list.ragged_value_types,
-          feature_list_ragged_split_types=feature_list.ragged_split_types,
-          context_dense_shapes=context.dense_shapes_as_proto,
-          feature_list_dense_shapes=feature_list.dense_shapes,
-          name=name)
-      (context_sparse_indices, context_sparse_values, context_sparse_shapes,
-       context_dense_values, context_ragged_values, context_ragged_row_splits,
-       feature_list_sparse_indices, feature_list_sparse_values,
-       feature_list_sparse_shapes, feature_list_dense_values,
-       feature_list_dense_lengths, feature_list_ragged_values,
-       feature_list_ragged_outer_splits,
-       feature_list_ragged_inner_splits) = outputs
-      # pylint: disable=protected-access
-      context_ragged_tensors = parsing_config._build_ragged_tensors(
-          serialized.shape, context_ragged_values, context_ragged_row_splits)
-      feature_list_ragged_tensors = parsing_config._build_ragged_tensors(
-          serialized.shape, feature_list_ragged_values,
-          feature_list_ragged_outer_splits, feature_list_ragged_inner_splits)
-    else:
-      outputs = gen_parsing_ops.parse_sequence_example(
-          serialized=serialized,
-          debug_name=debug_name,
-          Ncontext_sparse=len(context.sparse_keys),
-          Ncontext_dense=len(context.dense_keys),
-          Nfeature_list_sparse=len(feature_list.sparse_keys),
-          Nfeature_list_dense=len(feature_list.dense_keys),
-          context_dense_defaults=context.dense_defaults_vec,
-          context_sparse_keys=context.sparse_keys,
-          context_sparse_types=context.sparse_types,
-          context_dense_keys=context.dense_keys,
-          context_dense_shapes=context.dense_shapes_as_proto,
-          feature_list_sparse_keys=feature_list.sparse_keys,
-          feature_list_sparse_types=feature_list.sparse_types,
-          feature_list_dense_keys=feature_list.dense_keys,
-          feature_list_dense_types=feature_list.dense_types,
-          feature_list_dense_shapes=feature_list.dense_shapes,
-          feature_list_dense_missing_assumed_empty=(
-              feature_list_dense_missing_assumed_empty),
-          name=name)
+    serialized = ops.convert_to_tensor(serialized, name="serialized")
+    if has_ragged and serialized.shape.ndims is None:
+      raise ValueError("serialized must have statically-known rank to "
+                       "parse ragged features.")
+    feature_list_dense_missing_assumed_empty_vector = [
+        key in feature_list_dense_missing_assumed_empty
+        for key in feature_list.dense_keys
+    ]
+    outputs = gen_parsing_ops.parse_sequence_example_v2(
+        # Inputs
+        serialized=serialized,
+        debug_name=debug_name,
+        context_sparse_keys=context.sparse_keys,
+        context_dense_keys=context.dense_keys,
+        context_ragged_keys=context.ragged_keys,
+        feature_list_sparse_keys=feature_list.sparse_keys,
+        feature_list_dense_keys=feature_list.dense_keys,
+        feature_list_ragged_keys=feature_list.ragged_keys,
+        feature_list_dense_missing_assumed_empty=(
+            feature_list_dense_missing_assumed_empty_vector),
+        context_dense_defaults=context.dense_defaults_vec,
+        # Attrs
+        Ncontext_sparse=len(context.sparse_keys),
+        Nfeature_list_sparse=len(feature_list.sparse_keys),
+        Nfeature_list_dense=len(feature_list.dense_keys),
+        context_sparse_types=context.sparse_types,
+        context_ragged_value_types=context.ragged_value_types,
+        context_ragged_split_types=context.ragged_split_types,
+        feature_list_dense_types=feature_list.dense_types,
+        feature_list_sparse_types=feature_list.sparse_types,
+        feature_list_ragged_value_types=feature_list.ragged_value_types,
+        feature_list_ragged_split_types=feature_list.ragged_split_types,
+        context_dense_shapes=context.dense_shapes_as_proto,
+        feature_list_dense_shapes=feature_list.dense_shapes,
+        name=name)
+    (context_sparse_indices, context_sparse_values, context_sparse_shapes,
+     context_dense_values, context_ragged_values, context_ragged_row_splits,
+     feature_list_sparse_indices, feature_list_sparse_values,
+     feature_list_sparse_shapes, feature_list_dense_values,
+     feature_list_dense_lengths, feature_list_ragged_values,
+     feature_list_ragged_outer_splits,
+     feature_list_ragged_inner_splits) = outputs
+    # pylint: disable=protected-access
+    context_ragged_tensors = parsing_config._build_ragged_tensors(
+        serialized.shape, context_ragged_values, context_ragged_row_splits)
+    feature_list_ragged_tensors = parsing_config._build_ragged_tensors(
+        serialized.shape, feature_list_ragged_values,
+        feature_list_ragged_outer_splits, feature_list_ragged_inner_splits)
 
-      (context_sparse_indices, context_sparse_values, context_sparse_shapes,
-       context_dense_values, feature_list_sparse_indices,
-       feature_list_sparse_values, feature_list_sparse_shapes,
-       feature_list_dense_values, feature_list_dense_lengths) = outputs
-      context_ragged_tensors = []
-      feature_list_ragged_tensors = []
-
+    # pylint: disable=g-complex-comprehension
     context_sparse_tensors = [
         sparse_tensor.SparseTensor(ix, val, shape)
         for (ix, val,
@@ -778,6 +675,7 @@ def _parse_sequence_example_raw(serialized,
             ) in zip(feature_list_sparse_indices, feature_list_sparse_values,
                      feature_list_sparse_shapes)
     ]
+    # pylint: enable=g-complex-comprehension
 
     context_output = dict(
         zip(
@@ -798,6 +696,7 @@ def _parse_sequence_example_raw(serialized,
 @tf_export("io.parse_single_sequence_example",
            v1=["io.parse_single_sequence_example",
                "parse_single_sequence_example"])
+@dispatch.add_dispatch_support
 def parse_single_sequence_example(
     serialized, context_features=None, sequence_features=None,
     example_name=None, name=None):
@@ -860,10 +759,10 @@ def parse_single_sequence_example(
   Args:
     serialized: A scalar (0-D Tensor) of type string, a single binary
       serialized `SequenceExample` proto.
-    context_features: A `dict` mapping feature keys to `FixedLenFeature` or
+    context_features: A mapping of feature keys to `FixedLenFeature` or
       `VarLenFeature` or `RaggedFeature` values. These features are associated
       with a `SequenceExample` as a whole.
-    sequence_features: A `dict` mapping feature keys to
+    sequence_features: A mapping of feature keys to
       `FixedLenSequenceFeature` or `VarLenFeature` or `RaggedFeature` values.
       These features are associated with data within the `FeatureList` section
       of the `SequenceExample` proto.
@@ -883,7 +782,8 @@ def parse_single_sequence_example(
   """
   # pylint: enable=line-too-long
   if not (context_features or sequence_features):
-    raise ValueError("Missing features.")
+    raise ValueError("Both context_features and sequence_features are None, but"
+                     " at least one should have values.")
   context_params = _ParseOpParams.from_features(
       context_features, [VarLenFeature, FixedLenFeature, RaggedFeature])
   feature_list_params = _ParseOpParams.from_features(
@@ -933,82 +833,117 @@ def _parse_single_sequence_example_raw(serialized,
   Raises:
     TypeError: if feature_list.dense_defaults is not either None or a dict.
   """
-  has_ragged = context.ragged_keys or feature_list.ragged_keys
-  if compat.forward_compatible(2019, 10, 26) or has_ragged:
-    with ops.name_scope(name, "ParseSingleExample", [serialized, debug_name]):
-      serialized = ops.convert_to_tensor(serialized, name="serialized")
-      serialized = _assert_scalar(serialized, "serialized")
-    return _parse_sequence_example_raw(serialized, debug_name, context,
-                                       feature_list, name)[:2]
-
-  if context.num_features + feature_list.num_features == 0:
-    raise ValueError("Must provide at least one feature key")
-  with ops.name_scope(name, "ParseSingleSequenceExample", [serialized]):
-    debug_name = "" if debug_name is None else debug_name
-
-    # Internal
-    feature_list_dense_missing_assumed_empty = []
-    for k, v in feature_list.dense_defaults.items():
-      if v is not None:
-        raise ValueError("Value feature_list.dense_defaults[%s] must be None" %
-                         k)
-      feature_list_dense_missing_assumed_empty.append(k)
-
-    outputs = gen_parsing_ops.parse_single_sequence_example(
-        serialized=serialized,
-        debug_name=debug_name,
-        context_dense_defaults=context.dense_defaults_vec,
-        context_sparse_keys=context.sparse_keys,
-        context_sparse_types=context.sparse_types,
-        context_dense_keys=context.dense_keys,
-        context_dense_shapes=context.dense_shapes,
-        feature_list_sparse_keys=feature_list.sparse_keys,
-        feature_list_sparse_types=feature_list.sparse_types,
-        feature_list_dense_keys=feature_list.dense_keys,
-        feature_list_dense_types=feature_list.dense_types,
-        feature_list_dense_shapes=feature_list.dense_shapes,
-        feature_list_dense_missing_assumed_empty=(
-            feature_list_dense_missing_assumed_empty),
-        name=name)
-
-    (context_sparse_indices, context_sparse_values,
-     context_sparse_shapes, context_dense_values,
-     feature_list_sparse_indices, feature_list_sparse_values,
-     feature_list_sparse_shapes, feature_list_dense_values) = outputs
-
-    context_sparse_tensors = [
-        sparse_tensor.SparseTensor(ix, val, shape) for (ix, val, shape)
-        in zip(context_sparse_indices,
-               context_sparse_values,
-               context_sparse_shapes)]
-
-    feature_list_sparse_tensors = [
-        sparse_tensor.SparseTensor(ix, val, shape) for (ix, val, shape)
-        in zip(feature_list_sparse_indices,
-               feature_list_sparse_values,
-               feature_list_sparse_shapes)]
-
-    context_output = dict(
-        zip(context.sparse_keys + context.dense_keys,
-            context_sparse_tensors + context_dense_values))
-    feature_list_output = dict(
-        zip(feature_list.sparse_keys + feature_list.dense_keys,
-            feature_list_sparse_tensors + feature_list_dense_values))
-
-    return (context_output, feature_list_output)
+  with ops.name_scope(name, "ParseSingleExample", [serialized, debug_name]):
+    serialized = ops.convert_to_tensor(serialized, name="serialized")
+    serialized = _assert_scalar(serialized, "serialized")
+  return _parse_sequence_example_raw(serialized, debug_name, context,
+                                     feature_list, name)[:2]
 
 
 @tf_export("io.decode_raw", v1=[])
+@dispatch.add_dispatch_support
 def decode_raw(input_bytes,
                out_type,
                little_endian=True,
                fixed_length=None,
                name=None):
-  """Convert raw byte strings into tensors.
+  r"""Convert raw bytes from input tensor into numeric tensors.
+
+  Every component of the input tensor is interpreted as a sequence of bytes.
+  These bytes are then decoded as numbers in the format specified by `out_type`.
+
+  >>> tf.io.decode_raw(tf.constant("1"), tf.uint8)
+  <tf.Tensor: shape=(1,), dtype=uint8, numpy=array([49], dtype=uint8)>
+  >>> tf.io.decode_raw(tf.constant("1,2"), tf.uint8)
+  <tf.Tensor: shape=(3,), dtype=uint8, numpy=array([49, 44, 50], dtype=uint8)>
+
+  Note that the rank of the output tensor is always one more than the input one:
+
+  >>> tf.io.decode_raw(tf.constant(["1","2"]), tf.uint8).shape
+  TensorShape([2, 1])
+  >>> tf.io.decode_raw(tf.constant([["1"],["2"]]), tf.uint8).shape
+  TensorShape([2, 1, 1])
+
+  This is because each byte in the input is converted to a new value on the
+  output (if output type is `uint8` or `int8`, otherwise chunks of inputs get
+  coverted to a new value):
+
+  >>> tf.io.decode_raw(tf.constant("123"), tf.uint8)
+  <tf.Tensor: shape=(3,), dtype=uint8, numpy=array([49, 50, 51], dtype=uint8)>
+  >>> tf.io.decode_raw(tf.constant("1234"), tf.uint8)
+  <tf.Tensor: shape=(4,), dtype=uint8, numpy=array([49, 50, 51, 52], ...
+  >>> # chuncked output
+  >>> tf.io.decode_raw(tf.constant("12"), tf.uint16)
+  <tf.Tensor: shape=(1,), dtype=uint16, numpy=array([12849], dtype=uint16)>
+  >>> tf.io.decode_raw(tf.constant("1234"), tf.uint16)
+  <tf.Tensor: shape=(2,), dtype=uint16, numpy=array([12849, 13363], ...
+  >>> # int64 output
+  >>> tf.io.decode_raw(tf.constant("12345678"), tf.int64)
+  <tf.Tensor: ... numpy=array([4050765991979987505])>
+  >>> tf.io.decode_raw(tf.constant("1234567887654321"), tf.int64)
+  <tf.Tensor: ... numpy=array([4050765991979987505, 3544952156018063160])>
+
+  The operation allows specifying endianness via the `little_endian` parameter.
+
+  >>> tf.io.decode_raw(tf.constant("\x0a\x0b"), tf.int16)
+  <tf.Tensor: shape=(1,), dtype=int16, numpy=array([2826], dtype=int16)>
+  >>> hex(2826)
+  '0xb0a'
+  >>> tf.io.decode_raw(tf.constant("\x0a\x0b"), tf.int16, little_endian=False)
+  <tf.Tensor: shape=(1,), dtype=int16, numpy=array([2571], dtype=int16)>
+  >>> hex(2571)
+  '0xa0b'
+
+  If the elements of `input_bytes` are of different length, you must specify
+  `fixed_length`:
+
+  >>> tf.io.decode_raw(tf.constant([["1"],["23"]]), tf.uint8, fixed_length=4)
+  <tf.Tensor: shape=(2, 1, 4), dtype=uint8, numpy=
+  array([[[49,  0,  0,  0]],
+         [[50, 51,  0,  0]]], dtype=uint8)>
+
+  If the `fixed_length` value is larger that the length of the `out_type` dtype,
+  multiple values are generated:
+
+  >>> tf.io.decode_raw(tf.constant(["1212"]), tf.uint16, fixed_length=4)
+  <tf.Tensor: shape=(1, 2), dtype=uint16, numpy=array([[12849, 12849]], ...
+
+  If the input value is larger than `fixed_length`, it is truncated:
+
+  >>> x=''.join([chr(1), chr(2), chr(3), chr(4)])
+  >>> tf.io.decode_raw(x, tf.uint16, fixed_length=2)
+  <tf.Tensor: shape=(1,), dtype=uint16, numpy=array([513], dtype=uint16)>
+  >>> hex(513)
+  '0x201'
+
+  If `little_endian` and `fixed_length` are specified, truncation to the fixed
+  length occurs before endianness conversion:
+
+  >>> x=''.join([chr(1), chr(2), chr(3), chr(4)])
+  >>> tf.io.decode_raw(x, tf.uint16, fixed_length=2, little_endian=False)
+  <tf.Tensor: shape=(1,), dtype=uint16, numpy=array([258], dtype=uint16)>
+  >>> hex(258)
+  '0x102'
+
+  If input values all have the same length, then specifying `fixed_length`
+  equal to the size of the strings should not change output:
+
+  >>> x = ["12345678", "87654321"]
+  >>> tf.io.decode_raw(x, tf.int16)
+  <tf.Tensor: shape=(2, 4), dtype=int16, numpy=
+  array([[12849, 13363, 13877, 14391],
+         [14136, 13622, 13108, 12594]], dtype=int16)>
+  >>> tf.io.decode_raw(x, tf.int16, fixed_length=len(x[0]))
+  <tf.Tensor: shape=(2, 4), dtype=int16, numpy=
+  array([[12849, 13363, 13877, 14391],
+         [14136, 13622, 13108, 12594]], dtype=int16)>
 
   Args:
     input_bytes:
       Each element of the input Tensor is converted to an array of bytes.
+
+      Currently, this must be a tensor of strings (bytes), although semantically
+      the operation should support any input.
     out_type:
       `DType` of the output. Acceptable types are `half`, `float`, `double`,
       `int32`, `uint16`, `uint8`, `int16`, `int8`, `int64`.
@@ -1020,13 +955,13 @@ def decode_raw(input_bytes,
       Data will be zero-padded or truncated to the specified length.
 
       `fixed_length` must be a multiple of the size of `out_type`.
+
       `fixed_length` must be specified if the elements of `input_bytes` are of
       variable length.
     name: A name for the operation (optional).
 
   Returns:
     A `Tensor` object storing the decoded bytes.
-
   """
   if fixed_length is not None:
     return gen_parsing_ops.decode_padded_raw(
@@ -1041,6 +976,7 @@ def decode_raw(input_bytes,
 
 
 @tf_export(v1=["decode_raw", "io.decode_raw"])
+@dispatch.add_dispatch_support
 @deprecation.deprecated_args(None,
                              "bytes is deprecated, use input_bytes instead",
                              "bytes")
@@ -1085,6 +1021,7 @@ def decode_raw_v1(
 
 # Swap `name` and `na_value` for backward compatibility.
 @tf_export(v1=["io.decode_csv", "decode_csv"])
+@dispatch.add_dispatch_support
 @deprecation.deprecated_endpoints("decode_csv")
 def decode_csv(records,
                record_defaults,
@@ -1134,6 +1071,7 @@ def decode_csv(records,
 
 
 @tf_export("io.decode_csv", v1=[])
+@dispatch.add_dispatch_support
 def decode_csv_v2(records,
                   record_defaults,
                   field_delim=",",
@@ -1192,119 +1130,11 @@ def decode_csv_v2(records,
   )
 
 
-# TODO(b/70890287): Combine the implementation of this op and
-# `parse_single_example()` after 1/10/2018.
-def parse_single_example_v2(serialized, features, name=None):
-  # pylint: disable=line-too-long
-  """Parses an `Example` proto into a `dict` of tensors.
-
-  Parses a serialized
-  [`Example`](https://www.tensorflow.org/code/tensorflow/core/example/example.proto)
-  proto given in `serialized`.
-
-  This op parses serialized examples into a dictionary mapping keys to `Tensor`
-  and `SparseTensor` objects. `features` is a dict from keys to `VarLenFeature`,
-  `SparseFeature`, and `FixedLenFeature` objects. Each `VarLenFeature`
-  and `SparseFeature` is mapped to a `SparseTensor`, and each
-  `FixedLenFeature` is mapped to a `Tensor`.
-
-  Each `VarLenFeature` maps to a `SparseTensor` of the specified type
-  representing a ragged matrix. Its indices are `[index]` where
-  `index` is the value's index in the list of values associated with
-  that feature and example.
-
-  Each `SparseFeature` maps to a `SparseTensor` of the specified type
-  representing a Tensor of `dense_shape` `SparseFeature.size`.
-  Its `values` come from the feature in the examples with key `value_key`.
-  A `values[i]` comes from a position `k` in the feature of an example at batch
-  entry `batch`. This positional information is recorded in `indices[i]` as
-  `[batch, index_0, index_1, ...]` where `index_j` is the `k-th` value of
-  the feature in the example at with key `SparseFeature.index_key[j]`.
-  In other words, we split the indices (except the first index indicating the
-  batch entry) of a `SparseTensor` by dimension into different features of the
-  `Example`. Due to its complexity a `VarLenFeature` should be preferred over a
-  `SparseFeature` whenever possible.
-
-  Each `FixedLenFeature` `df` maps to a `Tensor` of the specified type (or
-  `tf.float32` if not specified) and shape `df.shape`.
-
-  `FixedLenFeature` entries with a `default_value` are optional. With no default
-  value, we will fail if that `Feature` is missing from any example in
-  `serialized`.
-
-  Each `FixedLenSequenceFeature` `df` maps to a `Tensor` of the specified type
-  (or `tf.float32` if not specified) and shape `(None,) + df.shape`.
-
-  Args:
-    serialized: A scalar (0-D Tensor) string, a serialized `Example` proto.
-    features: A `dict` mapping feature keys to `FixedLenFeature`,
-      `VarLenFeature`, and `SparseFeature` values.
-    name: A name for this operation (optional).
-
-  Returns:
-    A `dict` mapping feature keys to `Tensor` and `SparseTensor` values.
-
-  Raises:
-    ValueError: if any feature is invalid.
-  """
-  if not features:
-    raise ValueError("Missing: features was %s." % features)
-  features = _prepend_none_dimension(features)
-  params = _ParseOpParams.from_features(
-      features,
-      [VarLenFeature, FixedLenFeature, FixedLenSequenceFeature, SparseFeature])
-  outputs = _parse_single_example_v2_raw(serialized, params, name)
-  return _construct_tensors_for_composite_features(features, outputs)
-
-
-def _parse_single_example_v2_raw(serialized, params, name):
-  """Parses `Example` protos.
-
-  Args:
-    serialized: A scalar (0-D Tensor) string, containing a binary
-      serialized `Example` proto.
-    params: A `ParseOpParams` containing the parameters for the parse op.
-    name: A name for this operation (optional).
-
-  Returns:
-    A `dict` mapping keys to `Tensor`s and `SparseTensor`s.
-
-  Raises:
-    ValueError: If sparse and dense key sets intersect, or input lengths do not
-      match up.
-  """
-  if params.num_features == 0:
-    raise ValueError("Must provide at least one feature key")
-  with ops.name_scope(name, "ParseSingleExample", [serialized]):
-    serialized = ops.convert_to_tensor(serialized, name="serialized")
-    outputs = gen_parsing_ops.parse_single_example(
-        serialized=serialized,
-        dense_defaults=params.dense_defaults_vec,
-        num_sparse=len(params.sparse_keys),
-        sparse_keys=params.sparse_keys,
-        sparse_types=params.sparse_types,
-        dense_keys=params.dense_keys,
-        dense_shapes=params.dense_shapes,
-        name=name)
-
-    (sparse_indices, sparse_values, sparse_shapes, dense_values) = outputs
-
-    sparse_tensors = [
-        sparse_tensor.SparseTensor(ix, val, shape)
-        for (ix, val,
-             shape) in zip(sparse_indices, sparse_values, sparse_shapes)
-    ]
-
-    return dict(
-        zip(params.sparse_keys + params.dense_keys,
-            sparse_tensors + dense_values))
-
-
 def _assert_scalar(value, name):
   """Asserts that `value` is scalar, and returns `value`."""
   value_rank = value.shape.rank
   if value_rank is None:
-    check = control_flow_ops.Assert(
+    check = control_flow_assert.Assert(
         math_ops.equal(array_ops.rank(value), 0),
         ["Input %s must be a scalar" % name],
         name="%sIsScalar" % name.capitalize())
@@ -1317,3 +1147,92 @@ def _assert_scalar(value, name):
     return value
   else:
     raise ValueError("Input %s must be a scalar" % name)
+
+
+@tf_export("io.decode_json_example",
+           v1=["decode_json_example", "io.decode_json_example"])
+def decode_json_example(json_examples, name=None):
+  r"""Convert JSON-encoded Example records to binary protocol buffer strings.
+
+  Note: This is **not** a general purpose JSON parsing op.
+
+  This op converts JSON-serialized `tf.train.Example` (maybe created with
+  `json_format.MessageToJson`, following the
+  [standard JSON mapping](
+  https://developers.google.com/protocol-buffers/docs/proto3#json))
+  to a binary-serialized `tf.train.Example` (equivalent to
+  `Example.SerializeToString()`) suitable for conversion to tensors with
+  `tf.io.parse_example`.
+
+  Here is a `tf.train.Example` proto:
+
+  >>> example = tf.train.Example(
+  ...   features=tf.train.Features(
+  ...       feature={
+  ...           "a": tf.train.Feature(
+  ...               int64_list=tf.train.Int64List(
+  ...                   value=[1, 1, 3]))}))
+
+  Here it is converted to JSON:
+
+  >>> from google.protobuf import json_format
+  >>> example_json = json_format.MessageToJson(example)
+  >>> print(example_json)
+  {
+    "features": {
+      "feature": {
+        "a": {
+          "int64List": {
+            "value": [
+              "1",
+              "1",
+              "3"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  This op converts the above json string to a binary proto:
+
+  >>> example_binary = tf.io.decode_json_example(example_json)
+  >>> example_binary.numpy()
+  b'\n\x0f\n\r\n\x01a\x12\x08\x1a\x06\x08\x01\x08\x01\x08\x03'
+
+  The OP works on string tensors of andy shape:
+
+  >>> tf.io.decode_json_example([
+  ...     [example_json, example_json],
+  ...     [example_json, example_json]]).shape.as_list()
+  [2, 2]
+
+  This resulting binary-string is equivalent to `Example.SerializeToString()`,
+  and can be converted to Tensors using `tf.io.parse_example` and related
+  functions:
+
+  >>> tf.io.parse_example(
+  ...   serialized=[example_binary.numpy(),
+  ...              example.SerializeToString()],
+  ...   features = {'a': tf.io.FixedLenFeature(shape=[3], dtype=tf.int64)})
+  {'a': <tf.Tensor: shape=(2, 3), dtype=int64, numpy=
+   array([[1, 1, 3],
+          [1, 1, 3]])>}
+
+  Args:
+    json_examples: A string tensor containing json-serialized `tf.Example`
+      protos.
+    name: A name for the op.
+
+  Returns:
+    A string Tensor containing the binary-serialized `tf.Example` protos.
+
+  Raises:
+     `tf.errors.InvalidArgumentError`: If the JSON could not be converted to a
+     `tf.Example`
+  """
+  return gen_parsing_ops.decode_json_example(json_examples, name=name)
+
+
+# Register elementwise ops that don't have Python wrappers.
+dispatch.register_unary_elementwise_api(gen_parsing_ops.decode_compressed)

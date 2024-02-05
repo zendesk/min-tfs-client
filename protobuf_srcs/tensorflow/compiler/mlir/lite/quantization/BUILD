@@ -1,33 +1,62 @@
-load("//tensorflow:tensorflow.bzl", "tf_native_cc_binary")
-load(
-    "//tensorflow/core/platform:default/build_config.bzl",
-    "tf_proto_library",
-)
+load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
+load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_native_cc_binary")
+load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
+load("//tensorflow/core/platform:build_config.bzl", "tf_proto_library")
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
         ":friends",
+        "//tensorflow:__pkg__",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 package_group(
     name = "friends",
-    includes = ["@local_config_mlir//:subpackages"],
-    packages = ["//tensorflow/compiler/mlir/..."],
+    packages = [
+        "//learning/brain/mlir/quantization/...",
+        "//tensorflow/compiler/mlir/...",
+        "//tensorflow/lite/tools/optimize/...",
+    ],
 )
 
 exports_files([
     "quantization_traits.h",
     "quantization_config.h",
+    "quantization_utils.h",
 ])
 
-filegroup(
+td_library(
     name = "quantization_td_files",
     srcs = [
         "quantization.td",
-        "@local_config_mlir//:OpBaseTdFiles",
-        "@local_config_mlir//:QuantizationOpsTdFiles",
+    ],
+    compatible_with = get_compatible_with_portable(),
+    deps = [
+        "//tensorflow/compiler/mlir/lite/quantization/ir:QuantizationOpsTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "quantization_interfaces_inc_gen",
+    compatible_with = get_compatible_with_portable(),
+    tbl_outs = [
+        (
+            ["-gen-op-interface-decls"],
+            "quantization_interface.h.inc",
+        ),
+        (
+            ["-gen-op-interface-defs"],
+            "quantization_interface.cc.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "quantization.td",
+    deps = [
+        ":quantization_td_files",
     ],
 )
 
@@ -49,17 +78,18 @@ cc_library(
     ],
     deps = [
         ":quantization_info_proto_cc",
+        "//tensorflow/compiler/mlir/lite/quantization/ir:QuantOps",
         "//tensorflow/compiler/mlir/tensorflow:import_utils",
+        "//tensorflow/compiler/mlir/tensorflow:location_utils",
         "//tensorflow/core:lib_proto_parsing",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
-        "@llvm//:support",
-        "@local_config_mlir//:Analysis",
-        "@local_config_mlir//:IR",
-        "@local_config_mlir//:Pass",
-        "@local_config_mlir//:QuantOps",
-        "@local_config_mlir//:StandardOps",
-        "@local_config_mlir//:Support",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:Support",
     ],
     alwayslink = 1,
 )
@@ -68,21 +98,30 @@ cc_library(
     name = "quantization_lib",
     srcs = [
         "quantization_driver.cc",
+        "quantization_interface.cc.inc",
         "quantization_utils.cc",
     ],
     hdrs = [
+        "quantization_interface.h.inc",
+        "quantization_traits.h",
         "quantization_utils.h",
     ],
     deps = [
-        "@com_google_absl//absl/memory",
-        "@llvm//:support",
-        "@local_config_mlir//:IR",
-        "@local_config_mlir//:QuantOps",
-        "@local_config_mlir//:StandardOps",
-        "@local_config_mlir//:Support",
-        # TODO(fengliuai): remove this dependence.
-        "//tensorflow/compiler/mlir/lite:tensorflow_lite",
+        ":quantization_config",
+        "//tensorflow/compiler/mlir/lite/quantization/ir:QuantOps",
         "//tensorflow/core:lib_proto_parsing",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/lite/kernels/internal:tensor_utils",
+        "//tensorflow/lite/tools/optimize:quantization_utils",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:Support",
     ],
 )
 
@@ -95,9 +134,11 @@ cc_library(
         "quantization_config.h",
     ],
     deps = [
-        "//tensorflow/core:protos_all_proto_cc",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/lite/tools/optimize:reduced_precision_support",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/strings",
-        "@llvm//:support",
+        "@llvm-project//llvm:Support",
     ],
 )
 
@@ -107,8 +148,75 @@ tf_native_cc_binary(
         "tools/op_quant_spec_getters_gen.cc",
     ],
     deps = [
-        "@llvm//:support",
-        "@llvm//:tablegen",
-        "@local_config_mlir//:TableGen",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:TableGen",
+        "@llvm-project//mlir:TableGen",
+    ],
+)
+
+tf_native_cc_binary(
+    name = "tflite_op_coverage_spec_getters_gen",
+    srcs = [
+        "tools/tflite_op_coverage_spec_getters_gen.cc",
+    ],
+    deps = [
+        "@com_google_absl//absl/strings",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:TableGen",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:TableGen",
+        "@local_tsl//tsl/platform:logging",
+        "@local_tsl//tsl/platform:regexp",
+    ],
+)
+
+cc_library(
+    name = "numerical_utils",
+    srcs = ["numerical_utils.cc"],
+    hdrs = ["numerical_utils.h"],
+    deps = [
+        "@com_google_absl//absl/types:optional",
+    ],
+)
+
+cc_library(
+    name = "device_target",
+    srcs = ["device_target.cc"],
+    hdrs = ["device_target.h"],
+    deps = [
+        ":numerical_utils",
+        "//tensorflow/compiler/mlir/lite/quantization/ir:QuantOps",
+        "@com_google_absl//absl/types:optional",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
+cc_library(
+    name = "quantization_context",
+    srcs = ["quantization_context.cc"],
+    hdrs = ["quantization_context.h"],
+    deps = [
+        ":device_target",
+        ":quantization_lib",
+        "//tensorflow/compiler/mlir/lite/quantization/ir:QuantOps",
+        "@com_google_absl//absl/memory",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
+tf_cc_test(
+    name = "numerical_utils_test",
+    srcs = ["numerical_utils_test.cc"],
+    deps = [
+        ":numerical_utils",
+        "@com_google_absl//absl/types:optional",
+        "@com_google_googletest//:gtest_main",
     ],
 )

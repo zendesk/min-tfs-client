@@ -40,13 +40,9 @@ following new APIs:
 
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import ast
+import io
 import os
-import six
 
 from tensorflow.python.framework import test_util
 from tensorflow.python.platform import test as test_lib
@@ -177,8 +173,8 @@ class RenameImports(ast_edits.NoUpdateSpec):
 class TestAstEdits(test_util.TensorFlowTestCase):
 
   def _upgrade(self, spec, old_file_text):
-    in_file = six.StringIO(old_file_text)
-    out_file = six.StringIO()
+    in_file = io.StringIO(old_file_text)
+    out_file = io.StringIO()
     upgrader = ast_edits.ASTCodeUpgrader(spec)
     count, report, errors = (
         upgrader.process_opened_file("test.py", in_file,
@@ -494,11 +490,10 @@ class TestAstEdits(test_util.TensorFlowTestCase):
 
   def testFullNameNode(self):
     t = ast_edits.full_name_node("a.b.c")
-    self.assertEquals(
+    self.assertEqual(
         ast.dump(t),
         "Attribute(value=Attribute(value=Name(id='a', ctx=Load()), attr='b', "
-        "ctx=Load()), attr='c', ctx=Load())"
-    )
+        "ctx=Load()), attr='c', ctx=Load())")
 
   def testImport(self):
     # foo should be renamed to bar.
@@ -607,6 +602,9 @@ def t():
     self.assertEqual(expected_text, new_text)
 
   def testUpgradeInplaceWithSymlink(self):
+    if os.name == "nt":
+      self.skipTest("os.symlink doesn't work uniformly on Windows.")
+
     upgrade_dir = os.path.join(self.get_temp_dir(), "foo")
     os.mkdir(upgrade_dir)
     file_a = os.path.join(upgrade_dir, "a.py")
@@ -625,6 +623,9 @@ def t():
       self.assertEqual("import bar as f", f.read())
 
   def testUpgradeInPlaceWithSymlinkInDifferentDir(self):
+    if os.name == "nt":
+      self.skipTest("os.symlink doesn't work uniformly on Windows.")
+
     upgrade_dir = os.path.join(self.get_temp_dir(), "foo")
     other_dir = os.path.join(self.get_temp_dir(), "bar")
     os.mkdir(upgrade_dir)
@@ -647,6 +648,9 @@ def t():
       self.assertEqual("import foo as f", f.read())
 
   def testUpgradeCopyWithSymlink(self):
+    if os.name == "nt":
+      self.skipTest("os.symlink doesn't work uniformly on Windows.")
+
     upgrade_dir = os.path.join(self.get_temp_dir(), "foo")
     output_dir = os.path.join(self.get_temp_dir(), "bar")
     os.mkdir(upgrade_dir)
@@ -668,6 +672,9 @@ def t():
       self.assertEqual("import bar as f", f.read())
 
   def testUpgradeCopyWithSymlinkInDifferentDir(self):
+    if os.name == "nt":
+      self.skipTest("os.symlink doesn't work uniformly on Windows.")
+
     upgrade_dir = os.path.join(self.get_temp_dir(), "foo")
     other_dir = os.path.join(self.get_temp_dir(), "bar")
     output_dir = os.path.join(self.get_temp_dir(), "baz")

@@ -16,8 +16,8 @@ limitations under the License.
 #define EIGEN_USE_THREADS
 
 #include "tensorflow/core/common_runtime/constant_folding.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/common_runtime/threadpool_device.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/subgraph.h"
 #include "tensorflow/core/kernels/quantization_utils.h"
@@ -32,7 +32,7 @@ namespace graph_transforms {
 Status RoundWeights(const GraphDef& input_graph_def,
                     const TransformFuncContext& context,
                     GraphDef* output_graph_def) {
-  int32 num_steps;
+  int32_t num_steps;
   TF_RETURN_IF_ERROR(
       context.GetOneInt32Parameter("num_steps", 256, &num_steps));
   TF_RETURN_IF_ERROR(ReplaceMatchingOpTypes(
@@ -62,7 +62,7 @@ Status RoundWeights(const GraphDef& input_graph_def,
         // and the benefit of shrinking them is very marginal.
         if ((old_dtype != DT_FLOAT) || (num_elements < 16)) {
           new_nodes->push_back(old_const_node);
-          return Status::OK();
+          return OkStatus();
         }
         const float* old_values = old_tensor.flat<float>().data();
         float min = std::numeric_limits<float>::max();
@@ -91,7 +91,8 @@ Status RoundWeights(const GraphDef& input_graph_def,
         float* rounded_values = rounded_tensor.flat<float>().data();
         const float bucket_width = (max - min) / num_steps;
         for (int i = 0; i < num_elements; ++i) {
-          const int32 bucket = std::floor((old_values[i] - min) / bucket_width);
+          const int32_t bucket =
+              std::floor((old_values[i] - min) / bucket_width);
           rounded_values[i] = min + (bucket_width * (bucket + 0.5f));
         }
 
@@ -102,11 +103,11 @@ Status RoundWeights(const GraphDef& input_graph_def,
         SetNodeTensorAttr<float>("value", rounded_tensor, &rounded_const_node);
         new_nodes->push_back(rounded_const_node);
 
-        return Status::OK();
+        return OkStatus();
       },
       {}, output_graph_def));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("round_weights", RoundWeights);

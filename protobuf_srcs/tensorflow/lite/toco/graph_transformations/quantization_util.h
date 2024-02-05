@@ -15,6 +15,8 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_TOCO_GRAPH_TRANSFORMATIONS_QUANTIZATION_UTIL_H_
 #define TENSORFLOW_LITE_TOCO_GRAPH_TRANSFORMATIONS_QUANTIZATION_UTIL_H_
 
+#include <string>
+
 #include "tensorflow/lite/kernels/internal/quantization_util.h"
 #include "tensorflow/lite/toco/graph_transformations/graph_transformations.h"
 #include "tensorflow/lite/toco/model.h"
@@ -47,7 +49,7 @@ void ChooseQuantizationParamsForArrayAndQuantizedDataType(
 // Quantizes an array by setting its data type and (if constant) quantizing
 // all values in the array.
 void QuantizeArray(GraphTransformation* transformation, Model* model,
-                   const string& name, ArrayDataType quantized_data_type,
+                   const std::string& name, ArrayDataType quantized_data_type,
                    const QuantizationParams& quantization_params);
 
 // Returns true if the given array, when quantized, contains only values between

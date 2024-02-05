@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for `tf.data.Iterator`."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import warnings
 
 from absl.testing import parameterized
@@ -25,9 +21,9 @@ import numpy as np
 from tensorflow.core.protobuf import cluster_pb2
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.client import session
-from tensorflow.python.compat import compat as forward_compat
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.data.ops import from_generator_op
 from tensorflow.python.data.ops import iterator_ops
 from tensorflow.python.data.util import structure
 from tensorflow.python.eager import context
@@ -39,7 +35,7 @@ from tensorflow.python.framework import errors
 from tensorflow.python.framework import function
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
-from tensorflow.python.framework import tensor_spec
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import data_flow_ops
@@ -54,10 +50,10 @@ from tensorflow.python.training import server_lib
 from tensorflow.python.util import compat
 
 
+@test_util.with_eager_op_as_function
 class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testNoGradients(self):
     component = constant_op.constant([1.])
     side = constant_op.constant(0.)
@@ -68,20 +64,21 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
     self.assertIsNone(gradients_impl.gradients(value, side)[0])
     self.assertIsNone(gradients_impl.gradients(value, [component, side])[0])
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testCapturingStateInOneShotRaisesException(self):
     var = variables.Variable(37.0, name="myvar")
     dataset = (
         dataset_ops.Dataset.from_tensor_slices([0.0, 1.0, 2.0])
         .map(lambda x: x + var))
-    with self.assertRaisesRegexp(
-        ValueError, r"`Dataset.make_one_shot_iterator\(\)` does not support "
-        "datasets that capture stateful objects.+myvar"):
+    with self.assertRaisesRegex(
+        ValueError, r"A likely cause of this error is that the dataset for "
+        r"which you are calling `make_one_shot_iterator\(\)` captures a "
+        r"stateful object, such as a `tf.Variable` or "
+        r"`tf.lookup.StaticHashTable`, which is not supported. Use "
+        r"`make_initializable_iterator\(\)` instead."):
       dataset_ops.make_one_shot_iterator(dataset)
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testOneShotIterator(self):
     components = (np.arange(7),
                   np.array([[1, 2, 3]]) * np.arange(7)[:, np.newaxis],
@@ -107,8 +104,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
       with self.assertRaises(errors.OutOfRangeError):
         sess.run(get_next)
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testOneShotIteratorCaptureByValue(self):
     components = (np.arange(7),
                   np.array([[1, 2, 3]]) * np.arange(7)[:, np.newaxis],
@@ -172,8 +168,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
         with self.assertRaises(errors.OutOfRangeError):
           sess.run(get_next)
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testOneShotIteratorNonBlocking(self):
     dataset = dataset_ops.Dataset.from_tensors([1, 2, 3]).map(lambda x: x * x)
     iterator = dataset_ops.make_one_shot_iterator(dataset)
@@ -207,13 +202,11 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
       for t in threads:
         t.join()
 
-      self.assertEqual(num_threads, len(results))
-      self.assertEqual(num_threads - 1,
-                       len([None for r in results if r is None]))
+      self.assertLen(results, num_threads)
+      self.assertLen([None for r in results if r is None], num_threads - 1)
       self.assertAllEqual([[1, 4, 9]], [r for r in results if r is not None])
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testOneShotIteratorInitializerFails(self):
     # Define a dataset whose initialization will always fail.
     dataset = dataset_ops.Dataset.from_tensors(array_ops.gather([0], [4]))
@@ -221,17 +214,17 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
     next_element = iterator.get_next()
 
     with self.cached_session() as sess:
-      with self.assertRaisesRegexp(errors.InvalidArgumentError, ""):
+      with self.assertRaisesRegex(errors.InvalidArgumentError, ""):
         sess.run(next_element)
 
       # Test that subsequent attempts to use the iterator also fail.
-      with self.assertRaisesRegexp(errors.InvalidArgumentError, ""):
+      with self.assertRaisesRegex(errors.InvalidArgumentError, ""):
         sess.run(next_element)
 
     with self.cached_session() as sess:
 
       def consumer_thread():
-        with self.assertRaisesRegexp(errors.InvalidArgumentError, ""):
+        with self.assertRaisesRegex(errors.InvalidArgumentError, ""):
           sess.run(next_element)
 
       num_threads = 8
@@ -243,8 +236,14 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
       for t in threads:
         t.join()
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.default_test_combinations())
+  def testOneShotIteratorEmptyDataset(self):
+    dataset = dataset_ops.Dataset.range(0)
+    iterator = dataset_ops.make_one_shot_iterator(dataset)
+    with self.assertRaises(errors.OutOfRangeError):
+      self.evaluate(iterator.get_next())
+
+  @combinations.generate(test_base.graph_only_combinations())
   def testSimpleSharedResource(self):
     components = (np.array(1, dtype=np.int64),
                   np.array([1, 2, 3], dtype=np.int64),
@@ -294,8 +293,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
         with self.assertRaises(errors.OutOfRangeError):
           sess.run(get_next)
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testNotInitializedError(self):
     components = (np.array(1), np.array([1, 2, 3]), np.array(37.0))
     iterator = dataset_ops.make_initializable_iterator(
@@ -303,12 +301,11 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
     get_next = iterator.get_next()
 
     with self.cached_session() as sess:
-      with self.assertRaisesRegexp(errors.FailedPreconditionError,
-                                   "iterator has not been initialized"):
+      with self.assertRaisesRegex(errors.FailedPreconditionError,
+                                  "iterator has not been initialized"):
         sess.run(get_next)
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testReinitializableIterator(self):
     dataset_3 = dataset_ops.Dataset.from_tensors(
         constant_op.constant([1, 2, 3]))
@@ -353,8 +350,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
       with self.assertRaises(errors.OutOfRangeError):
         sess.run(get_next)
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testReinitializableIteratorWithFunctions(self):
 
     def g():
@@ -393,14 +389,18 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
                                                      dtypes.float64))
 
     # Incompatible structure.
-    with self.assertRaises(ValueError):
+    with self.assertRaisesRegex(
+        ValueError, "The two structures don't have the same nested structure."):
       iterator.make_initializer(
           dataset_ops.Dataset.from_tensors(((constant_op.constant(
               [1, 2, 3], dtype=dtypes.int64),), (constant_op.constant(
                   [4., 5., 6., 7.], dtype=dtypes.float64),))))
 
     # Incompatible types.
-    with self.assertRaises(TypeError):
+    with self.assertRaisesRegex(
+        TypeError,
+        r"Expected output types \(tf.int64, tf.float64\) but got dataset with "
+        r"output types \(tf.int32, tf.float32\)."):
       iterator.make_initializer(
           dataset_ops.Dataset.from_tensors(
               (constant_op.constant([1, 2, 3], dtype=dtypes.int32),
@@ -409,14 +409,28 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
     # Incompatible shapes.
     iterator = iterator_ops.Iterator.from_structure(
         (dtypes.int64, dtypes.float64), ([None], []))
-    with self.assertRaises(TypeError):
+    with self.assertRaisesRegex(
+        TypeError,
+        r"Expected output shapes compatible with .* but got dataset with "
+        r"output shapes.*"):
       iterator.make_initializer(
           dataset_ops.Dataset.from_tensors(
               (constant_op.constant([1, 2, 3], dtype=dtypes.int64),
                constant_op.constant([4., 5., 6., 7.], dtype=dtypes.float64))))
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.default_test_combinations())
+  def testReinitializableIteratorEmptyDataset(self):
+    dataset = dataset_ops.Dataset.range(0)
+    iterator = iterator_ops.Iterator.from_structure(
+        dataset_ops.get_legacy_output_types(dataset), [])
+    init_op = iterator.make_initializer(dataset)
+
+    with self.cached_session() as sess:
+      sess.run(init_op)
+      with self.assertRaises(errors.OutOfRangeError):
+        sess.run(iterator.get_next())
+
+  @combinations.generate(test_base.graph_only_combinations())
   def testIteratorStringHandle(self):
     dataset_3 = dataset_ops.Dataset.from_tensor_slices([1, 2, 3])
     dataset_4 = dataset_ops.Dataset.from_tensor_slices([10, 20, 30, 40])
@@ -474,75 +488,72 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
         sess.run(
             next_element, feed_dict={handle_placeholder: iterator_4_handle})
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testIteratorStringHandleFuture(self):
-    with forward_compat.forward_compatibility_horizon(2018, 8, 4):
-      dataset_3 = dataset_ops.Dataset.from_tensor_slices([1, 2, 3])
-      dataset_4 = dataset_ops.Dataset.from_tensor_slices([10, 20, 30, 40])
+    dataset_3 = dataset_ops.Dataset.from_tensor_slices([1, 2, 3])
+    dataset_4 = dataset_ops.Dataset.from_tensor_slices([10, 20, 30, 40])
 
-      iterator_3 = dataset_ops.make_one_shot_iterator(dataset_3)
-      iterator_4 = dataset_ops.make_one_shot_iterator(dataset_4)
+    iterator_3 = dataset_ops.make_one_shot_iterator(dataset_3)
+    iterator_4 = dataset_ops.make_one_shot_iterator(dataset_4)
 
-      handle_placeholder = array_ops.placeholder(dtypes.string, shape=[])
-      feedable_iterator = iterator_ops.Iterator.from_string_handle(
-          handle_placeholder, dataset_ops.get_legacy_output_types(dataset_3),
-          dataset_ops.get_legacy_output_shapes(dataset_3))
-      next_element = feedable_iterator.get_next()
+    handle_placeholder = array_ops.placeholder(dtypes.string, shape=[])
+    feedable_iterator = iterator_ops.Iterator.from_string_handle(
+        handle_placeholder, dataset_ops.get_legacy_output_types(dataset_3),
+        dataset_ops.get_legacy_output_shapes(dataset_3))
+    next_element = feedable_iterator.get_next()
 
-      self.assertTrue(
-          structure.are_compatible(
-              dataset_ops.get_structure(dataset_3),
-              dataset_ops.get_structure(feedable_iterator)))
+    self.assertTrue(
+        structure.are_compatible(
+            dataset_ops.get_structure(dataset_3),
+            dataset_ops.get_structure(feedable_iterator)))
 
-      with self.cached_session() as sess:
-        iterator_3_handle = sess.run(iterator_3.string_handle())
-        iterator_4_handle = sess.run(iterator_4.string_handle())
+    with self.cached_session() as sess:
+      iterator_3_handle = sess.run(iterator_3.string_handle())
+      iterator_4_handle = sess.run(iterator_4.string_handle())
 
-        self.assertEqual(
-            10,
-            sess.run(
-                next_element,
-                feed_dict={handle_placeholder: iterator_4_handle}))
-        self.assertEqual(
-            1,
-            sess.run(
-                next_element,
-                feed_dict={handle_placeholder: iterator_3_handle}))
-        self.assertEqual(
-            20,
-            sess.run(
-                next_element,
-                feed_dict={handle_placeholder: iterator_4_handle}))
-        self.assertEqual(
-            2,
-            sess.run(
-                next_element,
-                feed_dict={handle_placeholder: iterator_3_handle}))
-        self.assertEqual(
-            30,
-            sess.run(
-                next_element,
-                feed_dict={handle_placeholder: iterator_4_handle}))
-        self.assertEqual(
-            3,
-            sess.run(
-                next_element,
-                feed_dict={handle_placeholder: iterator_3_handle}))
-        self.assertEqual(
-            40,
-            sess.run(
-                next_element,
-                feed_dict={handle_placeholder: iterator_4_handle}))
-        with self.assertRaises(errors.OutOfRangeError):
+      self.assertEqual(
+          10,
           sess.run(
-              next_element, feed_dict={handle_placeholder: iterator_3_handle})
-        with self.assertRaises(errors.OutOfRangeError):
+              next_element,
+              feed_dict={handle_placeholder: iterator_4_handle}))
+      self.assertEqual(
+          1,
           sess.run(
-              next_element, feed_dict={handle_placeholder: iterator_4_handle})
+              next_element,
+              feed_dict={handle_placeholder: iterator_3_handle}))
+      self.assertEqual(
+          20,
+          sess.run(
+              next_element,
+              feed_dict={handle_placeholder: iterator_4_handle}))
+      self.assertEqual(
+          2,
+          sess.run(
+              next_element,
+              feed_dict={handle_placeholder: iterator_3_handle}))
+      self.assertEqual(
+          30,
+          sess.run(
+              next_element,
+              feed_dict={handle_placeholder: iterator_4_handle}))
+      self.assertEqual(
+          3,
+          sess.run(
+              next_element,
+              feed_dict={handle_placeholder: iterator_3_handle}))
+      self.assertEqual(
+          40,
+          sess.run(
+              next_element,
+              feed_dict={handle_placeholder: iterator_4_handle}))
+      with self.assertRaises(errors.OutOfRangeError):
+        sess.run(
+            next_element, feed_dict={handle_placeholder: iterator_3_handle})
+      with self.assertRaises(errors.OutOfRangeError):
+        sess.run(
+            next_element, feed_dict={handle_placeholder: iterator_4_handle})
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testIteratorStringHandleReuseTensorObject(self):
     dataset = dataset_ops.Dataset.from_tensor_slices([1, 2, 3])
     one_shot_iterator = dataset_ops.make_one_shot_iterator(dataset)
@@ -560,7 +571,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
                   structure_iterator.string_handle())
 
     # Assert that getting the (default) string handle creates no ops.
-    self.assertEqual(created_ops, len(ops.get_default_graph().get_operations()))
+    self.assertLen(ops.get_default_graph().get_operations(), created_ops)
 
     # Specifying an explicit name will create a new op.
     handle_with_name = one_shot_iterator.string_handle(name="foo")
@@ -571,8 +582,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
     self.assertEqual("foo_1", handle_with_same_name.op.name)
     self.assertIsNot(handle_with_name, handle_with_same_name)
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testIteratorStringHandleError(self):
     dataset_int_scalar = (
         dataset_ops.Dataset.from_tensor_slices([1, 2, 3]).repeat())
@@ -613,8 +623,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
             feedable_int_vector.get_next(),
             feed_dict={handle_placeholder: handle_float_vector}))
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testRemoteIteratorUsingRemoteCallOpDirectSession(self):
     worker_config = config_pb2.ConfigProto()
     worker_config.device_count["CPU"] = 3
@@ -672,8 +681,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
                 target_placeholder: "/job:localhost/replica:0/task:0/cpu:1"
             })
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testRemoteIteratorUsingRemoteCallOpMultiWorkers(self):
     s1 = server_lib.Server.create_local_server()
     s2 = server_lib.Server.create_local_server()
@@ -727,8 +735,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
       with self.assertRaises(errors.OutOfRangeError):
         sess.run(n)
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testRemoteIteratorUsingRemoteCallOpDirectSessionGPUCPU(self):
     if not test_util.is_gpu_available():
       self.skipTest("No GPU available")
@@ -785,15 +792,14 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
                 target_placeholder: "/job:localhost/replica:0/task:0/cpu:0"
             })
 
-  @combinations.generate(
-      combinations.combine(tf_api_version=[1, 2], mode=["graph"]))
+  @combinations.generate(test_base.graph_only_combinations())
   def testRepeatedGetNextWarning(self):
     iterator = dataset_ops.make_one_shot_iterator(dataset_ops.Dataset.range(10))
     warnings.simplefilter("always")
     with warnings.catch_warnings(record=True) as w:
       for _ in range(100):
         iterator.get_next()
-    self.assertEqual(100 - iterator_ops.GET_NEXT_CALL_WARNING_THRESHOLD, len(w))
+    self.assertLen(w, 100 - iterator_ops.GET_NEXT_CALL_WARNING_THRESHOLD)
     for warning in w:
       self.assertIn(
           iterator_ops.GET_NEXT_CALL_WARNING_MESSAGE, str(warning.message))
@@ -802,9 +808,8 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
       combinations.times(
           test_base.default_test_combinations(),
           combinations.combine(
-              expected_element_structure=tensor_spec.TensorSpec([],
-                                                                dtypes.float32),
-              expected_output_classes=ops.Tensor,
+              expected_element_structure=tensor.TensorSpec([], dtypes.float32),
+              expected_output_classes=tensor.Tensor,
               expected_output_types=dtypes.float32,
               expected_output_shapes=[[]])))
   def testTensorIteratorStructure(self, expected_element_structure,
@@ -866,13 +871,13 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
           combinations.combine(
               expected_element_structure={
                   "a":
-                      tensor_spec.TensorSpec([], dtypes.float32),
-                  "b": (tensor_spec.TensorSpec([1], dtypes.string),
-                        tensor_spec.TensorSpec([], dtypes.string))
+                      tensor.TensorSpec([], dtypes.float32),
+                  "b": (tensor.TensorSpec([1], dtypes.string),
+                        tensor.TensorSpec([], dtypes.string))
               },
               expected_output_classes={
-                  "a": ops.Tensor,
-                  "b": (ops.Tensor, ops.Tensor)
+                  "a": tensor.Tensor,
+                  "b": (tensor.Tensor, tensor.Tensor)
               },
               expected_output_types={
                   "a": dtypes.float32,
@@ -907,7 +912,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
     self.assertEqual(expected_output_shapes,
                      dataset_ops.get_legacy_output_shapes(iterator))
 
-  @combinations.generate(test_base.default_test_combinations())
+  @combinations.generate(test_base.graph_only_combinations())
   def testIteratorGetNextName(self):
     with ops.Graph().as_default():
       iterator = dataset_ops.make_one_shot_iterator(
@@ -929,7 +934,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
         self.assertEqual(val, foo.numpy())
         val += 1
 
-  @combinations.generate(combinations.combine(tf_api_version=2, mode="eager"))
+  @combinations.generate(test_base.eager_only_combinations())
   def testOwnedIteratorFunction(self):
 
     queue = data_flow_ops.FIFOQueue(10, dtypes.int64)
@@ -946,7 +951,7 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
     for i in range(10):
       self.assertEqual(queue.dequeue().numpy(), i)
 
-  @combinations.generate(combinations.combine(tf_api_version=2, mode="eager"))
+  @combinations.generate(test_base.eager_only_combinations())
   def testOwnedIteratorFunctionError(self):
     # In this test we verify that a function that raises an error ends up
     # properly deallocating the iterator resource.
@@ -967,7 +972,10 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
 
     @def_function.function
     def fn():
-      dataset = dataset_ops._GeneratorDataset(1, init_fn, next_fn, finalize_fn)
+      output_signature = tensor.TensorSpec((), dtypes.int64)
+      dataset = from_generator_op._GeneratorDataset(1, init_fn, next_fn,
+                                                    finalize_fn,
+                                                    output_signature)
       iterator = iter(dataset)
       next(iterator)
 
@@ -976,7 +984,34 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
 
     self.assertEqual(queue.size().numpy(), 2)
 
-  @combinations.generate(combinations.combine(tf_api_version=2, mode="eager"))
+  @combinations.generate(test_base.default_test_combinations())
+  def testNoInitializer(self):
+    dataset = dataset_ops.Dataset.range(10)
+    iterator = iterator_ops.Iterator.from_structure(
+        dataset_ops.get_legacy_output_types(dataset), [])
+    with self.assertRaisesRegex(
+        ValueError, "The iterator does not have an initializer."):
+      _ = iterator.initializer
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testtestMissingInput(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        "When `dataset` is not provided, both `components` and `element_spec` "
+        "must be specified."):
+      iterator_ops.OwnedIterator(dataset=None)
+
+  @combinations.generate(test_base.eager_only_combinations())
+  def testExtraElementSpecInput(self):
+    dataset = dataset_ops.Dataset.range(1000)
+    with self.assertRaisesRegex(
+        ValueError,
+        "When `dataset` is provided, `element_spec` and `components` must "
+        "not be specified."):
+      iterator_ops.OwnedIterator(
+          dataset, element_spec=dataset.element_spec)
+
+  @combinations.generate(test_base.eager_only_combinations())
   def testLimitedRetracing(self):
     trace_count = [0]
 
@@ -995,6 +1030,47 @@ class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
       self.assertEqual(self.evaluate(f(iter(dataset))), 10)
       self.assertEqual(self.evaluate(f(iter(dataset2))), 45)
       self.assertEqual(trace_count[0], 1)
+
+  @combinations.generate(test_base.eager_only_combinations())
+  def testNestedFunctionsIteratorResource(self):
+
+    @def_function.function
+    def sum_dataset(ds):
+      it = iter(ds)
+
+      @def_function.function
+      def next_element(it):
+        return next(it)
+
+      total = 0
+      for _ in range(10):
+        total += next_element(it)
+      return total
+
+    ds = dataset_ops.Dataset.range(10)
+    self.assertEqual(sum_dataset(ds).numpy(), 45)
+    self.assertEqual(sum_dataset(ds).numpy(), 45)
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testNestedAutomaticControlDependencies(self):
+    counter_var = variables.Variable(0)
+
+    def map_fn(x):
+      counter_var.assign_add(1)
+      return x
+
+    def dataset_fn():
+      return dataset_ops.Dataset.range(10).map(map_fn)
+
+    @def_function.function
+    def fn():
+      it = iter(dataset_fn())
+      for _ in range(10):
+        _ = next(it)
+      return counter_var
+
+    self.evaluate(counter_var.initializer)
+    self.assertEqual(self.evaluate(fn()), 10)
 
 
 if __name__ == "__main__":

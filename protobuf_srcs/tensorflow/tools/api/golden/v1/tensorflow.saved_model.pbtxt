@@ -154,7 +154,7 @@ tf_module {
   }
   member_method {
     name: "build_signature_def"
-    argspec: "args=[\'inputs\', \'outputs\', \'method_name\'], varargs=None, keywords=None, defaults=[\'None\', \'None\', \'None\'], "
+    argspec: "args=[\'inputs\', \'outputs\', \'method_name\', \'defaults\'], varargs=None, keywords=None, defaults=[\'None\', \'None\', \'None\', \'None\'], "
   }
   member_method {
     name: "build_tensor_info"
@@ -182,7 +182,7 @@ tf_module {
   }
   member_method {
     name: "load_v2"
-    argspec: "args=[\'export_dir\', \'tags\'], varargs=None, keywords=None, defaults=[\'None\'], "
+    argspec: "args=[\'export_dir\', \'tags\', \'options\'], varargs=None, keywords=None, defaults=[\'None\', \'None\'], "
   }
   member_method {
     name: "main_op_with_restore"

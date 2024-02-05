@@ -15,11 +15,16 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/sendrecv_ops.h"
 
+#include <utility>
+
+#include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/op.h"
+#include "tensorflow/core/framework/op_def_util.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/profiler/lib/traceme.h"
 
 namespace tensorflow {
 
@@ -60,7 +65,7 @@ SendOp::SendOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
   uint64 send_device_incarnation;
   OP_REQUIRES_OK(
       ctx, ctx->GetAttr("send_device_incarnation",
-                        reinterpret_cast<int64*>(&send_device_incarnation)));
+                        reinterpret_cast<int64_t*>(&send_device_incarnation)));
   string tensor_name;
   OP_REQUIRES_OK(ctx, ctx->GetAttr("tensor_name", &tensor_name));
   key_prefix_ = GetRendezvousKeyPrefix(send_device, recv_device,
@@ -90,14 +95,16 @@ void SendOp::Compute(OpKernelContext* ctx) {
   FrameAndIter frame_iter = GetFrameAndIter(ctx, hostmem_sendrecv_);
   if (frame_iter == FrameAndIter(0, 0)) {
     // Use the cached rendezvous key.
-    VLOG(2) << "Send " << parsed_key_.buf_;
+    VLOG(2) << "Send " << parsed_key_.buf_ << " using "
+            << reinterpret_cast<uintptr_t>(ctx->rendezvous());
     ctx->SetStatus(ctx->rendezvous()->Send(parsed_key_, args, ctx->input(0),
                                            ctx->is_input_dead()));
     return;
   } else {
     Rendezvous::ParsedKey in_loop_parsed;
     GetRendezvousKey(key_prefix_, frame_iter, &in_loop_parsed.buf_);
-    VLOG(2) << "Send " << in_loop_parsed.buf_;
+    VLOG(2) << "Send " << in_loop_parsed.buf_ << " using "
+            << reinterpret_cast<uintptr_t>(ctx->rendezvous());
     OP_REQUIRES_OK(ctx,
                    Rendezvous::ParseKey(in_loop_parsed.buf_, &in_loop_parsed));
 
@@ -107,8 +114,22 @@ void SendOp::Compute(OpKernelContext* ctx) {
   }
 }
 
+string SendOp::TraceString(const OpKernelContext& ctx, bool verbose) const {
+  const auto& attr = def().attr();
+  auto src_it = attr.find("_src");
+  auto dst_it = attr.find("_dst");
+  const string& src = src_it != attr.end() ? src_it->second.s() : "";
+  const string& dst = dst_it != attr.end() ? dst_it->second.s() : "";
+  string op = profiler::TraceMeOp(name_view(), type_string_view());
+  return profiler::TraceMeEncode(
+      std::move(op),
+      {{"from", src}, {"to", dst}, {"key", parsed_key_.FullKey()}});
+}
+
 REGISTER_KERNEL_BUILDER(Name("_Send").Device(DEVICE_CPU), SendOp);
 REGISTER_KERNEL_BUILDER(Name("_Send").Device(DEVICE_DEFAULT), SendOp);
+REGISTER_KERNEL_BUILDER(Name("_Send").Device(DEVICE_TPU_SYSTEM), SendOp);
+REGISTER_KERNEL_BUILDER(Name("_HostSend").Device(DEVICE_TPU_SYSTEM), SendOp);
 
 // Public alias. Added for use in Lingvo.
 REGISTER_KERNEL_BUILDER(Name("Send").Device(DEVICE_CPU), SendOp);
@@ -125,7 +146,7 @@ RecvOp::RecvOp(OpKernelConstruction* ctx) : AsyncOpKernel(ctx) {
   uint64 send_device_incarnation;
   OP_REQUIRES_OK(
       ctx, ctx->GetAttr("send_device_incarnation",
-                        reinterpret_cast<int64*>(&send_device_incarnation)));
+                        reinterpret_cast<int64_t*>(&send_device_incarnation)));
   string tensor_name;
   OP_REQUIRES_OK(ctx, ctx->GetAttr("tensor_name", &tensor_name));
   key_prefix_ = GetRendezvousKeyPrefix(send_device, recv_device,
@@ -137,6 +158,18 @@ RecvOp::RecvOp(OpKernelConstruction* ctx) : AsyncOpKernel(ctx) {
   if (!ctx->GetAttr("_hostmem_sendrecv", &hostmem_sendrecv_).ok()) {
     hostmem_sendrecv_ = false;
   }
+}
+
+string RecvOp::TraceString(const OpKernelContext& ctx, bool verbose) const {
+  const auto& attr = def().attr();
+  auto src_it = attr.find("_src");
+  auto dst_it = attr.find("_dst");
+  const string& src = src_it != attr.end() ? src_it->second.s() : "";
+  const string& dst = dst_it != attr.end() ? dst_it->second.s() : "";
+  string op = profiler::TraceMeOp(name_view(), type_string_view());
+  return profiler::TraceMeEncode(
+      std::move(op),
+      {{"from", src}, {"to", dst}, {"key", parsed_key_.FullKey()}});
 }
 
 namespace {
@@ -169,22 +202,19 @@ void RecvOp::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
   Rendezvous::Args args;
   args.device_context = ctx->op_device_context();
   args.alloc_attrs = ctx->output_alloc_attr(0);
-  if (ctx->is_eager()) {
-    // NOTE(fishx): Only set cancellation_manager in eager mode. Because in
-    // Tensorflow 1.x, session (or graph_mgr) will abort the underlying
-    // rendezvous if it encounters any error.
-    args.cancellation_manager = ctx->cancellation_manager();
-  }
+  args.cancellation_manager = ctx->cancellation_manager();
 
   FrameAndIter frame_iter = GetFrameAndIter(ctx, hostmem_sendrecv_);
   if (frame_iter == FrameAndIter(0, 0)) {
-    VLOG(2) << "Recv " << parsed_key_.buf_;
+    VLOG(2) << "Recv " << parsed_key_.buf_ << " using "
+            << reinterpret_cast<uintptr_t>(ctx->rendezvous());
     ctx->rendezvous()->RecvAsync(parsed_key_, args,
                                  make_recv_callback(ctx, std::move(done)));
   } else {
     Rendezvous::ParsedKey in_loop_parsed;
     GetRendezvousKey(key_prefix_, frame_iter, &in_loop_parsed.buf_);
-    VLOG(2) << "Recv " << in_loop_parsed.buf_;
+    VLOG(2) << "Recv " << in_loop_parsed.buf_ << " using "
+            << reinterpret_cast<uintptr_t>(ctx->rendezvous());
     OP_REQUIRES_OK_ASYNC(
         ctx, Rendezvous::ParseKey(in_loop_parsed.buf_, &in_loop_parsed), done);
     ctx->rendezvous()->RecvAsync(in_loop_parsed, args,
@@ -194,6 +224,8 @@ void RecvOp::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
 
 REGISTER_KERNEL_BUILDER(Name("_Recv").Device(DEVICE_CPU), RecvOp);
 REGISTER_KERNEL_BUILDER(Name("_Recv").Device(DEVICE_DEFAULT), RecvOp);
+REGISTER_KERNEL_BUILDER(Name("_Recv").Device(DEVICE_TPU_SYSTEM), RecvOp);
+REGISTER_KERNEL_BUILDER(Name("_HostRecv").Device(DEVICE_TPU_SYSTEM), RecvOp);
 
 // Public alias. Added for use in Lingvo.
 REGISTER_KERNEL_BUILDER(Name("Recv").Device(DEVICE_CPU), RecvOp);

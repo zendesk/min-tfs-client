@@ -13,166 +13,125 @@
 # limitations under the License.
 # ==============================================================================
 """Benchmarks for autotuning performance knobs."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import time
 
 import numpy as np
 
-from tensorflow.python.client import session
+from tensorflow.python.data.benchmarks import benchmark_base
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.data.ops import options as options_lib
 from tensorflow.python.ops import math_ops
-from tensorflow.python.platform import test
 
 
-class AutotuneBenchmark(test.Benchmark):
+class AutotuneBenchmark(benchmark_base.DatasetBenchmarkBase):
   """Benchmarks for autotuning performance knobs."""
 
-  def benchmark_map(self):
-    a = self._benchmark_map(autotune=False)
-    b = self._benchmark_map(autotune=True)
-    c = self._benchmark_map(
-        autotune=True, algorithm=dataset_ops.AutotuneAlgorithm.GRADIENT_DESCENT)
-    print("HillClimb vs Default speedup: %f" % (a / b))
-    print("GradientDescent vs Default speedup: %f" % (a / c))
+  def _run_benchmark(self, dataset, autotune, benchmark_iters, benchmark_label,
+                     benchmark_id):
+    options = options_lib.Options()
+    options.experimental_optimization.apply_default_optimizations = False
+    options.autotune.enabled = autotune
+    dataset = dataset.with_options(options)
 
-  def _benchmark_map(self,
-                     autotune,
-                     algorithm=dataset_ops.AutotuneAlgorithm.HILL_CLIMB):
+    autotune_string = "_autotune_parallelism_only"
+    wall_time = self.run_and_report_benchmark(
+        dataset=dataset,
+        num_elements=benchmark_iters,
+        warmup=True,
+        iters=1,
+        extras={
+            "model_name":
+                "autotune.benchmark.%s.%d" % (benchmark_label, benchmark_id),
+            "parameters":
+                "%s" % autotune,
+        },
+        name=benchmark_label + (autotune_string if autotune else ""))
+    return wall_time
+
+  def benchmark_batch(self):
+    a = self._benchmark_batch(autotune=False, benchmark_id=1)
+    b = self._benchmark_batch(autotune=True, benchmark_id=2)
+    print("autotune parallelism vs no autotuning speedup: {}".format(a / b))
+
+  def _benchmark_batch(self, autotune, benchmark_id):
+    batch_size = 128
+    k = 1024
+    dataset = dataset_ops.Dataset.from_tensors(
+        (np.random.rand(1, 4 * k), np.random.rand(4 * k, 1))).repeat()
+    dataset = dataset.map(math_ops.matmul)
+    dataset = dataset.batch(
+        batch_size=batch_size, num_parallel_calls=dataset_ops.AUTOTUNE)
+    return self._run_benchmark(
+        dataset=dataset,
+        autotune=autotune,
+        benchmark_iters=10000,
+        benchmark_label="batch",
+        benchmark_id=benchmark_id)
+
+  def benchmark_map(self):
+    a = self._benchmark_map(autotune=False, benchmark_id=1)
+    b = self._benchmark_map(autotune=True, benchmark_id=2)
+    print("autotune parallelism vs no autotuning speedup: {}".format(a / b))
+
+  def _benchmark_map(self, autotune, benchmark_id):
     k = 1024 * 1024
-    dataset = dataset_ops.Dataset.from_tensors((np.random.rand(1, 4 * k),
-                                                np.random.rand(4 * k,
-                                                               1))).repeat()
+    dataset = dataset_ops.Dataset.from_tensors(
+        (np.random.rand(1, 4 * k), np.random.rand(4 * k, 1))).repeat()
     dataset = dataset.map(
         math_ops.matmul, num_parallel_calls=dataset_ops.AUTOTUNE)
-    options = dataset_ops.Options()
-    options.experimental_optimization.apply_default_optimizations = False
-    options.experimental_optimization.autotune = autotune
-    if autotune:
-      options.experimental_optimization.autotune_algorithm = algorithm.value
-    dataset = dataset.with_options(options)
-    iterator = dataset_ops.make_one_shot_iterator(dataset)
-    get_next = iterator.get_next()
-
-    deltas = []
-    with session.Session() as sess:
-      for _ in range(5):
-        sess.run(get_next.op)
-      for _ in range(10000):
-        start = time.time()
-        sess.run(get_next.op)
-        end = time.time()
-        deltas.append(end - start)
-
-    self.report_benchmark(
-        iters=10000,
-        wall_time=np.median(deltas),
-        name="map" + (("_autotune_%s" % algorithm.name) if autotune else ""))
-    return np.median(deltas)
+    return self._run_benchmark(
+        dataset=dataset,
+        autotune=autotune,
+        benchmark_iters=10000,
+        benchmark_label="map",
+        benchmark_id=benchmark_id)
 
   def benchmark_map_and_batch(self):
-    a = self._benchmark_map_and_batch(autotune=False)
-    b = self._benchmark_map_and_batch(autotune=True)
-    c = self._benchmark_map_and_batch(
-        autotune=True, algorithm=dataset_ops.AutotuneAlgorithm.GRADIENT_DESCENT)
-    print("HillClimb vs Default speedup: %f" % (a / b))
-    print("GradientDescent vs Default speedup: %f" % (a / c))
+    a = self._benchmark_map_and_batch(autotune=False, benchmark_id=1)
+    b = self._benchmark_map_and_batch(autotune=True, benchmark_id=2)
+    print("autotune parallelism vs no autotuning speedup: {}".format(a / b))
 
-  def _benchmark_map_and_batch(
-      self, autotune, algorithm=dataset_ops.AutotuneAlgorithm.HILL_CLIMB):
+  def _benchmark_map_and_batch(self, autotune, benchmark_id):
     batch_size = 16
     k = 1024 * 1024
-    dataset = dataset_ops.Dataset.from_tensors((np.random.rand(1, 4 * k),
-                                                np.random.rand(4 * k,
-                                                               1))).repeat()
+    dataset = dataset_ops.Dataset.from_tensors(
+        (np.random.rand(1, 4 * k), np.random.rand(4 * k, 1))).repeat()
     dataset = dataset.map(
         math_ops.matmul, num_parallel_calls=dataset_ops.AUTOTUNE)
     dataset = dataset.batch(batch_size=batch_size)
-    options = dataset_ops.Options()
-    options.experimental_optimization.apply_default_optimizations = False
-    options.experimental_optimization.map_and_batch_fusion = True
-    options.experimental_optimization.autotune = autotune
-    if autotune:
-      options.experimental_optimization.autotune_algorithm = algorithm.value
-    dataset = dataset.with_options(options)
-    iterator = dataset_ops.make_one_shot_iterator(dataset)
-    get_next = iterator.get_next()
-
-    deltas = []
-    with session.Session() as sess:
-      for _ in range(5):
-        sess.run(get_next.op)
-      for _ in range(1000):
-        start = time.time()
-        sess.run(get_next.op)
-        end = time.time()
-        deltas.append(end - start)
-
-    self.report_benchmark(
-        iters=1000,
-        wall_time=np.median(deltas),
-        name="map_and_batch" +
-        (("_autotune_%s" % algorithm.name) if autotune else ""))
-    return np.median(deltas)
+    return self._run_benchmark(
+        dataset=dataset,
+        autotune=autotune,
+        benchmark_iters=1000,
+        benchmark_label="map_and_batch",
+        benchmark_id=benchmark_id)
 
   def benchmark_interleave(self):
-    a = self._benchmark_interleave(autotune=False)
-    b = self._benchmark_interleave(autotune=True)
-    c = self._benchmark_interleave(
-        autotune=True, algorithm=dataset_ops.AutotuneAlgorithm.GRADIENT_DESCENT)
-    print("HillClimb vs Default speedup: %f" % (a / b))
-    print("GradientDescent vs Default speedup: %f" % (a / c))
+    a = self._benchmark_interleave(autotune=False, benchmark_id=1)
+    b = self._benchmark_interleave(autotune=True, benchmark_id=2)
+    print("autotune parallelism vs no autotuning speedup: {}".format(a / b))
 
-  def _benchmark_interleave(self,
-                            autotune,
-                            algorithm=dataset_ops.AutotuneAlgorithm.HILL_CLIMB):
+  def _benchmark_interleave(self, autotune, benchmark_id):
     k = 1024 * 1024
-    dataset = dataset_ops.Dataset.from_tensors((np.random.rand(1, 4 * k),
-                                                np.random.rand(4 * k,
-                                                               1))).repeat()
+    dataset = dataset_ops.Dataset.from_tensors(
+        (np.random.rand(1, 4 * k), np.random.rand(4 * k, 1))).repeat()
     dataset = dataset.map(math_ops.matmul)
     dataset = dataset_ops.Dataset.range(1).repeat().interleave(
         lambda _: dataset,
         cycle_length=10,
         num_parallel_calls=dataset_ops.AUTOTUNE)
-    options = dataset_ops.Options()
-    options.experimental_optimization.apply_default_optimizations = False
-    options.experimental_optimization.autotune = autotune
-    if autotune:
-      options.experimental_optimization.autotune_algorithm = algorithm.value
-    dataset = dataset.with_options(options)
-    iterator = dataset_ops.make_one_shot_iterator(dataset)
-    get_next = iterator.get_next()
-
-    deltas = []
-    with session.Session() as sess:
-      for _ in range(5):
-        sess.run(get_next.op)
-      for _ in range(10000):
-        start = time.time()
-        sess.run(get_next.op)
-        end = time.time()
-        deltas.append(end - start)
-
-    self.report_benchmark(
-        iters=10000,
-        wall_time=np.median(deltas),
-        name="interleave" +
-        (("_autotune_%s" % algorithm.name) if autotune else ""))
-    return np.median(deltas)
+    return self._run_benchmark(
+        dataset=dataset,
+        autotune=autotune,
+        benchmark_iters=10000,
+        benchmark_label="interleave",
+        benchmark_id=benchmark_id)
 
   def benchmark_map_and_interleave(self):
-    a = self._benchmark_map_and_interleave(autotune=False)
-    b = self._benchmark_map_and_interleave(autotune=True)
-    c = self._benchmark_map_and_interleave(
-        autotune=True, algorithm=dataset_ops.AutotuneAlgorithm.GRADIENT_DESCENT)
-    print("HillClimb vs Default speedup: %f" % (a / b))
-    print("GradientDescent vs Default speedup: %f" % (a / c))
+    a = self._benchmark_map_and_interleave(autotune=False, benchmark_id=1)
+    b = self._benchmark_map_and_interleave(autotune=True, benchmark_id=2)
+    print("autotune parallelism vs no autotuning speedup: {}".format(a / b))
 
-  def _benchmark_map_and_interleave(
-      self, autotune, algorithm=dataset_ops.AutotuneAlgorithm.HILL_CLIMB):
+  def _benchmark_map_and_interleave(self, autotune, benchmark_id):
     k = 1024 * 1024
     a = (np.random.rand(1, 8 * k), np.random.rand(8 * k, 1))
     b = (np.random.rand(1, 4 * k), np.random.rand(4 * k, 1))
@@ -204,42 +163,19 @@ class AutotuneBenchmark(test.Benchmark):
 
     dataset = dataset_ops.Dataset.zip((dataset, dataset_c))
     dataset = dataset.map(f2, num_parallel_calls=dataset_ops.AUTOTUNE)
-    options = dataset_ops.Options()
-    options.experimental_optimization.apply_default_optimizations = False
-    options.experimental_optimization.autotune = autotune
-    if autotune:
-      options.experimental_optimization.autotune_algorithm = algorithm.value
-    dataset = dataset.with_options(options)
-    iterator = dataset_ops.make_one_shot_iterator(dataset)
-    get_next = iterator.get_next()
-
-    deltas = []
-    with session.Session() as sess:
-      for _ in range(5):
-        sess.run(get_next)
-      for _ in range(10000):
-        start = time.time()
-        sess.run(get_next)
-        end = time.time()
-        deltas.append(end - start)
-
-    self.report_benchmark(
-        iters=10000,
-        wall_time=np.median(deltas),
-        name="map_and_interleave" +
-        (("_autotune_%s" % algorithm.name) if autotune else ""))
-    return np.median(deltas)
+    return self._run_benchmark(
+        dataset=dataset,
+        autotune=autotune,
+        benchmark_iters=10000,
+        benchmark_label="map_and_interleave",
+        benchmark_id=benchmark_id)
 
   def benchmark_map_batch_and_interleave(self):
-    a = self._benchmark_map_batch_and_interleave(autotune=False)
-    b = self._benchmark_map_batch_and_interleave(autotune=True)
-    c = self._benchmark_map_batch_and_interleave(
-        autotune=True, algorithm=dataset_ops.AutotuneAlgorithm.GRADIENT_DESCENT)
-    print("HillClimb vs Default speedup: %f" % (a / b))
-    print("GradientDescent vs Default speedup: %f" % (a / c))
+    a = self._benchmark_map_batch_and_interleave(autotune=False, benchmark_id=1)
+    b = self._benchmark_map_batch_and_interleave(autotune=True, benchmark_id=2)
+    print("autotune parallelism vs no autotuning speedup: {}".format(a / b))
 
-  def _benchmark_map_batch_and_interleave(
-      self, autotune, algorithm=dataset_ops.AutotuneAlgorithm.HILL_CLIMB):
+  def _benchmark_map_batch_and_interleave(self, autotune, benchmark_id):
     batch_size = 16
     k = 1024 * 1024
     a = (np.random.rand(1, 8 * k), np.random.rand(8 * k, 1))
@@ -268,33 +204,13 @@ class AutotuneBenchmark(test.Benchmark):
         math_ops.matmul, num_parallel_calls=dataset_ops.AUTOTUNE)
     dataset_c = dataset_c.batch(batch_size=batch_size)
     dataset = dataset_ops.Dataset.zip((dataset, dataset_c))
-    options = dataset_ops.Options()
-    options.experimental_optimization.apply_default_optimizations = False
-    options.experimental_optimization.map_and_batch_fusion = True
-    options.experimental_optimization.autotune = autotune
-    if autotune:
-      options.experimental_optimization.autotune_algorithm = algorithm.value
-    dataset = dataset.with_options(options)
-    iterator = dataset_ops.make_one_shot_iterator(dataset)
-    get_next = iterator.get_next()
-
-    deltas = []
-    with session.Session() as sess:
-      for _ in range(5):
-        sess.run(get_next)
-      for _ in range(1000):
-        start = time.time()
-        sess.run(get_next)
-        end = time.time()
-        deltas.append(end - start)
-
-    self.report_benchmark(
-        iters=1000,
-        wall_time=np.median(deltas),
-        name="map_batch_and_interleave" +
-        (("_autotune_%s" % algorithm.name) if autotune else ""))
-    return np.median(deltas)
+    return self._run_benchmark(
+        dataset=dataset,
+        autotune=autotune,
+        benchmark_iters=1000,
+        benchmark_label="map_and_batch_and_interleave",
+        benchmark_id=benchmark_id)
 
 
 if __name__ == "__main__":
-  test.main()
+  benchmark_base.test.main()

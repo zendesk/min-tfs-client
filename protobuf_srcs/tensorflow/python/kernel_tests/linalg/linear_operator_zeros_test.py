@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.framework import dtypes
@@ -39,7 +35,13 @@ class LinearOperatorZerosTest(
   @staticmethod
   def skip_these_tests():
     return [
-        "cholesky", "log_abs_det", "inverse", "solve", "solve_with_broadcast"]
+        "cholesky",
+        "cond",
+        "inverse",
+        "log_abs_det",
+        "solve",
+        "solve_with_broadcast"
+    ]
 
   @staticmethod
   def operator_shapes_infos():
@@ -49,6 +51,13 @@ class LinearOperatorZerosTest(
         shapes_info((1, 3, 3)),
         shapes_info((3, 4, 4)),
         shapes_info((2, 1, 4, 4))]
+
+  @staticmethod
+  def optional_tests():
+    """List of optional test names to run."""
+    return [
+        "operator_matmul_with_same_type",
+    ]
 
   def operator_and_matrix(
       self, build_info, dtype, use_placeholder,
@@ -83,33 +92,33 @@ class LinearOperatorZerosTest(
       self.evaluate(operator.assert_self_adjoint())  # Should not fail
 
   def test_non_scalar_num_rows_raises_static(self):
-    with self.assertRaisesRegexp(ValueError, "must be a 0-D Tensor"):
+    with self.assertRaisesRegex(ValueError, "must be a 0-D Tensor"):
       linalg_lib.LinearOperatorZeros(num_rows=[2])
-    with self.assertRaisesRegexp(ValueError, "must be a 0-D Tensor"):
+    with self.assertRaisesRegex(ValueError, "must be a 0-D Tensor"):
       linalg_lib.LinearOperatorZeros(num_rows=2, num_columns=[2])
 
   def test_non_integer_num_rows_raises_static(self):
-    with self.assertRaisesRegexp(TypeError, "must be integer"):
+    with self.assertRaisesRegex(TypeError, "must be integer"):
       linalg_lib.LinearOperatorZeros(num_rows=2.)
-    with self.assertRaisesRegexp(TypeError, "must be integer"):
+    with self.assertRaisesRegex(TypeError, "must be integer"):
       linalg_lib.LinearOperatorZeros(num_rows=2, num_columns=2.)
 
   def test_negative_num_rows_raises_static(self):
-    with self.assertRaisesRegexp(ValueError, "must be non-negative"):
+    with self.assertRaisesRegex(ValueError, "must be non-negative"):
       linalg_lib.LinearOperatorZeros(num_rows=-2)
-    with self.assertRaisesRegexp(ValueError, "must be non-negative"):
+    with self.assertRaisesRegex(ValueError, "must be non-negative"):
       linalg_lib.LinearOperatorZeros(num_rows=2, num_columns=-2)
 
   def test_non_1d_batch_shape_raises_static(self):
-    with self.assertRaisesRegexp(ValueError, "must be a 1-D"):
+    with self.assertRaisesRegex(ValueError, "must be a 1-D"):
       linalg_lib.LinearOperatorZeros(num_rows=2, batch_shape=2)
 
   def test_non_integer_batch_shape_raises_static(self):
-    with self.assertRaisesRegexp(TypeError, "must be integer"):
+    with self.assertRaisesRegex(TypeError, "must be integer"):
       linalg_lib.LinearOperatorZeros(num_rows=2, batch_shape=[2.])
 
   def test_negative_batch_shape_raises_static(self):
-    with self.assertRaisesRegexp(ValueError, "must be non-negative"):
+    with self.assertRaisesRegex(ValueError, "must be non-negative"):
       linalg_lib.LinearOperatorZeros(num_rows=2, batch_shape=[-2])
 
   def test_non_scalar_num_rows_raises_dynamic(self):
@@ -147,7 +156,7 @@ class LinearOperatorZerosTest(
   def test_wrong_matrix_dimensions_raises_static(self):
     operator = linalg_lib.LinearOperatorZeros(num_rows=2)
     x = rng.randn(3, 3).astype(np.float32)
-    with self.assertRaisesRegexp(ValueError, "Dimensions.*not compatible"):
+    with self.assertRaisesRegex(ValueError, "Dimensions.*not compatible"):
       operator.matmul(x)
 
   def test_wrong_matrix_dimensions_raises_dynamic(self):
@@ -179,14 +188,14 @@ class LinearOperatorZerosTest(
         linalg_lib.LinearOperatorZeros))
 
   def test_ref_type_shape_args_raises(self):
-    with self.assertRaisesRegexp(TypeError, "num_rows.cannot.be.reference"):
+    with self.assertRaisesRegex(TypeError, "num_rows.cannot.be.reference"):
       linalg_lib.LinearOperatorZeros(num_rows=variables_module.Variable(2))
 
-    with self.assertRaisesRegexp(TypeError, "num_columns.cannot.be.reference"):
+    with self.assertRaisesRegex(TypeError, "num_columns.cannot.be.reference"):
       linalg_lib.LinearOperatorZeros(
           num_rows=2, num_columns=variables_module.Variable(3))
 
-    with self.assertRaisesRegexp(TypeError, "batch_shape.cannot.be.reference"):
+    with self.assertRaisesRegex(TypeError, "batch_shape.cannot.be.reference"):
       linalg_lib.LinearOperatorZeros(
           num_rows=2, batch_shape=variables_module.Variable([2]))
 
@@ -195,8 +204,11 @@ class LinearOperatorZerosTest(
 class LinearOperatorZerosNotSquareTest(
     linear_operator_test_util.NonSquareLinearOperatorDerivedClassTest):
 
-  def operator_and_matrix(self, build_info, dtype, use_placeholder):
+  def operator_and_matrix(
+      self, build_info, dtype, use_placeholder,
+      ensure_self_adjoint_and_pd=False):
     del use_placeholder
+    del ensure_self_adjoint_and_pd
     shape = list(build_info.shape)
 
     batch_shape = shape[:-2]

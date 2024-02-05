@@ -5,6 +5,7 @@ load(":build_defs.bzl", "JAVACOPTS")
 load(":src/gen/gen_ops.bzl", "tf_java_op_gen_srcjar")
 load(
     "//tensorflow:tensorflow.bzl",
+    "VERSION",
     "tf_binary_additional_srcs",
     "tf_cc_binary",
     "tf_cc_test",
@@ -14,8 +15,9 @@ load(
 )
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:private"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 java_library(
@@ -27,7 +29,21 @@ java_library(
     data = tf_binary_additional_srcs() + [":libtensorflow_jni"],
     javacopts = JAVACOPTS,
     plugins = [":processor"],
+    resources = [":java_resources"],
     visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "version-info",
+    outs = ["src/main/resources/tensorflow-version-info"],
+    cmd = "echo version=%s > $@" % VERSION,
+    output_to_bindir = 1,
+)
+
+filegroup(
+    name = "java_resources",
+    srcs = [":version-info"],
+    visibility = ["//visibility:private"],
 )
 
 # NOTE(ashankar): Rule to include the Java API in the Android Inference Library
@@ -38,10 +54,7 @@ filegroup(
         "src/main/java/org/tensorflow/*.java",
         "src/main/java/org/tensorflow/types/*.java",
     ]),
-    visibility = [
-        "//tensorflow/java:__pkg__",
-        "//tensorflow/tools/android/inference_interface:__pkg__",
-    ],
+    visibility = ["//tensorflow/tools/android/inference_interface:__pkg__"],
 )
 
 java_plugin(
@@ -66,9 +79,7 @@ java_library(
 filegroup(
     name = "java_op_sources",
     srcs = glob(["src/main/java/org/tensorflow/op/**/*.java"]) + [":java_op_gen_sources"],
-    visibility = [
-        "//tensorflow/java:__pkg__",
-    ],
+    visibility = ["//visibility:private"],
 )
 
 tf_java_op_gen_srcjar(
@@ -428,6 +439,9 @@ tf_cc_binary(
             "-z defs",
             "-s",
             "-Wl,--version-script,$(location {})".format(LINKER_VERSION_SCRIPT),
+            # copybara:uncomment_begin(google-only)
+            # "-Wl,--undefined-version",
+            # copybara:uncomment_end
         ],
     }),
     linkshared = 1,

@@ -49,8 +49,7 @@ NodeDef MakeFusedNode(const NodeDef& parent_map_node, const NodeDef& map_node,
   (*fused_node.mutable_attr())["f"] = std::move(attr);
 
   graph_utils::CopyAttribute("Targuments", parent_map_node, &fused_node);
-  for (auto key : {"output_shapes", "output_types"})
-    graph_utils::CopyAttribute(key, map_node, &fused_node);
+  graph_utils::CopyShapesAndTypesAttrs(map_node, &fused_node);
 
   auto value_or_false = [](const AttrValue* attr) {
     if (!attr) return false;
@@ -73,6 +72,8 @@ NodeDef MakeFusedNode(const NodeDef& parent_map_node, const NodeDef& map_node,
   (*fused_node.mutable_attr())["preserve_cardinality"].set_b(
       value_or_false(first_cardinality) && value_or_false(second_cardinality));
 
+  graph_utils::MaybeSetFusedMetadata(parent_map_node, map_node, &fused_node);
+
   return fused_node;
 }
 
@@ -92,15 +93,15 @@ Status MapFusion::OptimizeAndCollectStats(Cluster* cluster,
                                              item.graph.library());
 
   auto get_map_node = [](const NodeDef& node) -> const NodeDef* {
-    // TODO(prazek): we could also handle ParallelMapDataset and
-    // MapAndBatchDataset.
-    if (node.op() == "MapDataset") return &node;
+    // TODO(b/148614504): Support ParallelMapDataset and MapAndBatchDataset.
+    // TODO(b/148614315): Support captured inputs.
+    if (node.op() == "MapDataset" && node.input_size() == 1) return &node;
     return nullptr;
   };
 
-  auto get_fused_function = [&function_library, &output](
-                                const NodeDef* parent_map_node,
-                                const NodeDef* map_node) -> FunctionDef* {
+  auto make_fused_function = [&function_library, &output](
+                                 const NodeDef* parent_map_node,
+                                 const NodeDef* map_node) -> FunctionDef* {
     const auto& parent_fun = parent_map_node->attr().at("f");
     const FunctionDef* parent_func =
         function_library.Find(parent_fun.func().name());
@@ -128,33 +129,24 @@ Status MapFusion::OptimizeAndCollectStats(Cluster* cluster,
         get_map_node(*graph_utils::GetInputNode(*map_node, graph));
     if (!parent_map_node) continue;
 
-    const auto* fused_function = get_fused_function(parent_map_node, map_node);
+    const auto* fused_function = make_fused_function(parent_map_node, map_node);
     if (fused_function == nullptr) continue;
+
     const auto* fused_maps_node = graph.AddNode(
         MakeFusedNode(*parent_map_node, *map_node, *fused_function, &graph));
 
     TF_RETURN_IF_ERROR(
         graph.UpdateFanouts(map_node->name(), fused_maps_node->name()));
 
-    // TODO(prazek): we should run some optimizations on the fused map
-    // functions, or make sure that optimization passes run after map
-    // fusion.
     TF_RETURN_IF_ERROR(function_library.AddFunctionDef(*fused_function));
 
-    // TODO(b/116285210): we could also remove map functions from library if
-    // they are not used anymore.
     nodes_to_delete.insert(parent_map_node->name());
     nodes_to_delete.insert(map_node->name());
     stats->num_changes++;
   }
 
   TF_RETURN_IF_ERROR(graph.DeleteNodes(nodes_to_delete));
-  return Status::OK();
-}
-
-void MapFusion::Feedback(Cluster* cluster, const GrapplerItem& item,
-                         const GraphDef& optimize_output, double result) {
-  // no-op
+  return OkStatus();
 }
 
 REGISTER_GRAPH_OPTIMIZER_AS(MapFusion, "map_fusion");

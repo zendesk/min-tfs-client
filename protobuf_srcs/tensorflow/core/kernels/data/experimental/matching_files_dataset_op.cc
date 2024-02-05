@@ -13,12 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include <queue>
+
+#include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/kernels/data/dataset.h"
-#include "tensorflow/core/lib/core/blocking_counter.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/io/buffered_inputstream.h"
@@ -28,6 +28,7 @@ limitations under the License.
 #include "tensorflow/core/lib/io/record_reader.h"
 #include "tensorflow/core/lib/io/zlib_compression_options.h"
 #include "tensorflow/core/lib/io/zlib_inputstream.h"
+#include "tensorflow/core/platform/blocking_counter.h"
 #include "tensorflow/core/platform/env.h"
 
 namespace tensorflow {
@@ -62,7 +63,7 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return absl::make_unique<Iterator>(
+      return std::make_unique<Iterator>(
           Iterator::Params{this, strings::StrCat(prefix, "::MatchingFiles")});
     }
 
@@ -81,7 +82,12 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
       return "MatchingFilesDatasetOp::Dataset";
     }
 
-    Status CheckExternalState() const override { return Status::OK(); }
+    Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      return OkStatus();
+    }
+
+    Status CheckExternalState() const override { return OkStatus(); }
 
    protected:
     Status AsGraphDefInternal(SerializationContext* ctx,
@@ -90,7 +96,7 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
       Node* patterns_node = nullptr;
       TF_RETURN_IF_ERROR(b->AddVector(patterns_, &patterns_node));
       TF_RETURN_IF_ERROR(b->AddDataset(this, {patterns_node}, output));
-      return Status::OK();
+      return OkStatus();
     }
 
    private:
@@ -133,7 +139,7 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
               out_tensors->emplace_back(std::move(filepath_tensor));
               *end_of_sequence = false;
               hasMatch_ = true;
-              return Status::OK();
+              return OkStatus();
             }
 
             // In this case, current_path is a directory. Then continue the
@@ -179,7 +185,7 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
 
         *end_of_sequence = true;
         if (hasMatch_) {
-          return Status::OK();
+          return OkStatus();
         } else {
           return errors::NotFound("Don't find any matched files");
         }
@@ -191,7 +197,8 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
         return model::MakeSourceNode(std::move(args));
       }
 
-      Status SaveInternal(IteratorStateWriter* writer) override {
+      Status SaveInternal(SerializationContext* ctx,
+                          IteratorStateWriter* writer) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(writer->WriteScalar(
             full_name("current_pattern_index"), current_pattern_index_));
@@ -219,13 +226,13 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
           }
         }
 
-        return Status::OK();
+        return OkStatus();
       }
 
       Status RestoreInternal(IteratorContext* ctx,
                              IteratorStateReader* reader) override {
         mutex_lock l(mu_);
-        int64 current_pattern_index;
+        int64_t current_pattern_index;
         TF_RETURN_IF_ERROR(reader->ReadScalar(
             full_name("current_pattern_index"), &current_pattern_index));
         current_pattern_index_ = size_t(current_pattern_index);
@@ -235,23 +242,23 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
                                               &current_pattern_tstr));
         current_pattern_ = current_pattern_tstr;
 
-        int64 hasMatch;
+        int64_t hasMatch;
         TF_RETURN_IF_ERROR(
             reader->ReadScalar(full_name("hasMatch"), &hasMatch));
         hasMatch_ = static_cast<bool>(hasMatch);
 
-        int64 isWindows;
+        int64_t isWindows;
         TF_RETURN_IF_ERROR(
             reader->ReadScalar(full_name("isWindows"), &isWindows));
         isWindows_ = static_cast<bool>(isWindows);
 
         if (reader->Contains(full_name("queue_size"))) {
-          int64 queue_size;
+          int64_t queue_size;
           TF_RETURN_IF_ERROR(
               reader->ReadScalar(full_name("queue_size"), &queue_size));
           for (int i = 0; i < queue_size; i++) {
             tstring path;
-            int64 path_status;
+            int64_t path_status;
             TF_RETURN_IF_ERROR(reader->ReadScalar(
                 full_name(strings::StrCat("path_", i)), &path));
             TF_RETURN_IF_ERROR(reader->ReadScalar(
@@ -261,13 +268,13 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
           }
         }
 
-        return Status::OK();
+        return OkStatus();
       }
 
      private:
       Status UpdateIterator(IteratorContext* ctx, FileSystem* fs,
                             const string& dir, const string& eval_pattern)
-          EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+          TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
         StringPiece fixed_prefix =
             StringPiece(eval_pattern)
                 .substr(0, eval_pattern.find_first_of("*?[\\"));
@@ -282,7 +289,7 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
           // All the files in the heap are matched with the pattern, so finish
           // the search if current_path is a file.
           if (!current_path.second) {
-            return Status::OK();
+            return OkStatus();
           }
 
           filepath_queue_.pop();
@@ -362,11 +369,11 @@ class MatchingFilesDatasetOp : public DatasetOpKernel {
       typedef std::pair<string, bool> PathStatus;
       std::priority_queue<PathStatus, std::vector<PathStatus>,
                           std::greater<PathStatus>>
-          filepath_queue_ GUARDED_BY(mu_);
-      size_t current_pattern_index_ GUARDED_BY(mu_) = 0;
-      tstring current_pattern_ GUARDED_BY(mu_);
-      bool hasMatch_ GUARDED_BY(mu_) = false;
-      bool isWindows_ GUARDED_BY(mu_) = false;
+          filepath_queue_ TF_GUARDED_BY(mu_);
+      size_t current_pattern_index_ TF_GUARDED_BY(mu_) = 0;
+      tstring current_pattern_ TF_GUARDED_BY(mu_);
+      bool hasMatch_ TF_GUARDED_BY(mu_) = false;
+      bool isWindows_ TF_GUARDED_BY(mu_) = false;
     };
 
     const std::vector<tstring> patterns_;

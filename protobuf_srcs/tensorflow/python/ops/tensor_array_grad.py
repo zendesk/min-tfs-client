@@ -13,11 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 """Gradients for operators defined in tensor_array_ops.py."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import ops
+from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import tensor_array_ops
 
 # TODO(b/31222613): These ops may be differentiable, and there may be
@@ -44,7 +41,7 @@ def _GetGradSource(op_or_tensor):
 
   TensorArray gradient calls use an accumulator TensorArray object.  If
   multiple gradients are calculated and run in the same session, the multiple
-  gradient nodes may accidentally flow throuth the same accumulator TensorArray.
+  gradient nodes may accidentally flow through the same accumulator TensorArray.
   This double counting breaks the TensorArray gradient flow.
 
   The solution is to identify which gradient call this particular
@@ -72,18 +69,18 @@ def _GetGradSource(op_or_tensor):
   if not grad_pos:
     raise ValueError(
         "Expected op/tensor name to start with gradients (excluding scope)"
-        ", got: {}. This means that a tf.gradients op with this op in its "
-        "dependency path has a custom name that does not start with "
-        "'gradients'. Please make sure all calls to tf.gradients that have "
-        "non-empty 'name' arguments use names that start with "
-        "'gradients'.".format(op_or_tensor.name))
+        f", got: {op_or_tensor.name}. This means that a tf.gradients op with "
+        "this op in its dependency path has a custom name that does not start "
+        "with 'gradients'. Please make sure all calls to tf.gradients that "
+        "have non-empty `name` arguments use names that start with "
+        "'gradients'.")
   return "/".join(name_tokens[:grad_pos[-1] + 1])
 
 
 @ops.RegisterGradient("TensorArrayRead")
 @ops.RegisterGradient("TensorArrayReadV2")
 @ops.RegisterGradient("TensorArrayReadV3")
-def _TensorArrayReadGrad(op, grad):
+def _TensorArrayReadGrad(op: ops.Operation, grad):
   """Gradient for TensorArrayRead.
 
   Args:
@@ -114,7 +111,7 @@ def _TensorArrayReadGrad(op, grad):
 @ops.RegisterGradient("TensorArrayWrite")
 @ops.RegisterGradient("TensorArrayWriteV2")
 @ops.RegisterGradient("TensorArrayWriteV3")
-def _TensorArrayWriteGrad(op, flow):
+def _TensorArrayWriteGrad(op: ops.Operation, flow):
   """Gradient for TensorArrayWrite.
 
   Args:
@@ -130,6 +127,12 @@ def _TensorArrayWriteGrad(op, flow):
   index = op.inputs[1]
   dtype = op.get_attr("T")
   grad_source = _GetGradSource(flow)
+  flow_out = array_ops.identity(op.outputs[0], "flow_out")
+  # Avoid a race condition where the TensorArrayGrad op is executed before the
+  # final TensorArrayWrite by adding a control dependency on the output flow of
+  # the write to the input flow to the TensorArrayGrad.
+  with ops.control_dependencies([flow_out]):
+    flow = array_ops.identity(flow, "write_barrier")
   g = (tensor_array_ops.TensorArray(dtype=dtype, handle=handle, flow=flow,
                                     colocate_with_first_write_call=False)
        .grad(source=grad_source, flow=flow))
@@ -140,7 +143,7 @@ def _TensorArrayWriteGrad(op, flow):
 @ops.RegisterGradient("TensorArrayGather")
 @ops.RegisterGradient("TensorArrayGatherV2")
 @ops.RegisterGradient("TensorArrayGatherV3")
-def _TensorArrayGatherGrad(op, grad):
+def _TensorArrayGatherGrad(op: ops.Operation, grad):
   """Gradient for TensorArrayGather.
 
   Args:
@@ -171,7 +174,7 @@ def _TensorArrayGatherGrad(op, grad):
 @ops.RegisterGradient("TensorArrayScatter")
 @ops.RegisterGradient("TensorArrayScatterV2")
 @ops.RegisterGradient("TensorArrayScatterV3")
-def _TensorArrayScatterGrad(op, flow):
+def _TensorArrayScatterGrad(op: ops.Operation, flow):
   """Gradient for TensorArrayScatter.
 
   Args:
@@ -185,6 +188,12 @@ def _TensorArrayScatterGrad(op, flow):
   indices = op.inputs[1]
   dtype = op.get_attr("T")
   grad_source = _GetGradSource(flow)
+  flow_out = array_ops.identity(op.outputs[0], "flow_out")
+  # Avoid a race condition where the TensorArrayGrad op is executed before the
+  # TensorArrayScatter by adding a control dependency on the output flow of
+  # the scatter to the input flow to the TensorArrayGrad.
+  with ops.control_dependencies([flow_out]):
+    flow = array_ops.identity(flow, "write_barrier")
   g = (tensor_array_ops.TensorArray(dtype=dtype, handle=handle, flow=flow,
                                     colocate_with_first_write_call=False)
        .grad(source=grad_source, flow=flow))
@@ -195,7 +204,7 @@ def _TensorArrayScatterGrad(op, flow):
 @ops.RegisterGradient("TensorArrayConcat")
 @ops.RegisterGradient("TensorArrayConcatV2")
 @ops.RegisterGradient("TensorArrayConcatV3")
-def _TensorArrayConcatGrad(op, grad, unused_lengths_grad):
+def _TensorArrayConcatGrad(op: ops.Operation, grad, unused_lengths_grad):
   """Gradient for TensorArrayConcat.
 
   Args:
@@ -227,7 +236,7 @@ def _TensorArrayConcatGrad(op, grad, unused_lengths_grad):
 @ops.RegisterGradient("TensorArraySplit")
 @ops.RegisterGradient("TensorArraySplitV2")
 @ops.RegisterGradient("TensorArraySplitV3")
-def _TensorArraySplitGrad(op, flow):
+def _TensorArraySplitGrad(op: ops.Operation, flow):
   """Gradient for TensorArraySplit.
 
   Args:
@@ -240,6 +249,12 @@ def _TensorArraySplitGrad(op, flow):
   handle = op.inputs[0]
   dtype = op.get_attr("T")
   grad_source = _GetGradSource(flow)
+  flow_out = array_ops.identity(op.outputs[0], "flow_out")
+  # Avoid a race condition where the TensorArrayGrad op is executed before the
+  # TensorArraySplit by adding a control dependency on the output flow of
+  # the split to the input flow to the TensorArrayGrad.
+  with ops.control_dependencies([flow_out]):
+    flow = array_ops.identity(flow, "write_barrier")
   g = (tensor_array_ops.TensorArray(dtype=dtype, handle=handle, flow=flow,
                                     colocate_with_first_write_call=False)
        .grad(source=grad_source, flow=flow))

@@ -28,9 +28,11 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/kernels/ops_util.h"
+#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/public/session.h"
+#include "tensorflow/core/public/version.h"
 
 namespace tensorflow {
 
@@ -72,9 +74,9 @@ TEST_F(SparseToDenseTest, OneD_OneValue_int64_double) {
   MakeOp(1, DT_INT64, DT_DOUBLE);
 
   // sparse_indices
-  AddInputFromArray<int64>(TensorShape({3}), {1, 3, 4});
+  AddInputFromArray<int64_t>(TensorShape({3}), {1, 3, 4});
   // output_shape
-  AddInputFromArray<int64>(TensorShape({1}), {5});
+  AddInputFromArray<int64_t>(TensorShape({1}), {5});
   // sparse_values
   AddInputFromArray<double>(TensorShape({}), {2});
   // default_value
@@ -196,15 +198,11 @@ TEST_F(SparseToDenseTest, ThreeD_MultValues) {
 
 }  // namespace
 
-static int BM_Arg(int ndim, int n) { return (ndim * 1000000) + n; }
-static int NDIM_from_arg(int bm_arg) { return bm_arg / 1000000; }
-static int N_from_arg(int bm_arg) { return bm_arg % 1000000; }
+static void BM_SparseToDense(::testing::benchmark::State& state) {
+  const int NDIM = state.range(0);
+  const int N = state.range(1);
 
-static void BM_SparseToDense(int iters, const int bm_arg) {
-  const int NDIM = NDIM_from_arg(bm_arg);
-  const int N = N_from_arg(bm_arg);
   // TODO(zhifengc): Switch to use kernel_benchmark_testlib.h
-  tensorflow::testing::StopTiming();
 
   const int IndexDim = (NDIM == 1) ? 0 : 1;
 
@@ -215,7 +213,7 @@ static void BM_SparseToDense(int iters, const int bm_arg) {
 
   // Create a dense tensor with dims [1, ..., 1, N]
   Tensor output_shape(DT_INT32, TensorShape({NDIM}));
-  Tensor sparse_indices(DT_INT32, TensorShape({N, NDIM}));
+  Tensor sparse_indices(DT_INT64, TensorShape({N, NDIM}));
   Tensor sparse_values(DT_FLOAT, TensorShape({N}));
   Tensor default_value(DT_FLOAT, TensorShape({}));
   auto output_shape_t = output_shape.vec<int32>();
@@ -223,7 +221,7 @@ static void BM_SparseToDense(int iters, const int bm_arg) {
     output_shape_t(d) = (d == IndexDim) ? N : 3;
   }
 
-  auto sparse_indices_t = sparse_indices.matrix<int32>();
+  auto sparse_indices_t = sparse_indices.matrix<int64_t>();
   for (int n = 0; n < N; ++n) {
     for (int d = 0; d < NDIM; ++d)
       sparse_indices_t(n, d) = (d == IndexDim) ? n : 0;
@@ -250,43 +248,40 @@ static void BM_SparseToDense(int iters, const int bm_arg) {
   OpKernelContext::Params params;
   params.device = device.get();
   params.frame_iter = FrameAndIter(0, 0);
-  params.inputs = &inputs;
+  params.inputs = inputs;
   params.op_kernel = op.get();
   std::vector<AllocatorAttributes> attrs;
   test::SetOutputAttrs(&params, &attrs);
 
   std::unique_ptr<OpKernelContext> sparse_context(new OpKernelContext(&params));
   op->Compute(sparse_context.get());
-  tensorflow::testing::StartTiming();
-  for (int i = 0; i < iters; ++i) {
+  for (auto s : state) {
     delete sparse_context->release_output(0).tensor;
     op->Compute(sparse_context.get());
     TF_ASSERT_OK(sparse_context->status());
   }
-  tensorflow::testing::StopTiming();
 
   // processing input, mainly
-  int64 bytes_per_iter = static_cast<int64>((N + N * NDIM) * sizeof(float));
-
-  tensorflow::testing::BytesProcessed(bytes_per_iter * iters);
+  int64_t bytes_per_iter = static_cast<int64_t>((N + N * NDIM) * sizeof(float));
+  state.SetBytesProcessed(bytes_per_iter * state.iterations());
 }
 
 BENCHMARK(BM_SparseToDense)
-    ->Arg(BM_Arg(1, 10))
-    ->Arg(BM_Arg(1, 100))
-    ->Arg(BM_Arg(1, 1000))
-    ->Arg(BM_Arg(1, 10000))
-    ->Arg(BM_Arg(2, 10))
-    ->Arg(BM_Arg(2, 100))
-    ->Arg(BM_Arg(2, 1000))
-    ->Arg(BM_Arg(2, 10000))
-    ->Arg(BM_Arg(3, 10))
-    ->Arg(BM_Arg(3, 100))
-    ->Arg(BM_Arg(3, 1000))
-    ->Arg(BM_Arg(3, 10000))
-    ->Arg(BM_Arg(5, 10))
-    ->Arg(BM_Arg(5, 100))
-    ->Arg(BM_Arg(5, 1000))
-    ->Arg(BM_Arg(5, 10000));
+    ->ArgPair(1, 10)
+    ->ArgPair(1, 100)
+    ->ArgPair(1, 1000)
+    ->ArgPair(1, 10000)
+    ->ArgPair(2, 10)
+    ->ArgPair(2, 100)
+    ->ArgPair(2, 1000)
+    ->ArgPair(2, 10000)
+    ->ArgPair(3, 10)
+    ->ArgPair(3, 100)
+    ->ArgPair(3, 1000)
+    ->ArgPair(3, 10000)
+    ->ArgPair(5, 10)
+    ->ArgPair(5, 100)
+    ->ArgPair(5, 1000)
+    ->ArgPair(5, 10000);
 
 }  // namespace tensorflow

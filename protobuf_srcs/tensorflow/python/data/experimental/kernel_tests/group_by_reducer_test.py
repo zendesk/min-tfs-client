@@ -13,29 +13,27 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for `tf.data.experimental.group_by_reducer()`."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.python.data.experimental.ops import grouping
+from tensorflow.python.data.kernel_tests import checkpoint_test_base
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.framework import combinations
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.framework import tensor_shape
-from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import test
 
 
-@test_util.run_all_in_graph_and_eager_modes
-class GroupByReducerTest(test_base.DatasetTestBase):
+class GroupByReducerTest(test_base.DatasetTestBase, parameterized.TestCase):
 
+  @combinations.generate(test_base.default_test_combinations())
   def testSum(self):
     reducer = grouping.Reducer(
         init_func=lambda _: np.int64(0),
@@ -49,6 +47,7 @@ class GroupByReducerTest(test_base.DatasetTestBase):
           expected_shapes=tensor_shape.TensorShape([]),
           expected_output=[(i - 1) * i, i * i])
 
+  @combinations.generate(test_base.default_test_combinations())
   def testAverage(self):
 
     def reduce_fn(x, y):
@@ -68,6 +67,7 @@ class GroupByReducerTest(test_base.DatasetTestBase):
           expected_shapes=tensor_shape.TensorShape([]),
           expected_output=[i - 1, i])
 
+  @combinations.generate(test_base.default_test_combinations())
   def testConcat(self):
     components = np.array(list("abcdefghijklmnopqrst")).view(np.chararray)
     reducer = grouping.Reducer(
@@ -84,6 +84,7 @@ class GroupByReducerTest(test_base.DatasetTestBase):
           expected_shapes=tensor_shape.TensorShape([]),
           expected_output=[b"acegikmoqs"[:i], b"bdfhjlnprt"[:i]])
 
+  @combinations.generate(test_base.default_test_combinations())
   def testSparseSum(self):
     def _sparse(i):
       return sparse_tensor.SparseTensorValue(
@@ -103,6 +104,7 @@ class GroupByReducerTest(test_base.DatasetTestBase):
           expected_shapes=tensor_shape.TensorShape([]),
           expected_output=[(i - 1) * i, i * i])
 
+  @combinations.generate(test_base.default_test_combinations())
   def testChangingStateShape(self):
 
     def reduce_fn(x, _):
@@ -130,6 +132,7 @@ class GroupByReducerTest(test_base.DatasetTestBase):
       with self.assertRaises(errors.OutOfRangeError):
         self.evaluate(get_next())
 
+  @combinations.generate(test_base.default_test_combinations())
   def testTypeMismatch(self):
     reducer = grouping.Reducer(
         init_func=lambda x: constant_op.constant(1, dtype=dtypes.int32),
@@ -137,13 +140,12 @@ class GroupByReducerTest(test_base.DatasetTestBase):
         finalize_func=lambda x: x)
 
     dataset = dataset_ops.Dataset.range(10)
-    with self.assertRaisesRegexp(
-        TypeError,
-        "The element types for the new state must match the initial state."):
+    with self.assertRaises(TypeError):
       dataset.apply(
           grouping.group_by_reducer(lambda _: np.int64(0), reducer))
 
   # TODO(b/78665031): Remove once non-scalar keys are supported.
+  @combinations.generate(test_base.default_test_combinations())
   def testInvalidKeyShape(self):
     reducer = grouping.Reducer(
         init_func=lambda x: np.int64(0),
@@ -151,12 +153,12 @@ class GroupByReducerTest(test_base.DatasetTestBase):
         finalize_func=lambda x: x)
 
     dataset = dataset_ops.Dataset.range(10)
-    with self.assertRaisesRegexp(
-        ValueError, "`key_func` must return a single tf.int64 tensor."):
+    with self.assertRaises(ValueError):
       dataset.apply(
           grouping.group_by_reducer(lambda _: np.int64((0, 0)), reducer))
 
   # TODO(b/78665031): Remove once non-int64 keys are supported.
+  @combinations.generate(test_base.default_test_combinations())
   def testInvalidKeyType(self):
     reducer = grouping.Reducer(
         init_func=lambda x: np.int64(0),
@@ -164,11 +166,11 @@ class GroupByReducerTest(test_base.DatasetTestBase):
         finalize_func=lambda x: x)
 
     dataset = dataset_ops.Dataset.range(10)
-    with self.assertRaisesRegexp(
-        ValueError, "`key_func` must return a single tf.int64 tensor."):
+    with self.assertRaises(ValueError):
       dataset.apply(
           grouping.group_by_reducer(lambda _: "wrong", reducer))
 
+  @combinations.generate(test_base.default_test_combinations())
   def testTuple(self):
     def init_fn(_):
       return np.array([], dtype=np.int64), np.int64(0)
@@ -189,6 +191,29 @@ class GroupByReducerTest(test_base.DatasetTestBase):
     x, y = self.evaluate(get_next())
     self.assertAllEqual(x, np.asarray([x for x in range(10)]))
     self.assertEqual(y, 45)
+
+
+class GroupByReducerCheckpointTest(checkpoint_test_base.CheckpointTestBase,
+                                   parameterized.TestCase):
+
+  def _build_dataset(self, components):
+    reducer = grouping.Reducer(
+        init_func=lambda _: np.int64(0),
+        reduce_func=lambda x, y: x + y,
+        finalize_func=lambda x: x)
+
+    return dataset_ops.Dataset.from_tensor_slices(components).apply(
+        grouping.group_by_reducer(lambda x: x % 5, reducer))
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         checkpoint_test_base.default_test_combinations()))
+  def test(self, verify_fn):
+    components = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=np.int64)
+    verify_fn(
+        self,
+        lambda: self._build_dataset(components),
+        num_outputs=5)
 
 
 if __name__ == "__main__":

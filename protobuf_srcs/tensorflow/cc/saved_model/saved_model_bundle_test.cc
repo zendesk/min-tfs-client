@@ -13,9 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/cc/saved_model/loader.h"
-
 #include "tensorflow/cc/saved_model/constants.h"
+#include "tensorflow/cc/saved_model/loader.h"
+#include "tensorflow/cc/saved_model/metrics.h"
+#include "tensorflow/cc/saved_model/reader.h"
 #include "tensorflow/cc/saved_model/signature_constants.h"
 #include "tensorflow/cc/saved_model/tag_constants.h"
 #include "tensorflow/core/example/example.pb.h"
@@ -26,6 +27,7 @@ limitations under the License.
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/protobuf/meta_graph.pb.h"
 
 namespace tensorflow {
 namespace {
@@ -40,6 +42,18 @@ constexpr char kTestDataInitOpV2[] =
     "cc/saved_model/testdata/half_plus_two_v2/00000123";
 constexpr char kTestDataV2DebugInfo[] =
     "cc/saved_model/testdata/x_plus_y_v2_debuginfo";
+constexpr char kTestFuzzGeneratedNegativeShape[] =
+    "cc/saved_model/testdata/fuzz_generated/negative_shape";
+constexpr char kTestFuzzGeneratedConstWithNoValue[] =
+    "cc/saved_model/testdata/fuzz_generated/const_with_no_value";
+constexpr char kTestFuzzGeneratedBadNodeAttr[] =
+    "cc/saved_model/testdata/fuzz_generated/bad_node_attr";
+constexpr char kTestCyclicModule[] = "cc/saved_model/testdata/CyclicModule";
+constexpr char kTestSimpleV1Model[] = "cc/saved_model/testdata/SimpleV1Model";
+constexpr char kVarsAndArithmeticObjectGraph[] =
+    "cc/saved_model/testdata/VarsAndArithmeticObjectGraph";
+// This is the value in testdata/VarsAndArithmeticObjectGraph/fingerprint.pb
+constexpr char kV2ModuleSavedModelChecksum[] = "15788619162413586750";
 
 class LoaderTest : public ::testing::Test {
  protected:
@@ -127,6 +141,43 @@ TEST_F(LoaderTest, TagMatch) {
   CheckSavedModelBundle(export_dir, bundle);
 }
 
+TEST_F(LoaderTest, ReadMetaGraphFromSavedModel) {
+  SavedModelBundle bundle;
+  SessionOptions session_options;
+  RunOptions run_options;
+
+  const string export_dir =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataSharded);
+  TF_ASSERT_OK(LoadSavedModel(session_options, run_options, export_dir,
+                              {kSavedModelTagServe}, &bundle));
+  MetaGraphDef actual_metagraph;
+  TF_ASSERT_OK(ReadMetaGraphDefFromSavedModel(export_dir, {kSavedModelTagServe},
+                                              &actual_metagraph));
+  EXPECT_EQ(actual_metagraph.DebugString(),
+            bundle.meta_graph_def.DebugString());
+}
+
+TEST_F(LoaderTest, RestoreSession) {
+  SavedModelBundle bundle;
+  SessionOptions session_options;
+  RunOptions run_options;
+
+  const string export_dir =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataSharded);
+  TF_ASSERT_OK(LoadSavedModel(session_options, run_options, export_dir,
+                              {kSavedModelTagServe}, &bundle));
+
+  SavedModelBundle actual_bundle;
+  const std::unordered_set<std::string> tags = {kSavedModelTagServe};
+  TF_ASSERT_OK(ReadMetaGraphDefFromSavedModel(export_dir, tags,
+                                              &actual_bundle.meta_graph_def));
+  TF_ASSERT_OK(LoadMetagraphIntoSession(
+      session_options, actual_bundle.meta_graph_def, &actual_bundle.session));
+  TF_ASSERT_OK(RestoreSession(run_options, actual_bundle.meta_graph_def,
+                              export_dir, &actual_bundle.session));
+  CheckSavedModelBundle(export_dir, actual_bundle);
+}
+
 TEST_F(LoaderTest, NoTagMatch) {
   SavedModelBundle bundle;
   RunOptions run_options;
@@ -138,9 +189,9 @@ TEST_F(LoaderTest, NoTagMatch) {
                              {"missing-tag"}, &bundle);
   EXPECT_FALSE(st.ok());
   EXPECT_TRUE(absl::StrContains(
-      st.error_message(),
+      st.message(),
       "Could not find meta graph def matching supplied tags: { missing-tag }"))
-      << st.error_message();
+      << st.message();
 }
 
 TEST_F(LoaderTest, NoTagMatchMultiple) {
@@ -154,9 +205,8 @@ TEST_F(LoaderTest, NoTagMatchMultiple) {
                              {kSavedModelTagServe, "missing-tag"}, &bundle);
   EXPECT_FALSE(st.ok());
   EXPECT_TRUE(absl::StrContains(
-      st.error_message(),
-      "Could not find meta graph def matching supplied tags: "))
-      << st.error_message();
+      st.message(), "Could not find meta graph def matching supplied tags: "))
+      << st.message();
 }
 
 TEST_F(LoaderTest, SessionCreationFailure) {
@@ -173,8 +223,7 @@ TEST_F(LoaderTest, SessionCreationFailure) {
   Status st = LoadSavedModel(session_options, run_options, export_dir,
                              {kSavedModelTagServe}, &bundle);
   EXPECT_FALSE(st.ok());
-  EXPECT_TRUE(absl::StrContains(st.error_message(), kInvalidTarget))
-      << st.error_message();
+  EXPECT_TRUE(absl::StrContains(st.message(), kInvalidTarget)) << st.message();
 }
 
 TEST_F(LoaderTest, PbtxtFormat) {
@@ -254,6 +303,101 @@ TEST_F(LoaderTest, SavedModelV2DebugInfo) {
 
   // This SavedModel has debug info, so we should have loaded it.
   EXPECT_NE(bundle.debug_info.get(), nullptr);
+}
+
+TEST_F(LoaderTest, NegativeShapeDimension) {
+  SavedModelBundle bundle;
+  RunOptions run_options;
+  SessionOptions session_options;
+
+  const string export_dir = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                         kTestFuzzGeneratedNegativeShape);
+  Status st = LoadSavedModel(session_options, run_options, export_dir,
+                             {kSavedModelTagServe}, &bundle);
+  EXPECT_FALSE(st.ok());
+  EXPECT_NE(st.message().find("initializes from a tensor with -1 elements"),
+            std::string::npos);
+}
+
+TEST_F(LoaderTest, ConstNoValue) {
+  SavedModelBundle bundle;
+  RunOptions run_options;
+  SessionOptions session_options;
+
+  const string export_dir = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                         kTestFuzzGeneratedConstWithNoValue);
+  Status st = LoadSavedModel(session_options, run_options, export_dir,
+                             {kSavedModelTagServe}, &bundle);
+  EXPECT_FALSE(st.ok());
+  EXPECT_NE(st.message().find("constant tensor but no value has been provided"),
+            std::string::npos);
+}
+
+TEST_F(LoaderTest, BadNodeAttr) {
+  SavedModelBundle bundle;
+  RunOptions run_options;
+  SessionOptions session_options;
+
+  const string export_dir =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestFuzzGeneratedBadNodeAttr);
+  Status st = LoadSavedModel(session_options, run_options, export_dir,
+                             {kSavedModelTagServe}, &bundle);
+  EXPECT_FALSE(st.ok());
+  EXPECT_NE(st.message().find("constant tensor but no value has been provided"),
+            std::string::npos);
+}
+
+TEST_F(LoaderTest, UpdateMetricsV2) {
+  SavedModelBundle bundle;
+  SessionOptions session_options;
+  RunOptions run_options;
+  const string kCCLoadLabel = "cc_load";
+
+  const int read_count_v2 = metrics::SavedModelReadCount("2").value();
+  const int api_count = metrics::SavedModelReadApi(kCCLoadLabel).value();
+  const string export_dir =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestCyclicModule);
+  TF_ASSERT_OK(LoadSavedModel(session_options, run_options, export_dir,
+                              {kSavedModelTagServe}, &bundle));
+
+  EXPECT_EQ(metrics::SavedModelReadCount("2").value(), read_count_v2 + 1);
+  EXPECT_EQ(metrics::SavedModelReadApi(kCCLoadLabel).value(), api_count + 1);
+}
+
+TEST_F(LoaderTest, UpdateMetricsV1) {
+  SavedModelBundle bundle;
+  SessionOptions session_options;
+  RunOptions run_options;
+  const string kCCLoadLabel = "cc_load";
+
+  const int read_count_v1 = metrics::SavedModelReadCount("1").value();
+  const int read_count_v2 = metrics::SavedModelReadCount("2").value();
+
+  const int api_count = metrics::SavedModelReadApi(kCCLoadLabel).value();
+  const string export_dir =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestSimpleV1Model);
+  TF_ASSERT_OK(LoadSavedModel(session_options, run_options, export_dir,
+                              {kSavedModelTagServe}, &bundle));
+
+  EXPECT_EQ(metrics::SavedModelReadCount("1").value(), read_count_v1 + 1);
+  EXPECT_EQ(metrics::SavedModelReadCount("2").value(), read_count_v2);
+  EXPECT_EQ(metrics::SavedModelReadApi(kCCLoadLabel).value(), api_count + 1);
+}
+
+TEST_F(LoaderTest, UpdateFingerprintMetrics) {
+  SavedModelBundle bundle;
+  SessionOptions session_options;
+  RunOptions run_options;
+
+  const string export_dir =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kVarsAndArithmeticObjectGraph);
+  TF_ASSERT_OK(LoadSavedModel(session_options, run_options, export_dir,
+                              {kSavedModelTagServe}, &bundle));
+
+  EXPECT_EQ(metrics::SavedModelReadPath().value(), export_dir);
+
+  EXPECT_EQ(metrics::SavedModelReadFingerprint().value(),
+            kV2ModuleSavedModelChecksum);
 }
 
 }  // namespace

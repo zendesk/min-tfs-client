@@ -13,35 +13,40 @@
 # limitations under the License.
 # ==============================================================================
 """Contains LossScale classes."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import abc
 
-import six
-
-from tensorflow.python.distribute import distribution_strategy_context
+from tensorflow.python.distribute import distribute_lib
 from tensorflow.python.distribute import reduce_util
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import variable_v1
 from tensorflow.python.ops import variables
-from tensorflow.python.training.tracking import base as trackable
-from tensorflow.python.ops import variable_scope
+from tensorflow.python.trackable import base as trackable
 from tensorflow.python.util import deprecation
 from tensorflow.python.util import nest
 from tensorflow.python.util.tf_export import tf_export
 
 
-@six.add_metaclass(abc.ABCMeta)
-@deprecation.deprecated_endpoints('train.experimental.LossScale')
-@tf_export('mixed_precision.experimental.LossScale',
-           'train.experimental.LossScale')
-class LossScale(trackable.Trackable):
-  """Loss scale base class.
+@deprecation.deprecated_endpoints('mixed_precision.experimental.LossScale',
+                                  'train.experimental.LossScale')
+@tf_export(
+    v1=[
+        'mixed_precision.LossScale',
+        'mixed_precision.experimental.LossScale',
+        'train.experimental.LossScale'
+    ])
+class LossScale(trackable.Trackable, metaclass=abc.ABCMeta):
+  """Base class for all TF1 loss scales.
+
+  This is an abstract base class, so you cannot instantiate it directly.
+  Instead, use one of its concrete subclasses:
+    * `tf.compat.v1.mixed_precision.DynamicLossScale`
+    * `tf.compat.v1.mixed_precision.FixedLossScale`
 
   Loss scaling is a process that multiplies the loss by a multiplier called the
   loss scale, and divides each gradient by the same multiplier. The pseudocode
@@ -63,6 +68,10 @@ class LossScale(trackable.Trackable):
   class returns the loss scale as a scalar float32 tensor, while method
   `update()` updates the loss scale depending on the values of the gradients.
   Optimizers use instances of this class to scale loss and gradients.
+
+  In most functions that accept a LossScale, you can also pass an int (such as
+  8) to create a `FixedLossScale` or the string `"dynamic"` to create a dynamic
+  loss scale.
   """
 
   def __init__(self):
@@ -125,7 +134,7 @@ class LossScale(trackable.Trackable):
     Raises:
       RuntimeError: If a weight with `name` has already been added.
     """
-    variable = variable_scope.variable(
+    variable = variable_v1.VariableV1(
         initial_value=initial_value,
         name=name,
         dtype=dtype,
@@ -148,23 +157,27 @@ class LossScale(trackable.Trackable):
     self._handle_deferred_dependencies(name=name, trackable=variable)
     return variable
 
-  @property
-  def _checkpoint_dependencies(self):
+  def _trackable_children(self,
+                          save_type=trackable.SaveType.CHECKPOINT,
+                          **kwargs):
     """From Trackable. Gather graph-specific weights to save."""
     if context.executing_eagerly():
       graph_key = None
     else:
       graph = ops.get_default_graph()
       graph_key = graph._graph_key  # pylint: disable=protected-access
-    weights = []
+    weights = {}
     for (name, g), v in sorted(self._weights.items(), key=lambda i: i[0][0]):
       if g == graph_key:
-        weights.append(trackable.TrackableReference(name=name, ref=v))
-    return super(LossScale, self)._checkpoint_dependencies + weights
+        weights[name] = v
+    weights.update(
+        super(LossScale, self)._trackable_children(save_type, **kwargs))
+    return weights
 
-  def _lookup_dependency(self, name):
+  def _lookup_dependency(self, name, cached_dependencies=None):
     """From Trackable. Find a weight in the current graph."""
-    unconditional = super(LossScale, self)._lookup_dependency(name)
+    unconditional = super(LossScale, self)._lookup_dependency(
+        name, cached_dependencies)
     if unconditional is not None:
       return unconditional
     if context.executing_eagerly():
@@ -185,13 +198,14 @@ class LossScale(trackable.Trackable):
     return cls(**config)
 
 
-def get_loss_scale_weights(loss_scale):
-  return loss_scale._weights.values()  # pylint: disable=protected-access
-
-
-@deprecation.deprecated_endpoints('train.experimental.FixedLossScale')
-@tf_export('mixed_precision.experimental.FixedLossScale',
-           'train.experimental.FixedLossScale')
+@deprecation.deprecated_endpoints('mixed_precision.experimental.FixedLossScale',
+                                  'train.experimental.FixedLossScale')
+@tf_export(
+    v1=[
+        'mixed_precision.FixedLossScale',
+        'mixed_precision.experimental.FixedLossScale',
+        'train.experimental.FixedLossScale'
+    ])
 class FixedLossScale(LossScale):
   """Loss scale with a fixed value.
 
@@ -199,6 +213,10 @@ class FixedLossScale(LossScale):
   A given instance of this class always returns the same number when called.
   """
 
+  @deprecation.deprecated(
+      None, 'Use tf.keras.mixed_precision.LossScaleOptimizer instead. '
+            'LossScaleOptimizer now has all the functionality of '
+            'FixedLossScale')
   def __init__(self, loss_scale_value):
     """Creates the fixed loss scale.
 
@@ -213,7 +231,7 @@ class FixedLossScale(LossScale):
       ValueError: If loss_scale_value is less than 1.
     """
     super(FixedLossScale, self).__init__()
-    if not isinstance(loss_scale_value, six.integer_types + (float,)):
+    if not isinstance(loss_scale_value, (int, float)):
       raise ValueError('loss_scale_value must be a Python int or float.')
     if loss_scale_value < 1:
       raise ValueError('loss_scale_value must be at least 1.')
@@ -241,8 +259,13 @@ class FixedLossScale(LossScale):
 
 def _is_all_finite(grads):
   """Returns a scalar boolean tensor indicating if all gradients are finite."""
+  def raw_values(g):
+    return g.values if isinstance(g, indexed_slices.IndexedSlices) else g
+
   is_finite_per_grad = [
-      math_ops.reduce_all(math_ops.is_finite(g)) for g in grads if g is not None
+      math_ops.reduce_all(math_ops.is_finite(raw_values(g)))
+      for g in grads
+      if g is not None
   ]
   return math_ops.reduce_all(is_finite_per_grad)
 
@@ -266,14 +289,20 @@ def _op_in_graph_mode(tensor):
 
 def _assign_if_finite(var, value):
   """Assigns a value to a variable if the value is finite."""
-  return control_flow_ops.cond(
+  return cond.cond(
       math_ops.is_finite(value), lambda: _op_in_graph_mode(var.assign(value)),
       control_flow_ops.no_op)
 
 
-@deprecation.deprecated_endpoints('train.experimental.DynamicLossScale')
-@tf_export('mixed_precision.experimental.DynamicLossScale',
-           'train.experimental.DynamicLossScale')
+@deprecation.deprecated_endpoints(
+    'mixed_precision.experimental.DynamicLossScale',
+    'train.experimental.DynamicLossScale')
+@tf_export(
+    v1=[
+        'mixed_precision.DynamicLossScale',
+        'mixed_precision.experimental.DynamicLossScale',
+        'train.experimental.DynamicLossScale'
+    ])
 class DynamicLossScale(LossScale):
   """Loss scale that dynamically adjusts itself.
 
@@ -290,6 +319,10 @@ class DynamicLossScale(LossScale):
   overflowing.
   """
 
+  @deprecation.deprecated(
+      None, 'Use tf.keras.mixed_precision.LossScaleOptimizer instead. '
+            'LossScaleOptimizer now has all the functionality of '
+            'DynamicLossScale')
   def __init__(self,
                initial_loss_scale=2 ** 15,  # See docstring for why this is big.
                increment_period=2000,
@@ -340,8 +373,8 @@ class DynamicLossScale(LossScale):
   def update(self, grads):
     """Updates loss scale based on if gradients are finite in current step."""
     grads = nest.flatten(grads)
-    if distribution_strategy_context.has_strategy():
-      distribution = distribution_strategy_context.get_cross_replica_context()
+    if distribute_lib.has_strategy():
+      distribution = distribute_lib.get_cross_replica_context()
 
       def get_is_finite(grads):
         is_finite = _is_all_finite(grads)
@@ -367,7 +400,7 @@ class DynamicLossScale(LossScale):
             _assign_if_finite(self._current_loss_scale, new_loss_scale),
             self._num_good_steps.assign(0))
 
-      return control_flow_ops.cond(
+      return cond.cond(
           self._num_good_steps + 1 >= self._increment_period,
           incr_loss_scale, lambda: _op_in_graph_mode(
               self._num_good_steps.assign_add(1)))
@@ -381,8 +414,8 @@ class DynamicLossScale(LossScale):
           self._num_good_steps.assign(0),
           self._current_loss_scale.assign(new_loss_scale))
 
-    update_op = control_flow_ops.cond(is_finite, update_if_finite_grads,
-                                      update_if_not_finite_grads)
+    update_op = cond.cond(is_finite, update_if_finite_grads,
+                          update_if_not_finite_grads)
     should_apply_gradients = is_finite
     return update_op, should_apply_gradients
 
@@ -407,7 +440,7 @@ class DynamicLossScale(LossScale):
 
 def get(identifier):
   """Get a loss scale object."""
-  if isinstance(identifier, six.integer_types + (float,)):
+  if isinstance(identifier, (int, float)):
     return FixedLossScale(identifier)
   if identifier == 'dynamic':
     return DynamicLossScale()

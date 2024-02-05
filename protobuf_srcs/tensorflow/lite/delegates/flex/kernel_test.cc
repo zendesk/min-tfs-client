@@ -14,36 +14,38 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/delegates/flex/kernel.h"
 
+#include <functional>
+#include <initializer_list>
+#include <memory>
+#include <utility>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "tensorflow/lite/delegates/flex/delegate.h"
 #include "tensorflow/lite/delegates/flex/delegate_data.h"
 #include "tensorflow/lite/delegates/flex/test_util.h"
+#include "tensorflow/lite/kernels/kernel_util.h"
 
 namespace tflite {
 namespace flex {
-namespace {
+namespace testing {
 
 using ::testing::ContainsRegex;
 using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
+using ::testing::Pair;
+using ::testing::UnorderedElementsAre;
 
-TfLiteStatus GenericPrepare(TfLiteContext* context, TfLiteDelegate* delegate,
-                            const std::vector<int>& supported_nodes) {
-  TfLiteIntArray* size_and_nodes =
-      ConvertVectorToTfLiteIntArray(supported_nodes);
-  TF_LITE_ENSURE_STATUS(context->ReplaceNodeSubsetsWithDelegateKernels(
-      context, flex::GetKernel(), size_and_nodes, delegate));
-  TfLiteIntArrayFree(size_and_nodes);
-  return kTfLiteOk;
-}
-
-// There is no easy way to pass a parameter into the TfLiteDelegate's
-// 'prepare' function, so we keep a global map for testing purpused.
-// To avoid collisions use: GetPrepareFunction<__LINE__>().
-std::map<int, std::vector<int>>* GetGlobalOpLists() {
-  static auto* op_list = new std::map<int, std::vector<int>>;
-  return op_list;
-}
+// A testing flex delegate that supports every node regardless whether it's
+// actually supported or not. It's only for testing certain scenarios.
+class TestFlexDelegate : public FlexDelegate {
+ protected:
+  bool IsNodeSupportedByDelegate(const TfLiteRegistration* registration,
+                                 const TfLiteNode* node,
+                                 TfLiteContext* context) const override {
+    return true;
+  }
+};
 
 class KernelTest : public testing::FlexModelTest {
  public:
@@ -51,51 +53,25 @@ class KernelTest : public testing::FlexModelTest {
   static constexpr int kTwos = 2;  // This is the index of a tensor of 2's.
   static constexpr int kMaxTensors = 30;
 
-  static void SetUpTestSuite() { GetGlobalOpLists()->clear(); }
-
   KernelTest() {
-    CHECK(delegate_data_.Prepare(tensorflow::SessionOptions{}).ok());
-    interpreter_.reset(new Interpreter(&error_reporter_));
+    interpreter_ = std::make_unique<Interpreter>(&error_reporter_);
   }
 
-  typedef TfLiteStatus (*PrepareFunction)(TfLiteContext* context,
-                                          TfLiteDelegate* delegate);
-
-  template <int KEY>
-  PrepareFunction GetPrepareFunction() {
-    GetGlobalOpLists()->insert({KEY, tf_ops_});
-    return [](TfLiteContext* context, TfLiteDelegate* delegate) {
-      return GenericPrepare(context, delegate, GetGlobalOpLists()->at(KEY));
-    };
+  void ApplyFlexDelegate(std::unique_ptr<FlexDelegate> delegate = nullptr) {
+    auto flex_delegate = FlexDelegate::Create(std::move(delegate));
+    delegate_data_ =
+        reinterpret_cast<FlexDelegate*>(flex_delegate->data_)->mutable_data();
+    CHECK(delegate_data_->Prepare(tensorflow::SessionOptions{}).ok());
+    CHECK(interpreter_->ModifyGraphWithDelegate(std::move(flex_delegate)) ==
+          kTfLiteOk);
   }
 
-  template <typename T>
-  void ConfigureDelegate(T prepare_function) {
-    delegate_.data_ = &delegate_data_;
-    delegate_.flags = kTfLiteDelegateFlagsAllowDynamicTensors;
-    delegate_.FreeBufferHandle = nullptr;
-    delegate_.Prepare = prepare_function;
-    delegate_.CopyFromBufferHandle = [](TfLiteContext* context,
-                                        TfLiteDelegate* delegate,
-                                        TfLiteBufferHandle buffer_handle,
-                                        TfLiteTensor* output) {
-      auto* delegate_data = reinterpret_cast<DelegateData*>(delegate->data_);
-      auto* buffer_map = delegate_data->GetBufferMap(context);
-      if (!buffer_map->HasTensor(buffer_handle)) {
-        context->ReportError(context, "Tensor '%d' not found", buffer_handle);
-        return kTfLiteError;
-      }
-      tensorflow::StringPiece values =
-          buffer_map->GetTensor(buffer_handle).tensor_data();
-      memcpy(output->data.raw, values.data(), values.size());
-      return kTfLiteOk;
-    };
-    CHECK(interpreter_->ModifyGraphWithDelegate(&delegate_) == kTfLiteOk);
+  const std::map<int, int>& GetTensorReleaseMap(DelegateKernel* kernel) {
+    return kernel->GetTensorReleaseMap();
   }
 
- private:
-  DelegateData delegate_data_;
-  TfLiteDelegate delegate_;
+ protected:
+  tflite::flex::DelegateData* delegate_data_;
 };
 
 TEST_F(KernelTest, FullGraph) {
@@ -108,10 +84,7 @@ TEST_F(KernelTest, FullGraph) {
   AddTfOp(testing::kAdd, {2, 5}, {7});
   AddTfOp(testing::kMul, {6, 7}, {8});
 
-  // Apply Delegate.
-  ConfigureDelegate([](TfLiteContext* context, TfLiteDelegate* delegate) {
-    return GenericPrepare(context, delegate, {0, 1, 2, 3, 4});
-  });
+  ApplyFlexDelegate();
 
   // Define inputs.
   SetShape(0, {2, 2, 1});
@@ -136,13 +109,98 @@ TEST_F(KernelTest, FullGraph) {
   ASSERT_THAT(GetValues(8), ElementsAre(24.0f, 32.0f, 48.0f));
 }
 
+TEST_F(KernelTest, ValidateTensorReleaseMap) {
+  // Define the graph.
+  //        0           3
+  //        |           |
+  //      Unpack_0    Unpack_1
+  //       /  \        / \
+  //      1    2      4   5
+  //      |____|_______|__|
+  //         | |__________|
+  //         |      |
+  //        Add_2  Add_3
+  //         |      |
+  //         6      7
+  //         \______/
+  //             |
+  //            Mul_4
+  //             |
+  //             8
+  AddTensors(9, {0, 3}, {8}, kTfLiteFloat32, {3});
+  AddTfOp(testing::kUnpack, {0}, {1, 2});
+  AddTfOp(testing::kUnpack, {3}, {4, 5});
+  AddTfOp(testing::kAdd, {1, 4}, {6});
+  AddTfOp(testing::kAdd, {2, 5}, {7});
+  AddTfOp(testing::kMul, {6, 7}, {8});
+
+  ApplyFlexDelegate();
+
+  const int node_size = interpreter_->primary_subgraph().nodes_size();
+  const std::pair<TfLiteNode, TfLiteRegistration>* node_and_reg =
+      interpreter_->primary_subgraph().node_and_registration(node_size - 1);
+
+  DelegateKernel* delegate_kernel =
+      reinterpret_cast<DelegateKernel*>(node_and_reg->first.user_data);
+  const auto& tensor_release_map = GetTensorReleaseMap(delegate_kernel);
+  // Validate the tensor release mapping.
+  EXPECT_THAT(
+      tensor_release_map,
+      UnorderedElementsAre(Pair(0, 0), Pair(1, 2), Pair(2, 3), Pair(3, 1),
+                           Pair(4, 2), Pair(5, 3), Pair(6, 4), Pair(7, 4)));
+}
+
+TEST_F(KernelTest, PersistEagerTensor) {
+  // Define the graph.
+  //        0           3
+  //        |           |
+  //      Unpack_0    Unpack_1
+  //       /  \        / \
+  //      1    2      4   5
+  //      |____|_______|__|
+  //         | |__________|
+  //         |      |
+  //        Add_2  Add_3
+  //         |      |
+  //         6      7
+  //         | \   /
+  //         | TFL_MUL
+  //         |    |
+  //         |    8
+  //         |____|
+  //             AddN
+  //              |
+  //              9
+  AddTensors(10, {0, 3}, {9}, kTfLiteFloat32, {3});
+
+  AddTfOp(testing::kUnpack, {0}, {1, 2});
+  AddTfOp(testing::kUnpack, {3}, {4, 5});
+  AddTfOp(testing::kAdd, {1, 4}, {6});
+  AddTfOp(testing::kAdd, {2, 5}, {7});
+  AddTfLiteMulOp({6, 7}, {8});
+  AddTfOp(testing::kAdd, {6, 8}, {9});
+
+  ApplyFlexDelegate();
+
+  // Define inputs.
+  SetShape(0, {2, 2, 1});
+  SetValues(0, {1.1f, 2.2f, 3.3f, 4.4f});
+  SetShape(3, {2, 2, 1});
+  SetValues(3, {1.1f, 2.2f, 3.3f, 4.4f});
+
+  ASSERT_TRUE(Invoke());
+  // Validates that tensor 6 should be preserved in the buffer map.
+  auto* buffer_map =
+      delegate_data_->GetBufferMap(interpreter_->primary_subgraph().context());
+  EXPECT_TRUE(buffer_map->HasTensor(6));
+  EXPECT_FALSE(buffer_map->HasTensor(7));
+}
+
 TEST_F(KernelTest, BadTensorFlowOp) {
   AddTensors(2, {0}, {1}, kTfLiteFloat32, {3});
   AddTfOp(testing::kNonExistent, {0}, {1});
 
-  ConfigureDelegate([](TfLiteContext* context, TfLiteDelegate* delegate) {
-    return GenericPrepare(context, delegate, {0});
-  });
+  ApplyFlexDelegate(std::unique_ptr<FlexDelegate>(new TestFlexDelegate()));
 
   ASSERT_NE(interpreter_->AllocateTensors(), kTfLiteOk);
   ASSERT_THAT(error_reporter().error_messages(),
@@ -153,9 +211,7 @@ TEST_F(KernelTest, BadNumberOfOutputs) {
   AddTensors(3, {0}, {1, 2}, kTfLiteFloat32, {3});
   AddTfOp(testing::kIdentity, {0}, {1, 2});
 
-  ConfigureDelegate([](TfLiteContext* context, TfLiteDelegate* delegate) {
-    return GenericPrepare(context, delegate, {0});
-  });
+  ApplyFlexDelegate();
 
   SetShape(0, {2, 2, 1});
   SetValues(0, {1.1f, 2.2f, 3.3f, 4.4f});
@@ -171,16 +227,11 @@ TEST_F(KernelTest, IncompatibleNodeDef) {
   // Cast is a TF op, but we don't add the proper nodedef to it in AddTfOp.
   AddTfOp(testing::kIncompatibleNodeDef, {0}, {1});
 
-  ConfigureDelegate([](TfLiteContext* context, TfLiteDelegate* delegate) {
-    return GenericPrepare(context, delegate, {0});
-  });
+  ApplyFlexDelegate();
 
-  SetShape(0, {2, 2, 1});
-  SetValues(0, {1.1f, 2.2f, 3.3f, 4.4f});
-
-  ASSERT_FALSE(Invoke());
+  ASSERT_NE(interpreter_->AllocateTensors(), kTfLiteOk);
   ASSERT_THAT(error_reporter().error_messages(),
-              ContainsRegex("while executing 'Cast' via Eager"));
+              ContainsRegex("No attr named 'SrcT' in NodeDef"));
 }
 
 TEST_F(KernelTest, WrongSetOfNodes) {
@@ -188,14 +239,14 @@ TEST_F(KernelTest, WrongSetOfNodes) {
   AddTfOp(testing::kUnpack, {0}, {1, 2});
   AddTfLiteMulOp({1, 2}, {3});
 
-  // Specify that testing::kMul (#1) is supported when it actually isn't.
-  ConfigureDelegate([](TfLiteContext* context, TfLiteDelegate* delegate) {
-    return GenericPrepare(context, delegate, {0, 1});
-  });
+  // Specify that testing::kMul (#1) is supported when it actually isn't so that
+  // we choose to use the TestFlexDelegate that supports every node regardless
+  // whether it's actually supported or not.
+  ApplyFlexDelegate(std::unique_ptr<FlexDelegate>(new TestFlexDelegate()));
 
   ASSERT_NE(interpreter_->AllocateTensors(), kTfLiteOk);
   ASSERT_THAT(error_reporter().error_messages(),
-              ContainsRegex("Invalid NodeDef in Flex op"));
+              ContainsRegex("Cannot convert empty data into a valid NodeDef"));
 }
 
 TEST_F(KernelTest, MixedGraph) {
@@ -207,9 +258,7 @@ TEST_F(KernelTest, MixedGraph) {
   AddTfOp(testing::kAdd, {2, 5}, {7});
   AddTfLiteMulOp({6, 7}, {8});
 
-  ConfigureDelegate([](TfLiteContext* context, TfLiteDelegate* delegate) {
-    return GenericPrepare(context, delegate, {0, 1, 2, 3});
-  });
+  ApplyFlexDelegate();
 
   SetShape(0, {2, 2, 1});
   SetValues(0, {1.1f, 2.2f, 3.3f, 4.4f});
@@ -251,14 +300,7 @@ TEST_F(KernelTest, SplitGraph) {
   // The two branches added together:
   AddTfOp(testing::kAdd, {9, 16}, {17});  // => 16
 
-  ConfigureDelegate([](TfLiteContext* context, TfLiteDelegate* delegate) {
-    // All ops but #3 are TF ops, handled by the delegate. However, because #4
-    // depends on the non-TF op, two subgraphs are necessary:
-    //    TF subgraph 1: 0, 1, 2, 6, 7, 8, 9
-    //    TF Lite Op: 3
-    //    TF subgraph 2: 4, 5, 10
-    return GenericPrepare(context, delegate, {0, 1, 2, 4, 5, 6, 7, 8, 9, 10});
-  });
+  ApplyFlexDelegate();
 
   SetShape(0, {2, 2, 2, 1});
   SetValues(0, a);
@@ -291,9 +333,8 @@ class MultipleSubgraphsTest : public KernelTest {
  public:
   static constexpr int kInput = 0;
 
-  void PrepareInterpreter(PrepareFunction prepare,
-                          const std::vector<float>& input) {
-    ConfigureDelegate(prepare);
+  void PrepareInterpreter(const std::vector<float>& input) {
+    ApplyFlexDelegate();
 
     SetShape(kOnes, {3});
     SetValues(kOnes, {1.0f, 1.0f, 1.0f});
@@ -336,7 +377,7 @@ TEST_F(MultipleSubgraphsTest, ForwardabilityIsLocal) {
   AddTfLiteMulOp({10, 7}, {12});
 
   auto input = {3.0f, 4.0f, 5.0f};
-  PrepareInterpreter(GetPrepareFunction<__LINE__>(), input);
+  PrepareInterpreter(input);
 
   ASSERT_TRUE(Invoke());
   ASSERT_THAT(GetValues(12), ElementsAreArray(Apply(input, [](float in) {
@@ -371,7 +412,7 @@ TEST_F(MultipleSubgraphsTest, DoNotRemoveInputTensors) {
   AddTfLiteMulOp({10, 7}, {12});
 
   auto input = {3.0f, 4.0f, 5.0f};
-  PrepareInterpreter(GetPrepareFunction<__LINE__>(), input);
+  PrepareInterpreter(input);
 
   ASSERT_TRUE(Invoke());
   ASSERT_THAT(GetValues(12), ElementsAreArray(Apply(input, [](float in) {
@@ -405,7 +446,7 @@ TEST_F(MultipleSubgraphsTest, DoNotForwardInputTensors) {
   AddTfLiteMulOp({10, 7}, {12});
 
   auto input = {3.0f, 4.0f, 5.0f};
-  PrepareInterpreter(GetPrepareFunction<__LINE__>(), input);
+  PrepareInterpreter(input);
 
   ASSERT_TRUE(Invoke());
   ASSERT_THAT(GetValues(12), ElementsAreArray(Apply(input, [](float in) {
@@ -413,12 +454,61 @@ TEST_F(MultipleSubgraphsTest, DoNotForwardInputTensors) {
               })));
 }
 
-}  // namespace
+tensorflow::OpDef MakeOpDef(int num_inputs, int num_outputs) {
+  tensorflow::OpRegistrationData op_reg_data;
+  tensorflow::OpDefBuilder b("dummy");
+  for (int i = 0; i < num_inputs; ++i) {
+    b.Input(tensorflow::strings::StrCat("i", i, ": float"));
+  }
+  for (int i = 0; i < num_outputs; ++i) {
+    b.Output(tensorflow::strings::StrCat("o", i, ": float"));
+  }
+  CHECK(b.Attr("foo:string").Finalize(&op_reg_data).ok());
+  return op_reg_data.op_def;
+}
+
+tensorflow::PartialTensorShape S(std::initializer_list<int64_t> dims) {
+  return tensorflow::PartialTensorShape(dims);
+}
+
+TEST(ValidateOutputTensorShapeConsistencyTest, ShapeHandleDebugString) {
+  // Setup test to contain an input tensor list of size 3.
+  tensorflow::OpDef op_def = MakeOpDef(4, 1);
+  tensorflow::NodeDef def;
+  tensorflow::shape_inference::InferenceContext c(
+      0, def, op_def, {S({1}), S({2, 3}), S({4, 5, 6}), {}}, {}, {}, {});
+  c.SetInput(3, c.UnknownShape());
+
+  std::vector<tensorflow::shape_inference::ShapeHandle> shapes;
+  EXPECT_EQ("[1]", c.DebugString(c.input(0)));
+  EXPECT_EQ("[2,3]", c.DebugString(c.input(1)));
+  EXPECT_EQ("[4,5,6]", c.DebugString(c.input(2)));
+  // c.DebugString() returns "?" for the unknown shape which is different with
+  // "-1" of TFLite. But this is intended behavior since we should use dynamic
+  // tensor for unknown shape so the shape comparison must fail.
+  EXPECT_EQ("?", c.DebugString(c.input(3)));
+}
+
+TEST(ValidateOutputTensorShapeConsistencyTest, GetShapeDebugString) {
+  TfLiteIntArray* dims1 = TfLiteIntArrayCreate(1);
+  dims1->data[0] = 1;
+  EXPECT_EQ("[1]", GetShapeDebugString(dims1));
+  TfLiteIntArrayFree(dims1);
+
+  TfLiteIntArray* dims2 = TfLiteIntArrayCreate(2);
+  dims2->data[0] = 2;
+  dims2->data[1] = 3;
+  EXPECT_EQ("[2,3]", GetShapeDebugString(dims2));
+  TfLiteIntArrayFree(dims2);
+
+  TfLiteIntArray* dims3 = TfLiteIntArrayCreate(3);
+  dims3->data[0] = 4;
+  dims3->data[1] = 5;
+  dims3->data[2] = 6;
+  EXPECT_EQ("[4,5,6]", GetShapeDebugString(dims3));
+  TfLiteIntArrayFree(dims3);
+}
+
+}  // namespace testing
 }  // namespace flex
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::tflite::LogToStderr();
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

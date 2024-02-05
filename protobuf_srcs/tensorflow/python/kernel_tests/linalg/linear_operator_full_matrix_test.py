@@ -13,12 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
+from tensorflow.python.framework import config
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import test_util
@@ -117,6 +114,13 @@ class SquareLinearOperatorFullMatrixTest(
     operator = linalg.LinearOperatorFullMatrix(matrix)
     self.check_tape_safe(operator)
 
+  def test_convert_variables_to_tensors(self):
+    matrix = variables_module.Variable([[3.]])
+    operator = linalg.LinearOperatorFullMatrix(matrix)
+    with self.cached_session() as sess:
+      sess.run([matrix.initializer])
+      self.check_convert_variables_to_tensors(operator)
+
 
 @test_util.run_all_in_graph_and_eager_modes
 class SquareLinearOperatorFullMatrixSymmetricPositiveDefiniteTest(
@@ -130,7 +134,7 @@ class SquareLinearOperatorFullMatrixSymmetricPositiveDefiniteTest(
   def setUp(self):
     # Increase from 1e-6 to 1e-5.  This reduction in tolerance happens,
     # presumably, because we are taking a different code path in the operator
-    # and the matrix.  The operator uses a Choleksy, the matrix uses standard
+    # and the matrix.  The operator uses a Cholesky, the matrix uses standard
     # solve.
     self._atol[dtypes.float32] = 1e-5
     self._rtol[dtypes.float32] = 1e-5
@@ -222,7 +226,10 @@ class NonSquareLinearOperatorFullMatrixTest(
     linear_operator_test_util.NonSquareLinearOperatorDerivedClassTest):
   """Most tests done in the base class LinearOperatorDerivedClassTest."""
 
-  def operator_and_matrix(self, build_info, dtype, use_placeholder):
+  def operator_and_matrix(
+      self, build_info, dtype, use_placeholder,
+      ensure_self_adjoint_and_pd=False):
+    del ensure_self_adjoint_and_pd
     shape = list(build_info.shape)
     matrix = linear_operator_test_util.random_normal(shape, dtype=dtype)
 
@@ -246,7 +253,7 @@ class NonSquareLinearOperatorFullMatrixTest(
     self.assertFalse(operator.is_square)
 
   def test_matrix_must_have_at_least_two_dims_or_raises(self):
-    with self.assertRaisesRegexp(ValueError, "at least 2 dimensions"):
+    with self.assertRaisesRegex(ValueError, "at least 2 dimensions"):
       linalg.LinearOperatorFullMatrix([1.])
 
   def test_tape_safe(self):
@@ -256,6 +263,7 @@ class NonSquareLinearOperatorFullMatrixTest(
 
 
 if __name__ == "__main__":
+  config.enable_tensor_float_32_execution(False)
   linear_operator_test_util.add_tests(SquareLinearOperatorFullMatrixTest)
   linear_operator_test_util.add_tests(NonSquareLinearOperatorFullMatrixTest)
   linear_operator_test_util.add_tests(

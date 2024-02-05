@@ -14,12 +14,11 @@
 # ==============================================================================
 """Class to represent a device."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.util.tf_export import tf_export
+from tensorflow.python import pywrap_tfe
 
+# EPU represents for TPU embedding for now. Subject to change in future.
+_VALID_DEVICE_TYPES = frozenset({"CPU", "GPU", "TPU", "CUSTOM", "EPU"})
 
 # ==============================================================================
 # == Global Implementation Details =============================================
@@ -57,8 +56,23 @@ class DeviceSpecV2(object):
   ```python
   # Place the operations on device "GPU:0" in the "ps" job.
   device_spec = DeviceSpec(job="ps", device_type="GPU", device_index=0)
-  with tf.device(device_spec):
+  with tf.device(device_spec.to_string()):
     # Both my_var and squared_var will be placed on /job:ps/device:GPU:0.
+    my_var = tf.Variable(..., name="my_variable")
+    squared_var = tf.square(my_var)
+  ```
+
+  With eager execution disabled (by default in TensorFlow 1.x and by calling
+  disable_eager_execution() in TensorFlow 2.x), the following syntax
+  can be used:
+
+  ```python
+  tf.compat.v1.disable_eager_execution()
+
+  # Same as previous
+  device_spec = DeviceSpec(job="ps", device_type="GPU", device_index=0)
+  # No need of .to_string() method.
+  with tf.device(device_spec):
     my_var = tf.Variable(..., name="my_variable")
     squared_var = tf.square(my_var)
   ```
@@ -69,10 +83,11 @@ class DeviceSpecV2(object):
   outer scopes.
 
   ```python
-  with tf.device(DeviceSpec(job="train", )):
-    with tf.device(DeviceSpec(job="ps", device_type="GPU", device_index=0):
+  gpu0_spec = DeviceSpec(job="ps", device_type="GPU", device_index=0)
+  with tf.device(DeviceSpec(job="train").to_string()):
+    with tf.device(gpu0_spec.to_string()):
       # Nodes created here will be assigned to /job:ps/device:GPU:0.
-    with tf.device(DeviceSpec(device_type="GPU", device_index=1):
+    with tf.device(DeviceSpec(device_type="GPU", device_index=1).to_string()):
       # Nodes created here will be assigned to /job:train/device:GPU:1.
   ```
 
@@ -89,7 +104,11 @@ class DeviceSpecV2(object):
   __slots__ = ("_job", "_replica", "_task", "_device_type", "_device_index",
                "_as_string", "_hash")
 
-  def __init__(self, job=None, replica=None, task=None, device_type=None,
+  def __init__(self,
+               job=None,
+               replica=None,
+               task=None,
+               device_type=None,
                device_index=None):
     """Create a new `DeviceSpec` object.
 
@@ -98,8 +117,8 @@ class DeviceSpecV2(object):
       replica: int.  Optional replica index.
       task: int.  Optional task index.
       device_type: Optional device type string (e.g. "CPU" or "GPU")
-      device_index: int.  Optional device index.  If left
-        unspecified, device represents 'any' device_index.
+      device_index: int.  Optional device index.  If left unspecified, device
+        represents 'any' device_index.
     """
     self._job = _as_str_or_none(job)
     self._replica = _as_int_or_none(replica)
@@ -107,8 +126,11 @@ class DeviceSpecV2(object):
     self._device_type = _as_device_str_or_none(device_type)
     self._device_index = _as_int_or_none(device_index)
     self._as_string = self._components_to_string(
-        job=self._job, replica=self._replica, task=self._task,
-        device_type=self._device_type, device_index=self._device_index)
+        job=self._job,
+        replica=self._replica,
+        task=self._task,
+        device_type=self._device_type,
+        device_index=self._device_index)
     self._hash = hash(self.to_string())
 
   def to_string(self):
@@ -126,11 +148,9 @@ class DeviceSpecV2(object):
 
     Args:
       spec: a string of the form
-       /job:<name>/replica:<id>/task:<id>/device:CPU:<id>
-      or
-       /job:<name>/replica:<id>/task:<id>/device:GPU:<id>
-      as cpu and gpu are mutually exclusive.
-      All entries are optional.
+       /job:<name>/replica:<id>/task:<id>/device:CPU:<id> or
+       /job:<name>/replica:<id>/task:<id>/device:GPU:<id> as cpu and gpu are
+         mutually exclusive. All entries are optional.
 
     Returns:
       A DeviceSpec.
@@ -140,47 +160,49 @@ class DeviceSpecV2(object):
   def parse_from_string(self, spec):
     """Parse a `DeviceSpec` name into its components.
 
-    2.x behavior change:
-      In TensorFlow 1.x, this function mutates its own state and returns itself.
-      In 2.x, DeviceSpecs are immutable, and this function will return a
-        DeviceSpec which contains the spec.
+    **2.x behavior change**:
 
-      Recommended:
-        ```
-        # my_spec and my_updated_spec are unrelated.
-        my_spec = tf.DeviceSpec.from_string("/CPU:0")
-        my_updated_spec = tf.DeviceSpec.from_string("/GPU:0")
-        with tf.device(my_updated_spec):
-          ...
-        ```
+    In TensorFlow 1.x, this function mutates its own state and returns itself.
+    In 2.x, DeviceSpecs are immutable, and this function will return a
+      DeviceSpec which contains the spec.
 
-      Will work in 1.x and 2.x (though deprecated in 2.x):
-        ```
-        my_spec = tf.DeviceSpec.from_string("/CPU:0")
-        my_updated_spec = my_spec.parse_from_string("/GPU:0")
-        with tf.device(my_updated_spec):
-          ...
-        ```
+    * Recommended:
 
-      Will NOT work in 2.x:
-        ```
-        my_spec = tf.DeviceSpec.from_string("/CPU:0")
-        my_spec.parse_from_string("/GPU:0")  # <== Will not update my_spec
-        with tf.device(my_spec):
-          ...
-        ```
+      ```
+      # my_spec and my_updated_spec are unrelated.
+      my_spec = tf.DeviceSpec.from_string("/CPU:0")
+      my_updated_spec = tf.DeviceSpec.from_string("/GPU:0")
+      with tf.device(my_updated_spec):
+        ...
+      ```
 
-      In general, `DeviceSpec.from_string` should completely replace
-      `DeviceSpec.parse_from_string`, and `DeviceSpec.replace` should
-      completely replace setting attributes directly.
+    * Will work in 1.x and 2.x (though deprecated in 2.x):
+
+      ```
+      my_spec = tf.DeviceSpec.from_string("/CPU:0")
+      my_updated_spec = my_spec.parse_from_string("/GPU:0")
+      with tf.device(my_updated_spec):
+        ...
+      ```
+
+    * Will NOT work in 2.x:
+
+      ```
+      my_spec = tf.DeviceSpec.from_string("/CPU:0")
+      my_spec.parse_from_string("/GPU:0")  # <== Will not update my_spec
+      with tf.device(my_spec):
+        ...
+      ```
+
+    In general, `DeviceSpec.from_string` should completely replace
+    `DeviceSpec.parse_from_string`, and `DeviceSpec.replace` should
+    completely replace setting attributes directly.
 
     Args:
       spec: an optional string of the form
-       /job:<name>/replica:<id>/task:<id>/device:CPU:<id>
-      or
-       /job:<name>/replica:<id>/task:<id>/device:GPU:<id>
-      as cpu and gpu are mutually exclusive.
-      All entries are optional.
+       /job:<name>/replica:<id>/task:<id>/device:CPU:<id> or
+       /job:<name>/replica:<id>/task:<id>/device:GPU:<id> as cpu and gpu are
+         mutually exclusive. All entries are optional.
 
     Returns:
       The `DeviceSpec`.
@@ -193,7 +215,7 @@ class DeviceSpecV2(object):
   def make_merged_spec(self, dev):
     """Returns a new DeviceSpec which incorporates `dev`.
 
-    When combining specs, `dev` will take precidence over the current spec.
+    When combining specs, `dev` will take precedence over the current spec.
     So for instance:
     ```
     first_spec = tf.DeviceSpec(job=0, device_type="CPU")
@@ -231,10 +253,13 @@ class DeviceSpecV2(object):
       A DeviceSpec with the fields specified in kwargs overridden.
     """
     init_kwargs = dict(
-        job=self.job, replica=self.replica, task=self.task,
-        device_type=self.device_type, device_index=self.device_index)
+        job=self.job,
+        replica=self.replica,
+        task=self.task,
+        device_type=self.device_type,
+        device_index=self.device_index)
 
-    # Explicitly provided kwargs take precidence.
+    # Explicitly provided kwargs take precedence.
     init_kwargs.update(kwargs)
     return self.__class__(**init_kwargs)
 
@@ -279,6 +304,15 @@ class DeviceSpecV2(object):
     )
 
   @staticmethod
+  def _get_valid_device_types():
+    valid_device_types = set({})
+    physical_devices = pywrap_tfe.TF_ListPluggablePhysicalDevices()
+    for device in physical_devices:
+      valid_device_types.add(device.decode().split(":")[1])
+    valid_device_types = valid_device_types | _VALID_DEVICE_TYPES
+    return valid_device_types
+
+  @staticmethod
   def _string_to_components(spec=None):
     """Stateless portion of device spec string parsing.
 
@@ -299,6 +333,7 @@ class DeviceSpecV2(object):
 
     spec = spec or ""
     splits = [x.split(":") for x in spec.split("/")]
+    valid_device_types = DeviceSpecV2._get_valid_device_types()
     for y in splits:
       ly = len(y)
       if y:
@@ -309,21 +344,23 @@ class DeviceSpecV2(object):
           replica = y[1]
         elif ly == 2 and y[0] == "task":
           task = y[1]
-        elif ((ly == 1 or ly == 2) and
-              ((y[0].upper() == "GPU") or (y[0].upper() == "CPU"))):
+        elif ((ly == 1 or ly == 2) and (y[0].upper() in valid_device_types)):
           if device_type is not None:
-            raise ValueError("Cannot specify multiple device types: %s" % spec)
+            raise ValueError(f"Multiple device types are not allowed "
+                             f"while parsing the device spec: {spec}.")
           device_type = y[0].upper()
           if ly == 2 and y[1] != "*":
             device_index = int(y[1])
         elif ly == 3 and y[0] == "device":
           if device_type is not None:
-            raise ValueError("Cannot specify multiple device types: %s" % spec)
+            raise ValueError(f"Multiple device types are not allowed "
+                             f"while parsing the device spec: {spec}.")
           device_type = y[1]
           if y[2] != "*":
             device_index = int(y[2])
         elif ly and y[0] != "":  # pylint: disable=g-explicit-bool-comparison
-          raise ValueError("Unknown attribute: '%s' in '%s'" % (y[0], spec))
+          raise ValueError(f"Unknown attribute '{y[0]}' is encountered "
+                           f"while parsing the device spec: '{spec}'.")
 
     output = (job, replica, task, device_type, device_index)
     _STRING_TO_COMPONENTS_CACHE[raw_spec] = output
@@ -374,6 +411,11 @@ class DeviceSpecV2(object):
   def __hash__(self):
     return self._hash
 
+  def __repr__(self):
+    return (
+        f"<DeviceSpec(job={self.job}, replica={self.replica}, task={self.task}, "
+        f"device_type={self.device_type}, device_index={self.device_index})>")
+
 
 @tf_export(v1=["DeviceSpec"])  # pylint: disable=missing-docstring
 class DeviceSpecV1(DeviceSpecV2):
@@ -413,13 +455,16 @@ class DeviceSpecV1(DeviceSpecV2):
   def to_string(self):
     if self._as_string is None:
       self._as_string = self._components_to_string(
-          job=self.job, replica=self.replica, task=self.task,
-          device_type=self.device_type, device_index=self.device_index)
+          job=self.job,
+          replica=self.replica,
+          task=self.task,
+          device_type=self.device_type,
+          device_index=self.device_index)
     return self._as_string
 
   def parse_from_string(self, spec):
-    (self.job, self.replica, self.task, self.device_type, self.device_index
-    ) = self._string_to_components(spec)
+    (self.job, self.replica, self.task, self.device_type,
+     self.device_index) = self._string_to_components(spec)
 
     return self
 
@@ -432,8 +477,8 @@ class DeviceSpecV1(DeviceSpecV2):
     Args:
       dev: a `DeviceSpec`.
     """
-    (self.job, self.replica, self.task, self.device_type, self.device_index
-    ) = self._get_combined_properties(dev)
+    (self.job, self.replica, self.task, self.device_type,
+     self.device_index) = self._get_combined_properties(dev)
 
   # Use parent class docstrings for public methods.
   to_string.__doc__ = DeviceSpecV2.to_string.__doc__

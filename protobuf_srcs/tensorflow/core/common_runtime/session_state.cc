@@ -18,6 +18,9 @@ limitations under the License.
 
 namespace tensorflow {
 
+// Adjust value in third_party/tensorflow/python/client/tf_session_wrapper.cc
+// in the get_tensor_handle_key function if adjusting the value for
+// kTensorHandleResourceTypeName.
 const char* SessionState::kTensorHandleResourceTypeName = "TensorHandle";
 
 Status SessionState::GetTensor(const string& handle, Tensor* tensor) {
@@ -28,7 +31,7 @@ Status SessionState::GetTensor(const string& handle, Tensor* tensor) {
                                    "' is not in the session store.");
   }
   *tensor = it->second;
-  return Status::OK();
+  return OkStatus();
 }
 
 Status SessionState::AddTensor(const string& handle, const Tensor& tensor) {
@@ -37,7 +40,7 @@ Status SessionState::AddTensor(const string& handle, const Tensor& tensor) {
     return errors::InvalidArgument("Failed to add a tensor with handle '",
                                    handle, "' to the session store.");
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status SessionState::DeleteTensor(const string& handle) {
@@ -46,10 +49,10 @@ Status SessionState::DeleteTensor(const string& handle) {
     return errors::InvalidArgument("Failed to delete a tensor with handle '",
                                    handle, "' in the session store.");
   }
-  return Status::OK();
+  return OkStatus();
 }
 
-int64 SessionState::GetNewId() {
+int64_t SessionState::GetNewId() {
   mutex_lock l(state_lock_);
   return tensor_id_++;
 }
@@ -60,7 +63,8 @@ Status TensorStore::AddTensor(const string& name, const TensorAndKey& tk) {
     return errors::InvalidArgument("Failed to add a tensor with name '", name,
                                    "' to the tensor store.");
   }
-  return Status::OK();
+  dirty_ = true;
+  return OkStatus();
 }
 
 Status TensorStore::SaveTensors(const std::vector<string>& output_names,
@@ -79,7 +83,7 @@ Status TensorStore::SaveTensors(const std::vector<string>& output_names,
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

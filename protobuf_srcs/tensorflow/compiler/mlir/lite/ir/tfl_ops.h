@@ -18,36 +18,46 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_LITE_IR_TFL_OPS_H_
 #define TENSORFLOW_COMPILER_MLIR_LITE_IR_TFL_OPS_H_
 
-#include "mlir/Dialect/QuantOps/QuantOps.h"  // TF:local_config_mlir
-#include "mlir/Dialect/Traits.h"  // TF:local_config_mlir
-#include "mlir/IR/Attributes.h"  // TF:local_config_mlir
-#include "mlir/IR/Builders.h"  // TF:local_config_mlir
-#include "mlir/IR/Dialect.h"  // TF:local_config_mlir
-#include "mlir/IR/OpDefinition.h"  // TF:local_config_mlir
-#include "mlir/IR/StandardTypes.h"  // TF:local_config_mlir
-#include "mlir/Support/Functional.h"  // TF:local_config_mlir
-#include "mlir/Support/LLVM.h"  // TF:local_config_mlir
-#include "tensorflow/compiler/mlir/lite/ir/tfl_traits.h"
-#include "tensorflow/compiler/mlir/lite/quantization/quantization_traits.h"
+#include "mlir/Dialect/Traits.h"  // from @llvm-project
+#include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/Dialect.h"  // from @llvm-project
+#include "mlir/IR/DialectImplementation.h"  // from @llvm-project
+#include "mlir/IR/OpImplementation.h"  // from @llvm-project
+#include "mlir/Interfaces/DerivedAttributeOpInterface.h"  // from @llvm-project
+#include "mlir/Interfaces/InferTypeOpInterface.h"  // from @llvm-project
+#include "mlir/Interfaces/LoopLikeInterface.h"  // from @llvm-project
+#include "mlir/Interfaces/SideEffectInterfaces.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "mlir/Support/TypeID.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/ir/tfl_ops_dialect.h.inc"
+#include "tensorflow/compiler/mlir/lite/ir/tfl_ops_enums.h.inc"
+#include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
+#include "tensorflow/compiler/mlir/lite/quantization/quantization_utils.h"
+#include "tensorflow/compiler/mlir/lite/utils/utils.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_traits.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#define GET_ATTRDEF_CLASSES
+#include "tensorflow/compiler/mlir/lite/ir/tfl_ops_attrdefs.h.inc"
 
 namespace mlir {
 namespace TFL {
 
-class TensorFlowLiteDialect : public Dialect {
- public:
-  explicit TensorFlowLiteDialect(MLIRContext *context);
+typedef TFLDialect TensorFlowLiteDialect;
 
-  // Registered hook to materialize a constant operation from a given attribute
-  // value with the desired resultant type.
-  Operation *materializeConstant(OpBuilder &builder, Attribute value, Type type,
-                                 Location loc) override;
+// The Control type is a token-like value that models control dependencies
+class ControlType : public Type::TypeBase<ControlType, Type, TypeStorage> {
+ public:
+  using Base::Base;
 };
 
-#define GET_OP_CLASSES
-#include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h.inc"
+#include "tensorflow/compiler/mlir/lite/ir/tfl_ops_interface.h.inc"
 
 }  // end namespace TFL
 }  // end namespace mlir
+
+#define GET_OP_CLASSES
+#include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h.inc"
 
 #endif  // TENSORFLOW_COMPILER_MLIR_LITE_IR_TFL_OPS_H_

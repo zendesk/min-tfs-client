@@ -16,8 +16,9 @@ limitations under the License.
 #define EIGEN_USE_THREADS
 #include "tensorflow/core/kernels/tensor_array.h"
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/kernels/aggregate_ops_cpu.h"
 
 namespace tensorflow {
@@ -34,7 +35,7 @@ namespace tensor_array {
     functor::Add2Functor<Device, T> add_functor;                            \
     add_functor(ctx->template eigen_device<Device>(), sum->flat<T>(),       \
                 current->flat<T>(), add->flat<T>());                        \
-    return Status::OK();                                                    \
+    return OkStatus();                                                      \
   }
 
 #define TENSOR_ARRAY_WRITE_OR_ADD_CPU(T) TENSOR_ARRAY_WRITE_OR_ADD(CPUDevice, T)
@@ -45,8 +46,7 @@ TF_CALL_NUMBER_TYPES(TENSOR_ARRAY_WRITE_OR_ADD_CPU)
 
 #define TENSOR_ARRAY_WRITE_OR_ADD_GPU(T) TENSOR_ARRAY_WRITE_OR_ADD(GPUDevice, T)
 TF_CALL_GPU_NUMBER_TYPES(TENSOR_ARRAY_WRITE_OR_ADD_GPU);
-TF_CALL_complex64(TENSOR_ARRAY_WRITE_OR_ADD_GPU);
-TF_CALL_complex128(TENSOR_ARRAY_WRITE_OR_ADD_GPU);
+TF_CALL_COMPLEX_TYPES(TENSOR_ARRAY_WRITE_OR_ADD_GPU);
 #undef TENSOR_ARRAY_WRITE_OR_ADD_GPU
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -58,7 +58,7 @@ TF_CALL_complex128(TENSOR_ARRAY_WRITE_OR_ADD_GPU);
   Status TensorSetZero<Device, T>(OpKernelContext * ctx, Tensor * value) {    \
     functor::SetZeroFunctor<Device, T> set_zero_functor;                      \
     set_zero_functor(ctx->template eigen_device<Device>(), value->flat<T>()); \
-    return Status::OK();                                                      \
+    return OkStatus();                                                        \
   }
 
 #define TENSOR_ARRAY_SET_ZERO_CPU(T) TENSOR_ARRAY_SET_ZERO(CPUDevice, T)
@@ -70,8 +70,7 @@ TF_CALL_bool(TENSOR_ARRAY_SET_ZERO_CPU);
 
 #define TENSOR_ARRAY_SET_ZERO_GPU(T) TENSOR_ARRAY_SET_ZERO(GPUDevice, T)
 TF_CALL_GPU_NUMBER_TYPES(TENSOR_ARRAY_SET_ZERO_GPU);
-TF_CALL_complex64(TENSOR_ARRAY_SET_ZERO_GPU);
-TF_CALL_complex128(TENSOR_ARRAY_SET_ZERO_GPU);
+TF_CALL_COMPLEX_TYPES(TENSOR_ARRAY_SET_ZERO_GPU);
 #undef TENSOR_ARRAY_SET_ZERO_GPU
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -80,7 +79,7 @@ TF_CALL_complex128(TENSOR_ARRAY_SET_ZERO_GPU);
 
 }  // namespace tensor_array
 
-std::atomic<int64> TensorArray::tensor_array_counter{0};
+std::atomic<int64_t> TensorArray::tensor_array_counter{0};
 
 Status TensorArray::CopyShapesFrom(TensorArray* rhs,
                                    const TensorShape* shape_to_prepend) {
@@ -112,7 +111,7 @@ Status TensorArray::CopyShapesFrom(TensorArray* rhs,
     tensors_[i].written = true;
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_LITE_DELEGATES_GPU_GL_GL_SHADER_H_
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tensorflow/lite/delegates/gpu/common/status.h"
@@ -33,9 +34,9 @@ class GlShader {
   //
   // @param shader_type is one of GL_VERTEX_SHADER, GL_FRAGMENT_SHADER, or
   // GL_COMPUTE_SHADER.
-  static Status CompileShader(GLenum shader_type,
-                              const std::string& shader_source,
-                              GlShader* gl_shader);
+  static absl::Status CompileShader(GLenum shader_type,
+                                    const std::string& shader_source,
+                                    GlShader* gl_shader);
 
   GlShader() : id_(0) {}
 

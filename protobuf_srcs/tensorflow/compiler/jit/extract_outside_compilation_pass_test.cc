@@ -22,7 +22,7 @@ limitations under the License.
 #include "tensorflow/cc/ops/functional_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/compiler/jit/encapsulate_util.h"
-#include "tensorflow/compiler/xla/test.h"
+#include "xla/test.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
@@ -232,7 +232,7 @@ class ExtractOutsideCompilationForFunctionTest : public ::testing::Test {
     std::vector<std::unique_ptr<Device>> devices;
     TF_CHECK_OK(DeviceFactory::AddDevices(
         session_options, "/job:localhost/replica:0/task:0", &devices));
-    device_mgr_ = absl::make_unique<StaticDeviceMgr>(std::move(devices));
+    device_mgr_ = std::make_unique<StaticDeviceMgr>(std::move(devices));
   }
 
   Status ExtractOutsideCompilationTest(
@@ -245,7 +245,7 @@ class ExtractOutsideCompilationForFunctionTest : public ::testing::Test {
       std::vector<string> *shape_inference_graphs,
       bool *has_outside_compilation) {
     OptimizerOptions opts;
-    pflr_ = absl::make_unique<ProcessFunctionLibraryRuntime>(
+    pflr_ = std::make_unique<ProcessFunctionLibraryRuntime>(
         device_mgr_.get(), Env::Default(), /*config=*/nullptr,
         TF_GRAPH_DEF_VERSION, fld, opts,
         /*default_thread_pool=*/nullptr);
@@ -421,19 +421,6 @@ TEST_F(ExtractOutsideCompilationForFunctionTest, NoHostGraph) {
   // Check host graph is not created.
   EXPECT_EQ(fld.Find("host_graph"), nullptr);
 }
-
-REGISTER_OP("XlaSendToHost")
-    .Input("input: Tinput")
-    .Attr("Tinput: type")
-    .Attr("key: string")
-    .SetIsStateful();
-
-REGISTER_OP("XlaRecvFromHost")
-    .Output("output: Toutput")
-    .Attr("Toutput: type")
-    .Attr("shape: shape")
-    .Attr("key: string")
-    .SetIsStateful();
 
 TEST_F(ExtractOutsideCompilationForFunctionTest, OutsideCompilationInIf) {
   // Build the XLA computation func.
@@ -941,7 +928,7 @@ TEST_F(ExtractOutsideCompilationForFunctionTest,
   // "const0"
   // "identity0" = "const0" (outside compilation cluster "0")
   // "identity1" = "const0" "^identity0" (outside compilation cluster "1",
-  //                                      control depdent on cluster "0")
+  //                                      control dependent on cluster "0")
   // "identity2" = "identity1"
   FunctionDefLibrary fdl;
   {

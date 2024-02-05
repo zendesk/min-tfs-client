@@ -18,20 +18,18 @@ See [Version
 Compatibility](https://tensorflow.org/guide/version_compat#backward_forward)
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import datetime
 import os
 
+from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util import tf_contextlib
 from tensorflow.python.util.tf_export import tf_export
+
 
 # This value changes every day with an automatic CL. It can be modified in code
 # via `forward_compatibility_horizon()` or with the environment variable
 # TF_FORWARD_COMPATIBILITY_DELTA_DAYS, which is added to the compatibility date.
-_FORWARD_COMPATIBILITY_HORIZON = datetime.date(2019, 11, 7)
+_FORWARD_COMPATIBILITY_HORIZON = datetime.date(2023, 10, 10)
 _FORWARD_COMPATIBILITY_DELTA_DAYS_VAR_NAME = "TF_FORWARD_COMPATIBILITY_DELTA_DAYS"
 _FORWARD_COMPATIBILITY_DATE_NUMBER = None
 
@@ -53,6 +51,10 @@ def _update_forward_compatibility_date_number(date_to_override=None):
     if delta_days:
       date += datetime.timedelta(days=int(delta_days))
 
+  if date < _FORWARD_COMPATIBILITY_HORIZON:
+    logging.warning("Trying to set the forward compatibility date to the past"
+                    " date %s. This will be ignored by TensorFlow." % (date))
+    return
   _FORWARD_COMPATIBILITY_DATE_NUMBER = _date_to_date_number(
       date.year, date.month, date.day)
 
@@ -65,7 +67,7 @@ def forward_compatible(year, month, day):
   """Return true if the forward compatibility window has expired.
 
   See [Version
-  compatibility](https://tensorflow.org/guide/version_compat#backward_forward).
+  compatibility](https://www.tensorflow.org/guide/versions#backward_and_partial_forward_compatibility).
 
   Forward-compatibility refers to scenarios where the producer of a TensorFlow
   model (a GraphDef or SavedModel) is compiled against a version of the
@@ -96,7 +98,7 @@ def forward_compatible(year, month, day):
     if compat.forward_compatible(year, month, day):
       # Can use the awesome new implementation.
       return gen_math_ops.my_new_awesome_add(inputs, name)
-    # To maintain forward compatibiltiy, use the old implementation.
+    # To maintain forward compatibility, use the old implementation.
     return gen_math_ops.add(inputs, name)
   ```
 
@@ -126,7 +128,7 @@ def forward_compatibility_horizon(year, month, day):
   """Context manager for testing forward compatibility of generated graphs.
 
   See [Version
-  compatibility](https://tensorflow.org/guide/version_compat#backward_forward).
+  compatibility](https://www.tensorflow.org/guide/versions#backward_and_partial_forward_compatibility).
 
   To ensure forward compatibility of generated graphs (see `forward_compatible`)
   with older binaries, new features can be gated with:

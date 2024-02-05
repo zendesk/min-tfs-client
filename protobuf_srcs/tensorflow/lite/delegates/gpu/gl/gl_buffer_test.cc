@@ -27,6 +27,17 @@ namespace gpu {
 namespace gl {
 namespace {
 
+TEST(Buffer, CreateReadWrite) {
+  std::unique_ptr<EglEnvironment> env;
+  ASSERT_TRUE(EglEnvironment::NewEglEnvironment(&env).ok());
+  GlBuffer buffer;
+  ASSERT_TRUE(CreateReadWriteShaderStorageBuffer<float>(4, &buffer).ok());
+
+  std::vector<float> from_buffer;
+  ASSERT_TRUE(AppendFromBuffer(buffer, &from_buffer).ok());
+  EXPECT_THAT(from_buffer, testing::ElementsAre(0, 0, 0, 0));
+}
+
 TEST(Buffer, Read) {
   std::unique_ptr<EglEnvironment> env;
   ASSERT_TRUE(EglEnvironment::NewEglEnvironment(&env).ok());
@@ -89,7 +100,7 @@ TEST(Buffer, SubView) {
   GlBuffer view1;
   ASSERT_TRUE(buffer.MakeView(4, 16, &view1).ok());
   GlBuffer view2;
-  EXPECT_NE(view1.MakeView(1, 16, &view2), OkStatus());
+  EXPECT_FALSE(view1.MakeView(1, 16, &view2).ok());
   ASSERT_TRUE(view1.MakeView(2, 2, &view2).ok());
 
   EXPECT_FALSE(view2.has_ownership());

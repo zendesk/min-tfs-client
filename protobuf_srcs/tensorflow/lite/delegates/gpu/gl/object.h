@@ -20,6 +20,7 @@ limitations under the License.
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "absl/types/variant.h"
@@ -46,7 +47,7 @@ enum class ObjectType : int {
   BUFFER = 2,
 };
 
-using ObjectSize = absl::variant<size_t, uint2, uint3>;
+using ObjectSize = std::variant<size_t, uint2, uint3>;
 
 // An object represents a reference to or pre-defined constant OpenGL Buffer or
 // Texture. NodeShader is supposed to set all fields but leave binding = 0
@@ -65,21 +66,21 @@ struct Object {
   // consists of 4 values.
   ObjectSize size;
 
-  absl::variant<ObjectData, ObjectRef> object;
+  std::variant<ObjectData, ObjectRef> object;
 };
 
 // @return true if object is a reference.
 inline bool IsRef(const Object& object) {
-  return !absl::get_if<ObjectData>(&object.object);
+  return !std::holds_alternative<ObjectData>(object.object);
 }
 
 inline ObjectRef GetRef(const Object& object) {
-  auto ref = absl::get_if<ObjectRef>(&object.object);
+  auto ref = std::get_if<ObjectRef>(&object.object);
   return ref ? *ref : kInvalidObjectRef;
 }
 
 inline const ObjectData* GetData(const Object& object) {
-  return absl::get_if<ObjectData>(&object.object);
+  return std::get_if<ObjectData>(&object.object);
 }
 
 inline size_t ByteSizeOf(const Object& object);
@@ -114,7 +115,7 @@ struct ObjectSizer {
 }  // namespace internal_object
 
 inline size_t NumElements(const ObjectSize& size) {
-  return absl::visit(internal_object::ObjectSizer{}, size);
+  return std::visit(internal_object::ObjectSizer{}, size);
 }
 
 inline size_t ByteSizeOf(const Object& object) {
@@ -153,17 +154,17 @@ inline Object MakeReadonlyBuffer(const ObjectSize& size,
 
 inline Object MakeReadonlyObject(const std::vector<float>& data) {
   return MakeReadonlyObject(
-      IntegralDivideRoundUp(static_cast<uint32_t>(data.size()), 4U), data);
+      DivideRoundUp(static_cast<uint32_t>(data.size()), 4U), data);
 }
 
 inline Object MakeReadonlyTexture(const std::vector<float>& data) {
   return MakeReadonlyTexture(
-      IntegralDivideRoundUp(static_cast<uint32_t>(data.size()), 4U), data);
+      DivideRoundUp(static_cast<uint32_t>(data.size()), 4U), data);
 }
 
 inline Object MakeReadonlyBuffer(const std::vector<float>& data) {
   return MakeReadonlyBuffer(
-      IntegralDivideRoundUp(static_cast<uint32_t>(data.size()), 4U), data);
+      DivideRoundUp(static_cast<uint32_t>(data.size()), 4U), data);
 }
 
 // TODO(akulik): find better place for functions below.
@@ -172,7 +173,7 @@ inline uint3 GetPHWC4Size(const BHWC& shape) {
   uint3 size;
   size.x = shape.w;
   size.y = shape.h;
-  size.z = shape.b * IntegralDivideRoundUp(shape.c, 4);
+  size.z = shape.b * DivideRoundUp(shape.c, 4);
   return size;
 }
 

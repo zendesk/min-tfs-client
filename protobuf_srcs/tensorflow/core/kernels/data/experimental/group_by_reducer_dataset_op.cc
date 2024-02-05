@@ -16,11 +16,11 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
 #include "tensorflow/core/lib/random/random.h"
 
 namespace tensorflow {
@@ -32,16 +32,17 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
  public:
   explicit GroupByReducerDatasetOp(OpKernelConstruction* ctx)
       : UnaryDatasetOpKernel(ctx) {
-    FunctionMetadata::Params params;
-    params.is_multi_device_function = true;
-    OP_REQUIRES_OK(ctx, FunctionMetadata::Create(ctx, "key_func", params,
+    OP_REQUIRES_OK(ctx, FunctionMetadata::Create(ctx, "key_func", /*params=*/{},
                                                  &key_func_metadata_));
-    OP_REQUIRES_OK(ctx, FunctionMetadata::Create(ctx, "init_func", params,
-                                                 &init_func_metadata_));
-    OP_REQUIRES_OK(ctx, FunctionMetadata::Create(ctx, "reduce_func", params,
-                                                 &reduce_func_metadata_));
-    OP_REQUIRES_OK(ctx, FunctionMetadata::Create(ctx, "finalize_func", params,
-                                                 &finalize_func_metadata_));
+    OP_REQUIRES_OK(ctx,
+                   FunctionMetadata::Create(ctx, "init_func", /*params=*/{},
+                                            &init_func_metadata_));
+    OP_REQUIRES_OK(ctx,
+                   FunctionMetadata::Create(ctx, "reduce_func", /*params=*/{},
+                                            &reduce_func_metadata_));
+    OP_REQUIRES_OK(ctx,
+                   FunctionMetadata::Create(ctx, "finalize_func", /*params=*/{},
+                                            &finalize_func_metadata_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("output_types", &output_types_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("output_shapes", &output_shapes_));
   }
@@ -97,7 +98,7 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return absl::make_unique<Iterator>(
+      return std::make_unique<Iterator>(
           Iterator::Params{this, strings::StrCat(prefix, "::GroupByReducer")});
     }
 
@@ -190,7 +191,7 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
            {"Tfinalize_func_other_arguments",
             finalize_func_other_arguments_types_attr}},
           output));
-      return Status::OK();
+      return OkStatus();
     }
 
    private:
@@ -201,7 +202,7 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
 
       Status Initialize(IteratorContext* ctx) override {
         TF_RETURN_IF_ERROR(
-            dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_));
+            dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_));
         TF_RETURN_IF_ERROR(dataset()->captured_key_func_->Instantiate(
             ctx, &instantiated_key_func_));
         TF_RETURN_IF_ERROR(dataset()->captured_init_func_->Instantiate(
@@ -210,7 +211,7 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
             ctx, &instantiated_reduce_func_));
         TF_RETURN_IF_ERROR(dataset()->captured_finalize_func_->Instantiate(
             ctx, &instantiated_finalize_func_));
-        return Status::OK();
+        return OkStatus();
       }
 
       Status GetNextInternal(IteratorContext* ctx,
@@ -228,7 +229,7 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
             // Run the key function on the input element.
             std::vector<Tensor> key_func_output;
             TF_RETURN_IF_ERROR(instantiated_key_func_->RunWithBorrowedArgs(
-                ctx, next_input_element, &key_func_output));
+                ctx, next_input_element, &key_func_output, model_node()));
 
             if (key_func_output.size() != 1 ||
                 key_func_output[0].dtype() != DT_INT64 ||
@@ -237,13 +238,14 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
               return errors::InvalidArgument(
                   "`key_func` must return a scalar int64.");
             }
-            const int64 key = key_func_output[0].scalar<int64>()();
+            const int64_t key = key_func_output[0].scalar<int64_t>()();
 
             if (states_.find(key) == states_.end()) {
               // Run the init function to create the initial state.
               std::vector<Tensor> init_func_output;
               TF_RETURN_IF_ERROR(instantiated_init_func_->Run(
-                  ctx, std::move(key_func_output), &init_func_output));
+                  ctx, std::move(key_func_output), &init_func_output,
+                  model_node()));
               states_[key] = init_func_output;
             }
 
@@ -257,7 +259,7 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
 
             std::vector<Tensor> reduce_func_output;
             TF_RETURN_IF_ERROR(instantiated_reduce_func_->Run(
-                ctx, std::move(args), &reduce_func_output));
+                ctx, std::move(args), &reduce_func_output, model_node()));
             states_[key] = reduce_func_output;
           } else {
             keys_.resize(states_.size());
@@ -270,12 +272,12 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
 
         if (keys_index_ == keys_.size()) {
           *end_of_sequence = true;
-          return Status::OK();
+          return OkStatus();
         }
         TF_RETURN_IF_ERROR(instantiated_finalize_func_->RunWithBorrowedArgs(
-            ctx, states_[keys_[keys_index_++]], out_tensors));
+            ctx, states_[keys_[keys_index_++]], out_tensors, model_node()));
         *end_of_sequence = false;
-        return Status::OK();
+        return OkStatus();
       }
 
      protected:
@@ -284,9 +286,18 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
         return model::MakeUnknownRatioNode(std::move(args));
       }
 
-      Status SaveInternal(IteratorStateWriter* writer) override {
+      Status SaveInternal(SerializationContext* ctx,
+                          IteratorStateWriter* writer) override {
+        TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
+            dataset()->captured_key_func_->CheckExternalState()));
+        TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
+            dataset()->captured_init_func_->CheckExternalState()));
+        TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
+            dataset()->captured_reduce_func_->CheckExternalState()));
+        TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
+            dataset()->captured_finalize_func_->CheckExternalState()));
         mutex_lock l(mu_);
-        TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
+        TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
 
         if (end_of_input_) {
           TF_RETURN_IF_ERROR(
@@ -299,7 +310,7 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
               writer->WriteScalar(full_name("states_size"), states_.size()));
           int idx = 0;
           for (auto it = states_.begin(); it != states_.end(); ++idx, ++it) {
-            int64 key = it->first;
+            int64_t key = it->first;
             TF_RETURN_IF_ERROR(writer->WriteScalar(
                 full_name(strings::StrCat("states[", idx, "]->key")), key));
             if (!it->second.empty()) {
@@ -330,7 +341,7 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
           }
         }
 
-        return Status::OK();
+        return OkStatus();
       }
 
       Status RestoreInternal(IteratorContext* ctx,
@@ -342,23 +353,24 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
 
         // Restoring states_.
         if (reader->Contains(full_name("states_size"))) {
-          int64 size;
+          int64_t size;
           TF_RETURN_IF_ERROR(
               reader->ReadScalar(full_name("states_size"), &size));
           for (int idx = 0; idx < size; ++idx) {
-            int64 key;
+            int64_t key;
             TF_RETURN_IF_ERROR(reader->ReadScalar(
                 full_name(strings::StrCat("states[", idx, "]->key")), &key));
             std::vector<Tensor> state;
             if (reader->Contains(full_name(
                     strings::StrCat("states[", idx, "]->state_size")))) {
-              int64 state_size;
+              int64_t state_size;
               TF_RETURN_IF_ERROR(reader->ReadScalar(
                   full_name(strings::StrCat("states[", idx, "]->state_size")),
                   &state_size));
               state.resize(state_size);
               for (int j = 0; j < state_size; ++j) {
                 TF_RETURN_IF_ERROR(reader->ReadTensor(
+                    ctx->flr(),
                     full_name(
                         strings::StrCat("states[", idx, "]->state[", j, "]")),
                     &state[j]));
@@ -373,12 +385,12 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
           TF_RETURN_IF_ERROR(
               reader->ReadScalar(full_name("keys_index"), &keys_index_));
           if (reader->Contains(full_name("keys_size"))) {
-            int64 size;
+            int64_t size;
             TF_RETURN_IF_ERROR(
                 reader->ReadScalar(full_name("keys_size"), &size));
             keys_.resize(size);
             for (int idx = 0; idx < size; ++idx) {
-              int64 key;
+              int64_t key;
               TF_RETURN_IF_ERROR(reader->ReadScalar(
                   full_name(strings::StrCat("keys[", idx, "]")), &key));
               keys_[idx] = key;
@@ -386,16 +398,16 @@ class GroupByReducerDatasetOp : public UnaryDatasetOpKernel {
           }
         }
 
-        return Status::OK();
+        return OkStatus();
       }
 
      private:
       mutex mu_;
-      std::unique_ptr<IteratorBase> input_impl_ GUARDED_BY(mu_);
-      bool end_of_input_ GUARDED_BY(mu_) = false;
-      std::map<int64, std::vector<Tensor>> states_ GUARDED_BY(mu_);
-      std::vector<int64> keys_ GUARDED_BY(mu_);
-      int64 keys_index_ GUARDED_BY(mu_) = 0;
+      std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
+      bool end_of_input_ TF_GUARDED_BY(mu_) = false;
+      std::map<int64_t, std::vector<Tensor>> states_ TF_GUARDED_BY(mu_);
+      std::vector<int64_t> keys_ TF_GUARDED_BY(mu_);
+      int64_t keys_index_ TF_GUARDED_BY(mu_) = 0;
       std::unique_ptr<InstantiatedCapturedFunction> instantiated_key_func_;
       std::unique_ptr<InstantiatedCapturedFunction> instantiated_init_func_;
       std::unique_ptr<InstantiatedCapturedFunction> instantiated_reduce_func_;

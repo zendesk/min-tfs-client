@@ -18,16 +18,13 @@ limitations under the License.
 
 #include <memory>
 
-#include "tensorflow/lite/delegates/gpu/common/operations.h"
 #include "tensorflow/lite/delegates/gpu/gl/node_shader.h"
 
 namespace tflite {
 namespace gpu {
 namespace gl {
 
-std::unique_ptr<NodeShader> NewApplyMaskNodeShader();
-
-std::unique_ptr<NodeShader> NewMultiplyScalarNodeShader();
+std::unique_ptr<NodeShader> NewMultiplyNodeShader();
 
 }  // namespace gl
 }  // namespace gpu

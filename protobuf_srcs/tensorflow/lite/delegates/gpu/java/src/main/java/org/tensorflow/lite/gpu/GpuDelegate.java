@@ -15,75 +15,51 @@ limitations under the License.
 
 package org.tensorflow.lite.gpu;
 
-import java.io.Closeable;
 import org.tensorflow.lite.Delegate;
+import org.tensorflow.lite.annotations.UsedByReflection;
 
 /**
  * {@link Delegate} for GPU inference.
  *
- * <p>Note: When calling {@code Interpreter.modifyGraphWithDelegate()}/
- * {@code Interpreter.Options.addDelegate()} and {@code Interpreter.run()}, the caller must have an
- * {@code EGLContext} in the <b>current thread</b> and {@code Interpreter.run()} must be called from
- * the same {@code EGLContext}. If an {@code EGLContext} does not exist, the delegate will
- * internally create one, but then the developer must ensure that {@code Interpreter.run()} is
- * always called from the same thread in which {@code Interpreter.modifyGraphWithDelegate()} was
- * called.
+ * <p>Note: When calling {@code Interpreter.Options.addDelegate()} and {@code Interpreter.run()},
+ * the caller must have an {@code EGLContext} in the <b>current thread</b> and {@code
+ * Interpreter.run()} must be called from the same {@code EGLContext}. If an {@code EGLContext} does
+ * not exist, the delegate will internally create one, but then the developer must ensure that
+ * {@code Interpreter.run()} is always called from the same thread in which {@code
+ * Interpreter.Options.addDelegate()} was called.
  */
-public class GpuDelegate implements Delegate, Closeable {
+@UsedByReflection("TFLiteSupport/model/GpuDelegateProxy")
+public class GpuDelegate implements Delegate {
 
   private static final long INVALID_DELEGATE_HANDLE = 0;
-  private static final String TFLITE_GPU_LIB = "tensorflowlite_gpu_jni";
 
   private long delegateHandle;
 
-  /** Delegate options. */
-  public static final class Options {
-    public Options() {}
-
-    /**
-     * Delegate will be used only once, therefore, bootstrap/init time should be taken into account.
-     */
-    public static final int INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER = 0;
-
-    /**
-     * Prefer maximizing the throughput. Same delegate will be used repeatedly on multiple inputs.
-     */
-    public static final int INFERENCE_PREFERENCE_SUSTAINED_SPEED = 1;
-
-    /**
-     * Sets whether precision loss is allowed.
-     *
-     * @param precisionLossAllowed When `true` (default), the GPU may quantify tensors, downcast
-     *     values, process in FP16. When `false`, computations are carried out in 32-bit floating
-     *     point.
-     */
-    public Options setPrecisionLossAllowed(boolean precisionLossAllowed) {
-      this.precisionLossAllowed = precisionLossAllowed;
-      return this;
-    }
-
-    /**
-     * Sets the inference preference for precision/compilation/runtime tradeoffs.
-     *
-     * @param preference One of `INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER` (default),
-     *     `INFERENCE_PREFERENCE_SUSTAINED_SPEED`.
-     */
-    public Options setInferencePreference(int preference) {
-      this.inferencePreference = preference;
-      return this;
-    }
-
-    boolean precisionLossAllowed = true;
-    int inferencePreference = INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER;
+  @UsedByReflection("GpuDelegateFactory")
+  public GpuDelegate(GpuDelegateFactory.Options options) {
+    GpuDelegateNative.init();
+    delegateHandle =
+        createDelegate(
+            options.isPrecisionLossAllowed(),
+            options.areQuantizedModelsAllowed(),
+            options.getInferencePreference(),
+            options.getSerializationDir(),
+            options.getModelToken(),
+            options.getForceBackend().value());
   }
 
-  public GpuDelegate(Options options) {
-    delegateHandle = createDelegate(options.precisionLossAllowed, options.inferencePreference);
-  }
-
+  @UsedByReflection("TFLiteSupport/model/GpuDelegateProxy")
   public GpuDelegate() {
-    this(new Options());
+    this(new GpuDelegateFactory.Options());
   }
+
+  /**
+   * Inherits from {@link GpuDelegateFactory.Options} for compatibility with existing code.
+   *
+   * @deprecated Use {@link GpuDelegateFactory.Options} instead.
+   */
+  @Deprecated
+  public static class Options extends GpuDelegateFactory.Options {}
 
   @Override
   public long getNativeHandle() {
@@ -103,11 +79,13 @@ public class GpuDelegate implements Delegate, Closeable {
     }
   }
 
-  static {
-    System.loadLibrary(TFLITE_GPU_LIB);
-  }
-
-  private static native long createDelegate(boolean precisionLossAllowed, int preference);
+  private static native long createDelegate(
+      boolean precisionLossAllowed,
+      boolean quantizedModelsAllowed,
+      int preference,
+      String serializationDir,
+      String modelToken,
+      int forceBackend);
 
   private static native void deleteDelegate(long delegateHandle);
 }

@@ -13,16 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <functional>
-#include <memory>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "flatbuffers/flexbuffers.h"  // TF:flatbuffers
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
+#include "flatbuffers/flexbuffers.h"  // from @flatbuffers
+#include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace ops {
@@ -79,7 +77,7 @@ TEST(MfccOpTest, SimpleTest) {
                           data.data() + data.size());
   m.PopulateTensor<int>(m.input2(), {22050});
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   std::vector<int> output_shape = m.GetOutputShape();
   EXPECT_THAT(output_shape, ElementsAre(1, 1, 13));
@@ -104,7 +102,7 @@ TEST(MfccOpTest, ScalarInputRateTest) {
                           data.data() + data.size());
   m.PopulateTensor<int>(m.input2(), {22050});
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   std::vector<int> output_shape = m.GetOutputShape();
   EXPECT_THAT(output_shape, ElementsAre(1, 1, 13));

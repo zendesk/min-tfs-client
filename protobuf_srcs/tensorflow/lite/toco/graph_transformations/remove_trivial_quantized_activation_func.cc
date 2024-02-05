@@ -32,7 +32,7 @@ namespace {
 
 bool IsTrivialUnfusedActivationFunc(GraphTransformation* transformation,
                                     const Model& model, OperatorType op_type,
-                                    const string& input_array_name) {
+                                    const std::string& input_array_name) {
   double clamp_min;
   double clamp_max;
   switch (op_type) {
@@ -60,7 +60,7 @@ bool IsTrivialUnfusedActivationFunc(GraphTransformation* transformation,
 bool IsTrivialFusedActivationFunc(
     GraphTransformation* transformation, const Model& model,
     FusedActivationFunctionType activation_function,
-    const string& output_array_name) {
+    const std::string& output_array_name) {
   double clamp_min;
   double clamp_max;
   switch (activation_function) {
@@ -100,7 +100,7 @@ bool IsTrivialFusedActivationFunc(
   const auto it = model->operators.begin() + op_index;
   auto* op = it->get();
   if (op->inputs.empty()) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   if (IsTrivialUnfusedActivationFunc(this, *model, op->type, op->inputs[0])) {
@@ -109,7 +109,7 @@ bool IsTrivialFusedActivationFunc(
         "minmax imply at least as tight a clamp anyway.",
         LogName(*op));
     *modified = RemoveTrivialPassthroughOp(this, model, op_index);
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   if (IsTrivialFusedActivationFunc(this, *model, op->fused_activation_function,
                                    op->outputs[0])) {
@@ -120,9 +120,9 @@ bool IsTrivialFusedActivationFunc(
         "a clamp anyway.",
         LogName(*op));
     *modified = true;
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

@@ -43,7 +43,7 @@ class LogisticLossUpdater : public DualLossUpdater {
     return 0.5 * (1 + tanh(x)) / label;
   }
 
-  // Dual of logisitic loss function.
+  // Dual of logistic loss function.
   // https://en.wikipedia.org/wiki/Convex_conjugate
   double ComputeDualLoss(const double current_dual, const double example_label,
                          const double example_weight) const final {
@@ -99,10 +99,10 @@ class LogisticLossUpdater : public DualLossUpdater {
   Status ConvertLabel(float* const example_label) const final {
     if (*example_label == 0.0) {
       *example_label = -1;
-      return Status::OK();
+      return OkStatus();
     }
     if (*example_label == 1.0) {
-      return Status::OK();
+      return OkStatus();
     }
     return errors::InvalidArgument(
         "Only labels of 0.0 or 1.0 are supported right now. "

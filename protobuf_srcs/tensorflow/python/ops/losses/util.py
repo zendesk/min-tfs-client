@@ -14,20 +14,15 @@
 # ==============================================================================
 """Utilities for manipulating the loss collections."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import check_ops
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import confusion_matrix
-from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
-from tensorflow.python.ops import weights_broadcast_ops
 from tensorflow.python.util import tf_contextlib
 from tensorflow.python.util.tf_export import tf_export
 
@@ -77,15 +72,14 @@ def squeeze_or_expand_dimensions(y_pred, y_true=None, sample_weight=None):
       squeeze_dims = lambda: confusion_matrix.remove_squeezable_dimensions(  # pylint: disable=g-long-lambda
           y_true, y_pred)
       is_last_dim_1 = math_ops.equal(1, array_ops.shape(y_pred)[-1])
-      maybe_squeeze_dims = lambda: control_flow_ops.cond(  # pylint: disable=g-long-lambda
+      maybe_squeeze_dims = lambda: cond.cond(  # pylint: disable=g-long-lambda
           is_last_dim_1, squeeze_dims, lambda: (y_true, y_pred))
-      y_true, y_pred = control_flow_ops.cond(
+      y_true, y_pred = cond.cond(
           math_ops.equal(1, rank_diff), maybe_squeeze_dims, squeeze_dims)
 
   if sample_weight is None:
     return y_pred, y_true
 
-  sample_weight = ops.convert_to_tensor(sample_weight)
   weights_shape = sample_weight.shape
   weights_rank = weights_shape.ndims
   if weights_rank == 0:  # If weights is scalar, do nothing.
@@ -106,17 +100,17 @@ def squeeze_or_expand_dimensions(y_pred, y_true=None, sample_weight=None):
 
   def _maybe_expand_weights():
     expand_weights = lambda: array_ops.expand_dims(sample_weight, [-1])
-    return control_flow_ops.cond(
+    return cond.cond(
         math_ops.equal(rank_diff, -1), expand_weights, lambda: sample_weight)
 
   def _maybe_adjust_weights():
-    return control_flow_ops.cond(
+    return cond.cond(
         math_ops.equal(rank_diff, 1), maybe_squeeze_weights,
         _maybe_expand_weights)
 
   # squeeze or expand last dim of `sample_weight` if its rank differs by 1
   # from the new rank of `y_pred`.
-  sample_weight = control_flow_ops.cond(
+  sample_weight = cond.cond(
       math_ops.equal(weights_rank_tensor, 0), lambda: sample_weight,
       _maybe_adjust_weights)
   return y_pred, y_true, sample_weight
@@ -143,15 +137,12 @@ def scale_losses_by_sample_weight(losses, sample_weight):
   # Update dimensions of `sample_weight` to match with `losses` if possible.
   losses, _, sample_weight = squeeze_or_expand_dimensions(
       losses, None, sample_weight)
-
-  # Broadcast weights if possible.
-  sample_weight = weights_broadcast_ops.broadcast_weights(sample_weight, losses)
   return math_ops.multiply(losses, sample_weight)
 
 
 @tf_contextlib.contextmanager
 def check_per_example_loss_rank(per_example_loss):
-  """Context manager that checks that the rank of per_example_loss is atleast 1.
+  """Context manager that checks that the rank of per_example_loss is at least 1.
 
   Args:
     per_example_loss: Per example loss tensor.
@@ -165,7 +156,8 @@ def check_per_example_loss_rank(per_example_loss):
     if loss_rank == 0:
       raise ValueError(
           "Invalid value passed for `per_example_loss`. Expected a tensor with "
-          "at least rank 1, received: {}".format(per_example_loss))
+          f"at least rank 1. Received per_example_loss={per_example_loss} with "
+          f"rank {loss_rank}")
     yield
   else:
     # Handle dynamic rank.
@@ -188,7 +180,7 @@ def add_loss(loss, loss_collection=ops.GraphKeys.LOSSES):
     loss_collection: Optional collection to add the loss to.
   """
   # Since we have no way of figuring out when a training iteration starts or
-  # ends, holding on to a loss when executing eagerly is indistingishable from
+  # ends, holding on to a loss when executing eagerly is indistinguishable from
   # leaking memory. We instead leave the collection empty.
   if loss_collection and not context.executing_eagerly():
     ops.add_to_collection(loss_collection, loss)

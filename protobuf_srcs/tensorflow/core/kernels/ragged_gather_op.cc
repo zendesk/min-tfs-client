@@ -58,15 +58,21 @@ class RaggedGatherOpBase : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Get the input Tensors.
+
     OpInputList params_nested_splits_in;
     OP_REQUIRES_OK(context, context->input_list("params_nested_splits",
                                                 &params_nested_splits_in));
+    OP_REQUIRES(
+        context, params_nested_splits_in.size() > 0,
+        errors::InvalidArgument("params_nested_splits must be non empty"));
+
     const Tensor& params_dense_values_in =
         context->input(params_nested_splits_in.size());
     const Tensor& indices_in =
         context->input(params_nested_splits_in.size() + 1);
 
-    DCHECK_GT(params_nested_splits_in.size(), 0);  // Enforced by REGISTER_OP.
+    OP_REQUIRES(context, params_nested_splits_in[0].dims() > 0,
+                errors::InvalidArgument("Split tensors must not be scalars"));
     SPLITS_TYPE num_params = params_nested_splits_in[0].dim_size(0) - 1;
     OP_REQUIRES_OK(context, ValidateIndices(indices_in, num_params));
 
@@ -105,7 +111,7 @@ class RaggedGatherOpBase : public OpKernel {
             " is not in [0, ", num_params, ")");
       }
     }
-    return ::tensorflow::Status::OK();
+    return OkStatus();
   }
 
   // Construct the `splits` output tensors, encoded using a nested vector.
@@ -138,16 +144,16 @@ class RaggedGatherOpBase : public OpKernel {
     // Add `splits` that come from all but the last dimension of the dense
     // Tensor `indices`.  In particular, for each dimension D, we add a
     // splits tensor whose values are:
-    //   range(splits.shape[D]*splits.shape[D+1] + 1, step=splits.shape[D+1])
-    // E.g., if indices.shape=[5, 3] then we will add a splits tensor
-    // [0, 3, 6, 9, 12, 15], since the outermost dimension has 5 elements,
-    // each of which contains 3 values.
+    //   range(reduce_prod(splits.shape[:D]) + 1) * splits.shape[D+1]
+    // E.g., if indices.shape=[2, 3, 4] then we will add splits tensors:
+    //   [0, 3, 6]                    # length=2+1, stride=3
+    //   [0, 4, 8, 12, 16, 20, 24]    # length=2*3+1, stride=4
+    int nrows = 1;
     for (int dim = 0; dim < indices_in.dims() - 1; ++dim) {
-      int stride = indices_in.dim_size(dim + 1);
-      int index = stride;
-      for (int i = 0; i < indices_in.dim_size(dim); ++i) {
-        out_splits->at(dim).push_back(index);
-        index += stride;
+      nrows *= indices_in.dim_size(dim);
+      int row_length = indices_in.dim_size(dim + 1);
+      for (int i = 1; i < nrows + 1; ++i) {
+        out_splits->at(dim).push_back(i * row_length);
       }
     }
 
@@ -182,7 +188,7 @@ class RaggedGatherOpBase : public OpKernel {
         *num_values += limit - start;
       }
     }
-    return ::tensorflow::Status::OK();
+    return OkStatus();
   }
 
   ::tensorflow::Status ValidateSplits(
@@ -210,7 +216,7 @@ class RaggedGatherOpBase : public OpKernel {
         }
       }
     }
-    return ::tensorflow::Status::OK();
+    return OkStatus();
   }
 
   ::tensorflow::Status WriteSplits(
@@ -228,7 +234,7 @@ class RaggedGatherOpBase : public OpKernel {
       std::copy_n(out_splits[i].data(), out_splits[i].size(),
                   splits_flat.data());
     }
-    return ::tensorflow::Status::OK();
+    return OkStatus();
   }
 
   ::tensorflow::Status WriteValues(
@@ -247,7 +253,7 @@ class RaggedGatherOpBase : public OpKernel {
                           : (num_elements / params_dense_values_in.dim_size(0));
     CallWriteValueSlices(params_dense_values_in, value_slices, value_size,
                          values_out);
-    return ::tensorflow::Status::OK();
+    return OkStatus();
   }
 
  protected:
@@ -286,18 +292,16 @@ class RaggedGatherOp : public RaggedGatherOpBase<INDEX_TYPE, SPLITS_TYPE> {
           .TypeConstraint<value_type>("Tvalues")                    \
           .TypeConstraint<splits_type>("Tsplits"),                  \
       RaggedGatherOp<index_type, value_type, splits_type>);
-#define REGISTER_CPU_KERNEL(value_type)                         \
-  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int32, value_type, int32) \
-  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int64, value_type, int32) \
-  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int32, value_type, int64) \
-  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int64, value_type, int64)
+#define REGISTER_CPU_KERNEL(value_type)                           \
+  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int32, value_type, int32)   \
+  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int64_t, value_type, int32) \
+  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int32, value_type, int64_t) \
+  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int64_t, value_type, int64_t)
 TF_CALL_POD_TYPES(REGISTER_CPU_KERNEL);
 TF_CALL_tstring(REGISTER_CPU_KERNEL);
 TF_CALL_QUANTIZED_TYPES(REGISTER_CPU_KERNEL);
 TF_CALL_quint16(REGISTER_CPU_KERNEL);
 TF_CALL_qint16(REGISTER_CPU_KERNEL);
-TF_CALL_uint32(REGISTER_CPU_KERNEL);
-TF_CALL_uint64(REGISTER_CPU_KERNEL);
 #undef REGISTER_CPU_KERNEL
 #undef REGISTER_CPU_KERNEL_WITH_INDEX_TYPE
 

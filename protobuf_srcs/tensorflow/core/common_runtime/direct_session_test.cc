@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <map>
 #include <memory>
+#include <random>
 #include <string>
 #include <thread>  // NOLINT
 #include <unordered_map>
@@ -44,8 +45,10 @@ limitations under the License.
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/platform/stacktrace.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tensorflow/core/protobuf/rewriter_config.pb.h"
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/public/session_options.h"
@@ -177,8 +180,8 @@ TEST_F(DirectSessionMinusAXTest, RunSimpleNetwork_Callable) {
 
     Status s = session->RunCallable(handle, {}, nullptr, nullptr);
     EXPECT_TRUE(errors::IsInvalidArgument(s));
-    EXPECT_TRUE(absl::StrContains(s.error_message(),
-                                  "`fetch_tensors` must be provided"));
+    EXPECT_TRUE(
+        absl::StrContains(s.message(), "`fetch_tensors` must be provided"));
 
     TF_ASSERT_OK(session->ReleaseCallable(handle));
 
@@ -186,13 +189,11 @@ TEST_F(DirectSessionMinusAXTest, RunSimpleNetwork_Callable) {
     s = session->RunCallable(handle, {}, &outputs, nullptr);
     EXPECT_TRUE(errors::IsInvalidArgument(s));
     EXPECT_TRUE(absl::StrContains(
-        s.error_message(),
-        "Attempted to run callable after handle was released"));
+        s.message(), "Attempted to run callable after handle was released"));
 
     s = session->RunCallable(handle + 1, {}, &outputs, nullptr);
     EXPECT_TRUE(errors::IsInvalidArgument(s));
-    EXPECT_TRUE(
-        absl::StrContains(s.error_message(), "No such callable handle"));
+    EXPECT_TRUE(absl::StrContains(s.message(), "No such callable handle"));
   }
 }
 
@@ -222,8 +223,7 @@ TEST_F(DirectSessionMinusAXTest, RunSimpleNetwork_OptimizeForStaticGraph) {
 
   s = session->Extend({});
   EXPECT_TRUE(errors::IsFailedPrecondition(s));
-  EXPECT_TRUE(
-      absl::StrContains(s.error_message(), "optimize_for_static_graph"));
+  EXPECT_TRUE(absl::StrContains(s.message(), "optimize_for_static_graph"));
 }
 
 TEST_F(DirectSessionMinusAXTest,
@@ -261,7 +261,7 @@ TEST_F(DirectSessionMinusAXTest,
 
   EXPECT_TRUE(errors::IsInvalidArgument(s));
   EXPECT_TRUE(
-      absl::StrContains(s.error_message(), "disable_output_partition_graphs"));
+      absl::StrContains(s.message(), "disable_output_partition_graphs"));
 }
 
 TEST_F(DirectSessionMinusAXTest, RunSimpleNetwork_FinalizeWithCallables) {
@@ -297,8 +297,7 @@ TEST_F(DirectSessionMinusAXTest, RunSimpleNetwork_FinalizeWithCallables) {
   Status s =
       session->MakeCallable(MakeCallableOptions({}, {y_ + ":0"}, {}), &handle);
   EXPECT_TRUE(errors::IsFailedPrecondition(s));
-  EXPECT_TRUE(
-      absl::StrContains(s.error_message(), "Session has been finalized."));
+  EXPECT_TRUE(absl::StrContains(s.message(), "Session has been finalized."));
 }
 
 TEST_F(DirectSessionMinusAXTest, RunSimpleNetwork_FinalizeWithRun) {
@@ -330,8 +329,7 @@ TEST_F(DirectSessionMinusAXTest, RunSimpleNetwork_FinalizeWithRun) {
   // Running a different subgraph fails because the session has been finalized.
   Status s = session->Run({}, {y_ + ":0"}, {}, &outputs);
   EXPECT_TRUE(errors::IsFailedPrecondition(s));
-  EXPECT_TRUE(
-      absl::StrContains(s.error_message(), "Session has been finalized."));
+  EXPECT_TRUE(absl::StrContains(s.message(), "Session has been finalized."));
 }
 
 TEST_F(DirectSessionMinusAXTest, TestTensorConnection) {
@@ -406,7 +404,7 @@ TEST_F(DirectSessionMinusAXTest, TestTensorConnection) {
     Session::CallableHandle handle;
     Status s = session->MakeCallable(callable_options, &handle);
     EXPECT_TRUE(errors::IsInvalidArgument(s));
-    EXPECT_TRUE(absl::StrContains(s.error_message(), "would create a cycle"));
+    EXPECT_TRUE(absl::StrContains(s.message(), "would create a cycle"));
   }
 
   {
@@ -420,7 +418,7 @@ TEST_F(DirectSessionMinusAXTest, TestTensorConnection) {
     Session::CallableHandle handle;
     Status s = session->MakeCallable(callable_options, &handle);
     EXPECT_TRUE(errors::IsInvalidArgument(s));
-    EXPECT_TRUE(absl::StrContains(s.error_message(), "unknown node"));
+    EXPECT_TRUE(absl::StrContains(s.message(), "unknown node"));
   }
 
   {
@@ -435,7 +433,7 @@ TEST_F(DirectSessionMinusAXTest, TestTensorConnection) {
     Session::CallableHandle handle;
     Status s = session->MakeCallable(callable_options, &handle);
     EXPECT_TRUE(errors::IsInvalidArgument(s));
-    EXPECT_TRUE(absl::StrContains(s.error_message(), "unknown edge"));
+    EXPECT_TRUE(absl::StrContains(s.message(), "unknown edge"));
   }
 
   {
@@ -449,8 +447,7 @@ TEST_F(DirectSessionMinusAXTest, TestTensorConnection) {
     Session::CallableHandle handle;
     Status s = session->MakeCallable(callable_options, &handle);
     EXPECT_TRUE(errors::IsNotFound(s));
-    EXPECT_TRUE(
-        absl::StrContains(s.error_message(), "unable to find feed output"));
+    EXPECT_TRUE(absl::StrContains(s.message(), "unable to find feed output"));
   }
 
   {
@@ -467,7 +464,7 @@ TEST_F(DirectSessionMinusAXTest, TestTensorConnection) {
     Session::CallableHandle handle;
     Status s = session->MakeCallable(callable_options, &handle);
     EXPECT_TRUE(errors::IsInvalidArgument(s));
-    EXPECT_TRUE(absl::StrContains(s.error_message(), "fed more than once"));
+    EXPECT_TRUE(absl::StrContains(s.message(), "fed more than once"));
   }
 
   {
@@ -482,7 +479,7 @@ TEST_F(DirectSessionMinusAXTest, TestTensorConnection) {
     Session::CallableHandle handle;
     Status s = session->MakeCallable(callable_options, &handle);
     EXPECT_TRUE(errors::IsInvalidArgument(s));
-    EXPECT_TRUE(absl::StrContains(s.error_message(), "fed more than once"));
+    EXPECT_TRUE(absl::StrContains(s.message(), "fed more than once"));
   }
 }
 
@@ -907,7 +904,7 @@ TEST(DirectSessionTest, MultipleFeedTest) {
       {first_identity->name() + ":0", second_identity->name() + ":0"}, {},
       &outputs);
   EXPECT_TRUE(errors::IsInvalidArgument(s));
-  EXPECT_TRUE(absl::StrContains(s.error_message(), "fed more than once"));
+  EXPECT_TRUE(absl::StrContains(s.message(), "fed more than once"));
 }
 
 TEST(DirectSessionTest, MultipleFeedTest_Callable) {
@@ -990,7 +987,7 @@ TEST(DirectSessionTest, MultipleFeedTest_Callable) {
           {first_identity->name() + ":0", second_identity->name() + ":0"}, {}),
       &handle);
   EXPECT_TRUE(errors::IsInvalidArgument(s));
-  EXPECT_TRUE(absl::StrContains(s.error_message(), "fed more than once"));
+  EXPECT_TRUE(absl::StrContains(s.message(), "fed more than once"));
 }
 
 TEST(DirectSessionTest, TestTensorConnectionUseTwice) {
@@ -1144,7 +1141,7 @@ TEST(DirectSessionTest, MultipleFeedTestSomeSyncRun) {
       {first_identity->name() + ":0", second_identity->name() + ":0"}, {},
       &outputs, nullptr);
   EXPECT_TRUE(errors::IsInvalidArgument(s));
-  EXPECT_TRUE(absl::StrContains(s.error_message(), "fed more than once"));
+  EXPECT_TRUE(absl::StrContains(s.message(), "fed more than once"));
 }
 
 REGISTER_OP("SessionMetadataReader")
@@ -1193,7 +1190,7 @@ FunctionDef SessionMetadataReaderOpFn() {
 TEST(DirectSessionTest, SessionMetadataAbsent) {
   Graph g(OpRegistry::Global());
   Tensor vx(DT_INT64, TensorShape({}));
-  vx.scalar<int64>()() = 17;
+  vx.scalar<int64_t>()() = 17;
   Node* x = test::graph::Constant(&g, vx);
   Node* y = test::graph::Unary(&g, "SessionMetadataReader", x);
   GraphDef def;
@@ -1214,7 +1211,7 @@ TEST(DirectSessionTest, SessionMetadataAbsentViaFunction) {
   FunctionLibraryDefinition flib(OpRegistry::Global(), library_graph_def);
   Graph g(&flib);
   Tensor vx(DT_INT64, TensorShape({}));
-  vx.scalar<int64>()() = 17;
+  vx.scalar<int64_t>()() = 17;
   Node* x = test::graph::Constant(&g, vx);
   Node* y = test::graph::Unary(&g, "SessionMetadataReaderFn", x);
   GraphDef def;
@@ -1233,7 +1230,7 @@ TEST(DirectSessionTest, SessionMetadataAbsentViaFunction) {
 TEST(DirectSessionTest, SessionMetadataPresent) {
   Graph g(OpRegistry::Global());
   Tensor vx(DT_INT64, TensorShape({}));
-  vx.scalar<int64>()() = 17;
+  vx.scalar<int64_t>()() = 17;
   Node* x = test::graph::Constant(&g, vx);
   Node* y = test::graph::Unary(&g, "SessionMetadataReader", x);
   GraphDef def;
@@ -1248,13 +1245,26 @@ TEST(DirectSessionTest, SessionMetadataPresent) {
   std::vector<Tensor> outputs;
   RunOptions run_opts;
   run_opts.set_inter_op_thread_pool(-1);
-  auto s = sess->Run(run_opts, {}, {y->name() + ":0"}, {}, &outputs, nullptr);
 
+  // Run without requesting RunMetadata.
+  auto s = sess->Run(run_opts, {}, {y->name() + ":0"}, {}, &outputs,
+                     nullptr /*=run_metadata*/);
   SessionMetadata read_metadata;
   ASSERT_TRUE(protobuf::TextFormat::ParseFromString(
       outputs[0].scalar<tstring>()(), &read_metadata));
   EXPECT_EQ("name", read_metadata.name());
   EXPECT_EQ(1, read_metadata.version());
+
+  // Run with requesting RunMetadata.
+  RunMetadata metadata;
+  s = sess->Run(run_opts, {}, {y->name() + ":0"}, {}, &outputs,
+                &metadata /*=run_metadata*/);
+  ASSERT_TRUE(protobuf::TextFormat::ParseFromString(
+      outputs[0].scalar<tstring>()(), &read_metadata));
+  EXPECT_EQ("name", read_metadata.name());
+  EXPECT_EQ(1, read_metadata.version());
+  EXPECT_EQ(session_metadata->name(), metadata.session_metadata().name());
+  EXPECT_EQ(session_metadata->version(), metadata.session_metadata().version());
 }
 
 TEST(DirectSessionTest, SessionMetadataPresentViaFunction) {
@@ -1263,7 +1273,7 @@ TEST(DirectSessionTest, SessionMetadataPresentViaFunction) {
   FunctionLibraryDefinition flib(OpRegistry::Global(), library_graph_def);
   Graph g(&flib);
   Tensor vx(DT_INT64, TensorShape({}));
-  vx.scalar<int64>()() = 17;
+  vx.scalar<int64_t>()() = 17;
   Node* x = test::graph::Constant(&g, vx);
   Node* y = test::graph::Unary(&g, "SessionMetadataReaderFn", x);
   GraphDef def;
@@ -1279,13 +1289,26 @@ TEST(DirectSessionTest, SessionMetadataPresentViaFunction) {
   std::vector<Tensor> outputs;
   RunOptions run_opts;
   run_opts.set_inter_op_thread_pool(-1);
-  auto s = sess->Run(run_opts, {}, {y->name() + ":0"}, {}, &outputs, nullptr);
 
+  // Run without requesting RunMetadata.
+  auto s = sess->Run(run_opts, {}, {y->name() + ":0"}, {}, &outputs,
+                     nullptr /*=run_metadata*/);
   SessionMetadata read_metadata;
   ASSERT_TRUE(protobuf::TextFormat::ParseFromString(
       outputs[0].scalar<tstring>()(), &read_metadata));
   EXPECT_EQ("name", read_metadata.name());
   EXPECT_EQ(1, read_metadata.version());
+
+  // Run with requesting RunMetadata.
+  RunMetadata metadata;
+  s = sess->Run(run_opts, {}, {y->name() + ":0"}, {}, &outputs,
+                &metadata /*=run_metadata*/);
+  ASSERT_TRUE(protobuf::TextFormat::ParseFromString(
+      outputs[0].scalar<tstring>()(), &read_metadata));
+  EXPECT_EQ("name", read_metadata.name());
+  EXPECT_EQ(1, read_metadata.version());
+  EXPECT_EQ(session_metadata->name(), metadata.session_metadata().name());
+  EXPECT_EQ(session_metadata->version(), metadata.session_metadata().version());
 }
 
 TEST(DirectSessionTest, SessionMetadataKey) {
@@ -1359,8 +1382,8 @@ class ThreadIDOp : public OpKernel {
     OP_REQUIRES_OK(ctx,
                    ctx->allocate_output("y", TensorShape({}), &out_tensor));
     std::hash<std::thread::id> hasher;
-    out_tensor->scalar<int64>()() =
-        static_cast<int64>(hasher(std::this_thread::get_id()));
+    out_tensor->scalar<int64_t>()() =
+        static_cast<int64_t>(hasher(std::this_thread::get_id()));
   }
 };
 REGISTER_KERNEL_BUILDER(Name("ThreadID").Device(DEVICE_CPU), ThreadIDOp);
@@ -1368,7 +1391,7 @@ REGISTER_KERNEL_BUILDER(Name("ThreadID").Device(DEVICE_CPU), ThreadIDOp);
 TEST(DirectSessionTest, SessionSyncRun) {
   Graph g(OpRegistry::Global());
   Tensor vx(DT_INT64, TensorShape({}));
-  vx.scalar<int64>()() = 17;
+  vx.scalar<int64_t>()() = 17;
   Node* x = test::graph::Constant(&g, vx);
   Node* y = test::graph::Unary(&g, "ThreadID", x);
   GraphDef def;
@@ -1381,14 +1404,74 @@ TEST(DirectSessionTest, SessionSyncRun) {
   auto s = sess->Run(run_opts, {}, {y->name() + ":0"}, {}, &outputs, nullptr);
 
   std::hash<std::thread::id> hasher;
-  EXPECT_EQ(static_cast<int64>(hasher(std::this_thread::get_id())),
-            static_cast<int64>(outputs[0].scalar<int64>()()));
+  EXPECT_EQ(static_cast<int64_t>(hasher(std::this_thread::get_id())),
+            static_cast<int64_t>(outputs[0].scalar<int64_t>()()));
+}
+
+REGISTER_OP("ExpensiveNoop").SetIsStateful();
+
+class ExpensiveNoopOp : public OpKernel {
+ public:
+  using OpKernel::OpKernel;
+  bool IsExpensive() override { return true; }
+  void Compute(OpKernelContext* ctx) override {
+    const string& stack_trace = tensorflow::CurrentStackTrace();
+    const string process_method = "ExecutorState::Process()";
+    size_t pos = 0;
+    int frame_count = 0;
+    while ((pos = stack_trace.find("ExecutorState::Process()", pos)) !=
+           string::npos) {
+      ++frame_count;
+      ++pos;
+    }
+    OP_REQUIRES(ctx, frame_count <= 1,
+                errors::Internal(
+                    "Recursive call to ExecutorState::Process() detected."));
+  }
+};
+
+REGISTER_KERNEL_BUILDER(Name("ExpensiveNoop").Device(DEVICE_CPU),
+                        ExpensiveNoopOp);
+
+TEST(DirectSessionTest, SessionSyncRun_DeepGraph) {
+  Graph g(OpRegistry::Global());
+
+  std::vector<Node*> nodes;
+  nodes.reserve(1024);
+
+  auto make_expensive_noop = [&g](gtl::ArraySlice<Node*> control_deps) {
+    Node* ret;
+    auto builder = NodeBuilder(g.NewName("N"), "ExpensiveNoop");
+    for (Node* control_dep : control_deps) {
+      builder = builder.ControlInput(control_dep);
+    }
+    TF_CHECK_OK(builder.Finalize(&g, &ret));
+    return ret;
+  };
+
+  Node* base = make_expensive_noop({});
+
+  Node* child_1 = make_expensive_noop({base});
+  Node* child_2 = make_expensive_noop({base});
+
+  GraphDef def;
+  g.ToGraphDef(&def);
+
+  auto sess = CreateSession();
+  TF_ASSERT_OK(sess->Create(def));
+  std::vector<Tensor> outputs;
+  RunOptions run_opts;
+  run_opts.set_inter_op_thread_pool(-1);
+
+  EXPECT_TRUE(sess->Run(run_opts, {}, {}, {child_1->name(), child_2->name()},
+                        &outputs, nullptr)
+                  .ok());
 }
 
 TEST(DirectSessionTest, SyncSession) {
   Graph g(OpRegistry::Global());
   Tensor vx(DT_INT64, TensorShape({}));
-  vx.scalar<int64>()() = 17;
+  vx.scalar<int64_t>()() = 17;
   Node* x = test::graph::Constant(&g, vx);
   Node* y = test::graph::Unary(&g, "ThreadID", x);
   GraphDef def;
@@ -1402,8 +1485,8 @@ TEST(DirectSessionTest, SyncSession) {
   auto s = sess->Run(run_opts, {}, {y->name() + ":0"}, {}, &outputs, nullptr);
 
   std::hash<std::thread::id> hasher;
-  EXPECT_EQ(static_cast<int64>(hasher(std::this_thread::get_id())),
-            static_cast<int64>(outputs[0].scalar<int64>()()));
+  EXPECT_EQ(static_cast<int64_t>(hasher(std::this_thread::get_id())),
+            static_cast<int64_t>(outputs[0].scalar<int64_t>()()));
 }
 
 REGISTER_OP("Darth").Input("x: float").Output("y: float").Doc(R"doc(
@@ -1571,7 +1654,7 @@ TEST(DirectSessionTest, PartialRunMissingFeed) {
                     {third_identity->name() + ":0"}, &outputs);
   ASSERT_TRUE(errors::IsInvalidArgument(s));
   EXPECT_TRUE(
-      absl::StrContains(s.error_message(), "can't be computed from the feeds"));
+      absl::StrContains(s.message(), "can't be computed from the feeds"));
 }
 
 TEST(DirectSessionTest, PartialRunMultiOutputFeed) {
@@ -1601,7 +1684,7 @@ TEST(DirectSessionTest, PartialRunMultiOutputFeed) {
   s = session->PRun(handle, {}, {fourth_identity->name() + ":0"}, &outputs);
   ASSERT_TRUE(errors::IsInvalidArgument(s));
   EXPECT_TRUE(
-      absl::StrContains(s.error_message(), "can't be computed from the feeds"));
+      absl::StrContains(s.message(), "can't be computed from the feeds"));
 
   // Feed switch_node:1 and fetch fourth_identity.
   s = session->PRun(handle, {{switch_node->name() + ":1", bool_value}},
@@ -1742,48 +1825,49 @@ TEST(DirectSessionTest, CreateGraphFailsWhenAssigningAFedVar) {
 TEST(DirectSessionTest, TimeoutSession) {
   GraphDef graph;
   // Creates a graph with one FIFOQueue and one dequeue op.
-  protobuf::TextFormat::ParseFromString(R"proto(
-    node {
-      name: 'fifo_queue'
-      op: 'FIFOQueue'
-      device: '/device:CPU:0'
-      attr {
-        key: 'capacity'
-        value { i: 10 }
-      }
-      attr {
-        key: 'component_types'
-        value { list { type: DT_FLOAT } }
-      }
-      attr {
-        key: 'container'
-        value { s: '' }
-      }
-      attr {
-        key: 'shapes'
-        value { list {} }
-      }
-      attr {
-        key: 'shared_name'
-        value { s: '' }
-      }
-    }
-    node {
-      name: 'fifo_queue_Dequeue'
-      op: 'QueueDequeue'
-      input: 'fifo_queue'
-      device: '/device:CPU:0'
-      attr {
-        key: 'component_types'
-        value { list { type: DT_FLOAT } }
-      }
-      attr {
-        key: 'timeout_ms'
-        value { i: -1 }
-      }
-    }
-    versions { producer: 9 }
-  )proto", &graph);
+  protobuf::TextFormat::ParseFromString(R"pb(
+                                          node {
+                                            name: 'fifo_queue'
+                                            op: 'FIFOQueue'
+                                            device: '/device:CPU:0'
+                                            attr {
+                                              key: 'capacity'
+                                              value { i: 10 }
+                                            }
+                                            attr {
+                                              key: 'component_types'
+                                              value { list { type: DT_FLOAT } }
+                                            }
+                                            attr {
+                                              key: 'container'
+                                              value { s: '' }
+                                            }
+                                            attr {
+                                              key: 'shapes'
+                                              value { list {} }
+                                            }
+                                            attr {
+                                              key: 'shared_name'
+                                              value { s: '' }
+                                            }
+                                          }
+                                          node {
+                                            name: 'fifo_queue_Dequeue'
+                                            op: 'QueueDequeue'
+                                            input: 'fifo_queue'
+                                            device: '/device:CPU:0'
+                                            attr {
+                                              key: 'component_types'
+                                              value { list { type: DT_FLOAT } }
+                                            }
+                                            attr {
+                                              key: 'timeout_ms'
+                                              value { i: -1 }
+                                            }
+                                          }
+                                          versions { producer: 9 }
+                                        )pb",
+                                        &graph);
 
   {
     // Creates a session with operation_timeout_in_ms set to 100 milliseconds.
@@ -1840,14 +1924,15 @@ REGISTER_OP("CancellationMgrPollingOp").Doc("");
 TEST(DirectSessionTest, TestTimeoutCleanShutdown) {
   GraphDef graph;
   // Creates a graph with one FIFOQueue and one dequeue op.
-  protobuf::TextFormat::ParseFromString(R"proto(
-    node {
-      name: 'cm_polling'
-      op: 'CancellationMgrPollingOp'
-      device: '/device:CPU:0'
-    }
-    versions { producer: 9 }
-  )proto", &graph);
+  protobuf::TextFormat::ParseFromString(R"pb(
+                                          node {
+                                            name: 'cm_polling'
+                                            op: 'CancellationMgrPollingOp'
+                                            device: '/device:CPU:0'
+                                          }
+                                          versions { producer: 9 }
+                                        )pb",
+                                        &graph);
 
   // Creates a session with operation_timeout_in_ms set to 100 milliseconds.
   SessionOptions options;
@@ -1903,7 +1988,6 @@ static void TestSessionInterOpThreadsImpl(bool use_function_lib,
       ->set_constant_folding(RewriterConfig::OFF);
   (*options.config.mutable_device_count())["CPU"] = 2;
   (*options.config.mutable_device_count())["GPU"] = 0;
-  (*options.config.mutable_device_count())["SYCL"] = 0;
 
   auto* p = options.config.add_session_inter_op_thread_pool();
   if (use_global_pools) p->set_global_name("large pool");
@@ -2060,10 +2144,10 @@ TEST(DirectSessionTest, TestSessionInterOpThreadsInvalidOptions) {
       Status s = session->Run(run_options, {} /* inputs */,
                               {x->name() + ":0"} /* output_names */, {},
                               &outputs, nullptr /* run_metadata */);
-      EXPECT_EQ(
-          strings::StrCat("Invalid argument: Invalid inter_op_thread_pool: ",
-                          pool_num),
-          s.ToString());
+      EXPECT_EQ(s.code(), error::INVALID_ARGUMENT);
+      EXPECT_TRUE(absl::StrContains(
+          s.message(),
+          strings::StrCat("Invalid inter_op_thread_pool: ", pool_num)));
     }
   }
 
@@ -2128,11 +2212,13 @@ TEST(DirectSessionTest, TestDirectSessionRunClose) {
   // Run the read on the variable to get an error.
   Status s = session->Run({} /* inputs */, {},
                           {var_assign->name()} /* target_nodes */, nullptr);
-  EXPECT_EQ("Cancelled: Session has been closed.", s.ToString());
+  EXPECT_EQ(s.code(), error::CANCELLED);
+  EXPECT_TRUE(absl::StrContains(s.message(), "Session has been closed."));
 
   // Run the read as a callable to verify that we get the same error.
   s = session->RunCallable(handle, {}, {}, nullptr);
-  EXPECT_EQ("Cancelled: Session has been closed.", s.ToString());
+  EXPECT_EQ(s.code(), error::CANCELLED);
+  EXPECT_TRUE(absl::StrContains(s.message(), "Session has been closed."));
 }
 
 TEST(DirectSessionTest, TestDirectSessionPRunClose) {
@@ -2179,7 +2265,8 @@ TEST(DirectSessionTest, TestDirectSessionPRunClose) {
   // Feed first_const, fetch first_identity
   s = session->PRun(handle, {{first_const->name(), value_11}},
                     {first_identity->name() + ":0"}, &outputs);
-  EXPECT_EQ("Cancelled: Session has been closed.", s.ToString());
+  EXPECT_EQ(s.code(), error::CANCELLED);
+  EXPECT_TRUE(absl::StrContains(s.message(), "Session has been closed."));
 }
 
 TEST(DirectSessionTest, TestDirectSessionReset) {
@@ -2219,7 +2306,8 @@ TEST(DirectSessionTest, TestDirectSessionReset) {
   // fail, since the Variable buffer is cached by var.
   Status s = session->Run({} /* inputs */, {},
                           {var_assign->name()} /* target_nodes */, nullptr);
-  EXPECT_EQ("Cancelled: Session has been closed.", s.ToString());
+  EXPECT_EQ(s.code(), error::CANCELLED);
+  EXPECT_TRUE(absl::StrContains(s.message(), "Session has been closed."));
 }
 
 TEST(DirectSessionTest, LocalDeviceManager) {
@@ -2267,7 +2355,7 @@ bool IsCUDATensor(const Tensor& t) {
       cudaPointerGetAttributes(&attributes, t.tensor_data().data());
   if (err == cudaErrorInvalidValue) return false;
   CHECK_EQ(cudaSuccess, err) << cudaGetErrorString(err);
-  return (attributes.memoryType == cudaMemoryTypeDevice);
+  return (attributes.type == cudaMemoryTypeDevice);
 #elif TENSORFLOW_USE_ROCM
   hipPointerAttribute_t attributes;
   hipError_t err = hipPointerGetAttributes(&attributes, t.tensor_data().data());
@@ -2441,7 +2529,7 @@ void TestFeedAndFetchTensorsInDeviceMemoryFailsToMakeCallable(
     Status status = session->MakeCallable(opts, &handle);
     EXPECT_FALSE(status.ok()) << DataType_Name(dtype);
     EXPECT_TRUE(absl::StrContains(
-        status.error_message(),
+        status.message(),
         strings::StrCat(
             "Cannot feed or fetch tensor 'y:0' from device ", gpu_device_name,
             " as feeding/fetching from GPU devices is not yet supported for ",
@@ -2457,7 +2545,7 @@ void TestFeedAndFetchTensorsInDeviceMemoryFailsToMakeCallable(
     Status status = session->MakeCallable(opts, &handle);
     EXPECT_FALSE(status.ok());
     EXPECT_TRUE(absl::StrContains(
-        status.error_message(),
+        status.message(),
         strings::StrCat(
             "Cannot feed or fetch tensor 'x:0' from device ", gpu_device_name,
             " as feeding/fetching from GPU devices is not yet supported for ",
@@ -2497,6 +2585,8 @@ void TestFeedAndFetchTensorsInDeviceMemoryForAllDataTypes(
       case DT_INT8:
       case DT_UINT16:
       case DT_UINT8:
+      case DT_INT4:
+      case DT_UINT4:
         TestFeedAndFetchTensorsInDeviceMemory(opts, dtype);
         break;
       default:
@@ -2526,10 +2616,9 @@ TEST(DirectSessionTest,
 
 // A simple benchmark for the overhead of `DirectSession::Run()` calls
 // with varying numbers of feeds/fetches.
-void FeedFetchBenchmarkHelper(int iters, int num_feeds,
-                              bool use_make_callable) {
-  testing::StopTiming();
-
+void FeedFetchBenchmarkHelper(::testing::benchmark::State& state, int num_feeds,
+                              bool use_make_callable, int inter_op_threads,
+                              bool use_single_threaded_executor) {
   Tensor value(DT_FLOAT, TensorShape());
   value.flat<float>()(0) = 37.0;
 
@@ -2561,6 +2650,11 @@ void FeedFetchBenchmarkHelper(int iters, int num_feeds,
   GraphDef gd;
   g.ToGraphDef(&gd);
   SessionOptions opts;
+  opts.config.set_inter_op_parallelism_threads(inter_op_threads);
+  if (use_single_threaded_executor) {
+    opts.config.mutable_experimental()->set_executor_type(
+        "SINGLE_THREADED_EXECUTOR");
+  }
   std::unique_ptr<Session> session(NewSession(opts));
   TF_CHECK_OK(session->Create(gd));
   if (use_make_callable) {
@@ -2576,13 +2670,11 @@ void FeedFetchBenchmarkHelper(int iters, int num_feeds,
     }
     TF_CHECK_OK(session->MakeCallable(callable_options, &handle));
 
-    testing::StartTiming();
-    for (int i = 0; i < iters; ++i) {
+    for (auto s : state) {
       std::vector<Tensor> output_values;
       TF_CHECK_OK(
           session->RunCallable(handle, input_tensors, &output_values, nullptr));
     }
-    testing::StopTiming();
   } else {
     {
       // NOTE(mrry): Ignore the first run, which will incur the graph
@@ -2594,24 +2686,52 @@ void FeedFetchBenchmarkHelper(int iters, int num_feeds,
       std::vector<Tensor> output_values;
       TF_CHECK_OK(session->Run(inputs, outputs, {}, &output_values));
     }
-    testing::StartTiming();
-    for (int i = 0; i < iters; ++i) {
+
+    for (auto s : state) {
       std::vector<Tensor> output_values;
       TF_CHECK_OK(session->Run(inputs, outputs, {}, &output_values));
     }
-    testing::StopTiming();
   }
 }
 
-void BM_FeedFetch(int iters, int num_feeds) {
-  FeedFetchBenchmarkHelper(iters, num_feeds, /* use_make_callable */ false);
+void BM_FeedFetch(::testing::benchmark::State& state) {
+  const int num_feeds = state.range(0);
+
+  FeedFetchBenchmarkHelper(state, num_feeds, /* use_make_callable */ false,
+                           /* inter_op_threads */ 0,
+                           /* use_single_threaded_executor */ false);
 }
-void BM_FeedFetchCallable(int iters, int num_feeds) {
-  FeedFetchBenchmarkHelper(iters, num_feeds, /* use_make_callable */ true);
+void BM_FeedFetchCallable(::testing::benchmark::State& state) {
+  const int num_feeds = state.range(0);
+
+  FeedFetchBenchmarkHelper(state, num_feeds, /* use_make_callable */ true,
+                           /* inter_op_threads */ 0,
+                           /* use_single_threaded_executor */ false);
+}
+void BM_FeedFetchCallableSingleThread(::testing::benchmark::State& state) {
+  const int num_feeds = state.range(0);
+
+  FeedFetchBenchmarkHelper(state, num_feeds, /* use_make_callable */ true,
+                           /* inter_op_threads */ -1,
+                           /* use_single_threaded_executor */ false);
+}
+void BM_FeedFetchCallableSingleThreadExecutor(
+    ::testing::benchmark::State& state) {
+  const int num_feeds = state.range(0);
+
+  FeedFetchBenchmarkHelper(state, num_feeds, /* use_make_callable */ true,
+                           /* inter_op_threads */ -1,
+                           /* use_single_threaded_executor */ true);
 }
 
 BENCHMARK(BM_FeedFetch)->Arg(1)->Arg(2)->Arg(5)->Arg(10);
 BENCHMARK(BM_FeedFetchCallable)->Arg(1)->Arg(2)->Arg(5)->Arg(10);
+BENCHMARK(BM_FeedFetchCallableSingleThread)->Arg(1)->Arg(2)->Arg(5)->Arg(10);
+BENCHMARK(BM_FeedFetchCallableSingleThreadExecutor)
+    ->Arg(1)
+    ->Arg(2)
+    ->Arg(5)
+    ->Arg(10);
 
 }  // namespace
 
@@ -2620,7 +2740,7 @@ class DirectSessionCollectiveTest : public ::testing::Test {
   // Creates a graph with CollectiveOps inside functions and runs it.  Returns
   // the generated collective_graph_key.
   Status RunGraphWithCollectiveFunctions(bool add_unused_function,
-                                         int64* collective_graph_key) {
+                                         int64_t* collective_graph_key) {
     GraphDef g = CreateGraph(add_unused_function);
     const Tensor t1 =
         test::AsTensor<float>({0.1, 1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1});
@@ -2637,7 +2757,7 @@ class DirectSessionCollectiveTest : public ::testing::Test {
       mutex_lock l(direct_session->collective_graph_key_lock_);
       *collective_graph_key = direct_session->collective_graph_key_;
     }
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -2718,11 +2838,74 @@ class DirectSessionCollectiveTest : public ::testing::Test {
 
 TEST_F(DirectSessionCollectiveTest,
        TestCollectiveGraphKeyUsesOnlyCalledFunctions) {
-  int64 key1;
+  int64_t key1;
   TF_ASSERT_OK(RunGraphWithCollectiveFunctions(false, &key1));
-  int64 key2;
+  int64_t key2;
   TF_ASSERT_OK(RunGraphWithCollectiveFunctions(true, &key2));
   ASSERT_EQ(key1, key2);
+}
+
+// Accesses the cancellation manager for the step after the step has been
+// cancelled.
+class StatefulOutputRequiredOp : public OpKernel {
+ public:
+  explicit StatefulOutputRequiredOp(OpKernelConstruction* ctx)
+      : OpKernel(ctx) {}
+  void Compute(OpKernelContext* ctx) override {
+    // The op counts the number of outputs required in the current subgraph,
+    // and emits that number on each of its required outputs.
+    Tensor count_outputs_required_t(int64_t{0});
+    int64_t& count_outputs_required =
+        count_outputs_required_t.scalar<int64_t>()();
+    for (int i = 0; i < num_outputs(); ++i) {
+      if (ctx->output_required(i)) ++count_outputs_required;
+    }
+    for (int i = 0; i < num_outputs(); ++i) {
+      if (ctx->output_required(i)) ctx->set_output(i, count_outputs_required_t);
+    }
+  }
+};
+
+REGISTER_KERNEL_BUILDER(Name("StatefulOutputRequired").Device(DEVICE_CPU),
+                        StatefulOutputRequiredOp);
+REGISTER_OP("StatefulOutputRequired")
+    .Output("results : num_outs * int64")
+    .Attr("num_outs : int = 5")
+    .SetIsStateful();
+
+TEST(DirectSessionTest, TestStatefulOutputRequiredOp) {
+  GraphDef graph;
+  // Creates a graph with a StatefulOutputRequired op with 5 outputs.
+  protobuf::TextFormat::ParseFromString(
+      R"pb(
+        node { name: 'n' op: 'StatefulOutputRequired' device: '/device:CPU:0' }
+        versions { producer: 9 }
+      )pb",
+      &graph);
+
+  std::unique_ptr<Session> session(NewSession(SessionOptions()));
+  ASSERT_TRUE(session != nullptr);
+  TF_ASSERT_OK(session->Create(std::move(graph)));
+
+  // As a stateful op, a single StatefulOutputRequired kernel will be created
+  // and shared across multiple subgraphs. We create 5 different subgraphs,
+  // fetching different prefixes of the output of the op.
+  for (int num_outputs_required = 1; num_outputs_required <= 5;
+       ++num_outputs_required) {
+    std::vector<string> fetch_tensor_names;
+    fetch_tensor_names.reserve(num_outputs_required);
+    for (int output_idx = 0; output_idx < num_outputs_required; ++output_idx) {
+      fetch_tensor_names.push_back(strings::StrCat("n:", output_idx));
+    }
+    std::vector<Tensor> fetch_tensors;
+    TF_ASSERT_OK(session->Run({}, fetch_tensor_names, {}, &fetch_tensors));
+    ASSERT_EQ(num_outputs_required, fetch_tensors.size());
+    for (const Tensor& t : fetch_tensors) {
+      ASSERT_EQ(num_outputs_required, t.scalar<int64_t>()());
+    }
+  }
+
+  TF_ASSERT_OK(session->Close());
 }
 
 }  // namespace tensorflow

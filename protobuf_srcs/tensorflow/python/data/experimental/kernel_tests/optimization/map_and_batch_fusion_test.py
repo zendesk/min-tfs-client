@@ -13,25 +13,24 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for the `MapAndBatchFusion` optimization."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from absl.testing import parameterized
 
-from tensorflow.python.data.experimental.ops import optimization
+from tensorflow.python.data.experimental.ops import testing
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
-from tensorflow.python.framework import test_util
+from tensorflow.python.data.ops import options as options_lib
+from tensorflow.python.framework import combinations
 from tensorflow.python.platform import test
 
 
-@test_util.run_all_in_graph_and_eager_modes
-class MapAndBatchFusionTest(test_base.DatasetTestBase):
+class MapAndBatchFusionTest(test_base.DatasetTestBase, parameterized.TestCase):
 
+  @combinations.generate(test_base.default_test_combinations())
   def testMapAndBatchFusion(self):
     dataset = dataset_ops.Dataset.range(10).apply(
-        optimization.assert_next(
+        testing.assert_next(
             ["MapAndBatch"])).map(lambda x: x * x).batch(10)
-    options = dataset_ops.Options()
+    options = options_lib.Options()
     options.experimental_optimization.apply_default_optimizations = False
     options.experimental_optimization.map_and_batch_fusion = True
     dataset = dataset.with_options(options)

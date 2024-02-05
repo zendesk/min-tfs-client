@@ -13,13 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
+#include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/string_util.h"
 
 namespace tflite {
@@ -66,7 +69,7 @@ TEST(SkipGramTest, TestUnigram) {
   SkipGramOp m(1, 0, false);
 
   m.SetInput(kSentence);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), testing::UnorderedElementsAreArray(
                                  {"The", "quick", "brown", "fox", "jumps",
                                   "over", "the", "lazy", "dog!"}));
@@ -75,7 +78,7 @@ TEST(SkipGramTest, TestUnigram) {
 TEST(SkipGramTest, TestBigram) {
   SkipGramOp m(2, 0, false);
   m.SetInput(kSentence);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               testing::UnorderedElementsAreArray(
                   {"The quick", "quick brown", "brown fox", "fox jumps",
@@ -85,7 +88,7 @@ TEST(SkipGramTest, TestBigram) {
 TEST(SkipGramTest, TestAllBigram) {
   SkipGramOp m(2, 0, true);
   m.SetInput(kSentence);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               testing::UnorderedElementsAreArray(
                   {// Unigram
@@ -99,7 +102,7 @@ TEST(SkipGramTest, TestAllBigram) {
 TEST(SkipGramTest, TestAllTrigram) {
   SkipGramOp m(3, 0, true);
   m.SetInput(kSentence);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               testing::UnorderedElementsAreArray(
                   {// Unigram
@@ -117,7 +120,7 @@ TEST(SkipGramTest, TestAllTrigram) {
 TEST(SkipGramTest, TestSkip1Bigram) {
   SkipGramOp m(2, 1, false);
   m.SetInput(kSentence);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetOutput(),
       testing::UnorderedElementsAreArray(
@@ -129,7 +132,7 @@ TEST(SkipGramTest, TestSkip1Bigram) {
 TEST(SkipGramTest, TestSkip2Bigram) {
   SkipGramOp m(2, 2, false);
   m.SetInput(kSentence);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               testing::UnorderedElementsAreArray(
                   {"The quick",  "The brown",   "The fox",    "quick brown",
@@ -143,7 +146,7 @@ TEST(SkipGramTest, TestSkip2Bigram) {
 TEST(SkipGramTest, TestSkip1Trigram) {
   SkipGramOp m(3, 1, false);
   m.SetInput(kSentence);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               testing::UnorderedElementsAreArray(
                   {"The quick brown", "The quick fox",    "The brown fox",
@@ -159,7 +162,7 @@ TEST(SkipGramTest, TestSkip1Trigram) {
 TEST(SkipGramTest, TestSkip2Trigram) {
   SkipGramOp m(3, 2, false);
   m.SetInput(kSentence);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               testing::UnorderedElementsAreArray(
                   {"The quick brown",  "The quick fox",     "The quick jumps",
@@ -182,7 +185,7 @@ TEST(SkipGramTest, TestSkip2Trigram) {
 TEST(SkipGramTest, TestAllSkip2Trigram) {
   SkipGramOp m(3, 2, true);
   m.SetInput(kSentence);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetOutput(),
       testing::UnorderedElementsAreArray(
@@ -215,35 +218,35 @@ TEST(SkipGramTest, TestAllSkip2Trigram) {
 TEST(SkipGramTest, TestSingleWord) {
   SkipGramOp m(1, 1, false);
   m.SetInput("Hi");
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAre("Hi"));
 }
 
 TEST(SkipGramTest, TestWordsLessThanGram) {
   SkipGramOp m(3, 1, false);
   m.SetInput("Hi hi");
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), std::vector<string>());
 }
 
 TEST(SkipGramTest, TestEmptyInput) {
   SkipGramOp m(1, 1, false);
   m.SetInput("");
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAre());
 }
 
 TEST(SkipGramTest, TestWhitespaceInput) {
   SkipGramOp m(1, 1, false);
   m.SetInput("    ");
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAre());
 }
 
 TEST(SkipGramTest, TestInputWithExtraSpace) {
   SkipGramOp m(1, 1, false);
   m.SetInput("   Hello   world    !  ");
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAre("Hello", "world", "!"));
 }
 

@@ -15,15 +15,18 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tensorflow/utils/eval_util.h"
 
+#include <algorithm>
+#include <string>
+
 #include "absl/container/inlined_vector.h"
 #include "absl/strings/string_view.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "mlir/IR/Attributes.h"  // TF:local_config_mlir
-#include "mlir/IR/Builders.h"  // TF:local_config_mlir
-#include "mlir/IR/Types.h"  // TF:local_config_mlir
-#include "mlir/Support/LogicalResult.h"  // TF:local_config_mlir
+#include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/c/eager/c_api_internal.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/export_tf_dialect_op.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
@@ -31,7 +34,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
-#include "tensorflow/stream_executor/lib/statusor.h"
+#include "tensorflow/core/util/device_name_utils.h"
 
 namespace tensorflow {
 
@@ -50,7 +53,7 @@ static bool IsOk(const TF_Status* s) {
 
 static bool IsOk(const Status& s) {
   if (s.ok()) return true;
-  VLOG(2) << s.error_message();
+  VLOG(2) << s.message();
   return false;
 }
 
@@ -76,16 +79,23 @@ mlir::LogicalResult EvaluateOperation(
   // Builds TF operation and sets all the attributes.
   std::string node_name = "unnamed";
   if (auto attr = inst->getAttrOfType<mlir::StringAttr>("name")) {
-    node_name = attr.getValue();
+    node_name = std::string(attr.getValue());
   }
   auto node_def_or = ConvertTFDialectOpToNodeDef(
       inst, node_name.c_str(), /*ignore_unregistered_attrs=*/true);
   RETURN_FAILURE_IF_ERROR(node_def_or.status());
-  const auto& node_def = node_def_or.ValueOrDie();
+  const auto& node_def = node_def_or.value();
+
   TFE_Op* op = TFE_NewOp(context, node_def->op().c_str(), status);
   RETURN_FAILURE_IF_ERROR(status);
   auto clean_op = MakeCleanup([op] { TFE_DeleteOp(op); });
-  TFE_OpSetDevice(op, node_def->device().c_str(), status);
+
+  // Explicitly set device to Host CPU instead of the device present in device
+  // attribute of the MLIR op. The assigned device might be remote, not
+  // available during compilation or compilation only device for on demand
+  // execution which may create a recursion if used for constant folding.
+  constexpr char kHostCpu[] = "/job:localhost/replica:0/task:0/CPU:0";
+  TFE_OpSetDevice(op, kHostCpu, status);
   RETURN_FAILURE_IF_ERROR(status);
   for (const auto& attr : node_def->attr()) {
     SetOpAttrValueScalar(context, op, attr.second, attr.first.c_str(), status);
@@ -98,7 +108,7 @@ mlir::LogicalResult EvaluateOperation(
   for (const auto operand : operands) {
     Tensor tensor;
     RETURN_FAILURE_IF_ERROR(ConvertToTensor(operand, &tensor));
-    TF_Tensor* tf_tensor = TF_TensorFromTensor(tensor, status);
+    TF_Tensor* tf_tensor = TF_TensorFromTensor(tensor, &status->status);
     RETURN_FAILURE_IF_ERROR(status);
     auto clean_tensor =
         MakeCleanup([tf_tensor] { TF_DeleteTensor(tf_tensor); });
@@ -132,7 +142,7 @@ mlir::LogicalResult EvaluateOperation(
     RETURN_FAILURE_IF_ERROR(TF_TensorToTensor(tf_tensor, &tensor));
     auto attr_or = ConvertTensor(tensor, &builder);
     RETURN_FAILURE_IF_ERROR(attr_or.status());
-    results->push_back(attr_or.ValueOrDie());
+    results->push_back(attr_or.value());
   }
 
   VLOG(1) << "Evaluate node " << node_name << " successfully!";

@@ -17,14 +17,17 @@ limitations under the License.
 
 #include <memory>
 
+#include "grpcpp/grpcpp.h"
 #include "tensorflow/core/platform/types.h"
+#include "tsl/profiler/protobuf/profiler_service.grpc.pb.h"
+#include "tsl/profiler/rpc/profiler_server.h"
 
 namespace tensorflow {
+namespace profiler {
 
-class Thread;
+using tsl::profiler::ProfilerServer;  // NOLINT
 
-std::unique_ptr<Thread> StartProfilerServer(int32 port);
-
+}  // namespace profiler
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_PROFILER_RPC_PROFILER_SERVER_H_

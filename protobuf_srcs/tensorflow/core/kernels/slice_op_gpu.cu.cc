@@ -17,10 +17,9 @@ limitations under the License.
 
 #define EIGEN_USE_GPU
 
-#include "tensorflow/core/kernels/slice_op.h"
-
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor_types.h"
+#include "tensorflow/core/kernels/slice_op.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -37,14 +36,10 @@ typedef Eigen::GpuDevice GPUDevice;
   template struct functor::Slice<GPUDevice, T, 7>; \
   template struct functor::Slice<GPUDevice, T, 8>;
 
-TF_CALL_GPU_NUMBER_TYPES(DEFINE_GPU_KERNELS);
-TF_CALL_complex64(DEFINE_GPU_KERNELS);
-TF_CALL_complex128(DEFINE_GPU_KERNELS);
-TF_CALL_bfloat16(DEFINE_GPU_KERNELS);
-TF_CALL_bool(DEFINE_GPU_KERNELS);
 TF_CALL_int8(DEFINE_GPU_KERNELS);
-DEFINE_GPU_KERNELS(int32);
-DEFINE_GPU_KERNELS(int64);
+TF_CALL_int32(DEFINE_GPU_KERNELS);
+TF_CALL_int64(DEFINE_GPU_KERNELS);
+TF_CALL_GPU_ALL_TYPES(DEFINE_GPU_KERNELS);
 
 #undef DEFINE_GPU_KERNELS
 

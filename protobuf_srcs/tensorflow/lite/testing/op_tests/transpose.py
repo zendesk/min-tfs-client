@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for transpose."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
@@ -34,16 +30,43 @@ def make_transpose_tests(options):
       "input_shape": [[2, 2, 3]],
       "perm": [[0, 1, 2], [0, 2, 1]],
       "constant_perm": [True, False],
+      "fully_quantize": [False],
   }, {
       "dtype": [tf.float32],
       "input_shape": [[1, 2, 3, 4]],
       "perm": [[0, 1, 2, 3], [3, 0, 1, 2]],
       "constant_perm": [True, False],
+      "fully_quantize": [False],
   }, {
       "dtype": [tf.float32],
       "input_shape": [[1, 2, 3, 4, 5]],
       "perm": [[4, 3, 2, 1, 0]],
       "constant_perm": [True, False],
+      "fully_quantize": [False],
+  }, {
+      "dtype": [tf.float32],
+      "input_shape": [[2, 2, 3]],
+      "perm": [[0, 1, 2], [0, 2, 1]],
+      "constant_perm": [True],
+      "fully_quantize": [True],
+  }, {
+      "dtype": [tf.float32],
+      "input_shape": [[1, 2, 3, 4]],
+      "perm": [[0, 1, 2, 3], [3, 0, 1, 2]],
+      "constant_perm": [True],
+      "fully_quantize": [True],
+  }, {
+      "dtype": [tf.float32],
+      "input_shape": [[1, 2, 3, 4, 5]],
+      "perm": [[0, 1, 2, 3, 4], [3, 4, 0, 1, 2]],
+      "constant_perm": [True],
+      "fully_quantize": [True, False],
+  }, {
+      "dtype": [tf.float32],
+      "input_shape": [[2, 2]],
+      "perm": [[-2, -1]],
+      "constant_perm": [True, False],
+      "fully_quantize": [False],
   }]
 
   def build_graph(parameters):
@@ -57,16 +80,17 @@ def make_transpose_tests(options):
       perm = parameters["perm"]
       input_tensors = [input_tensor]
     else:
-      shape = [len(parameters["perm"]), 2]
+      shape = len(parameters["perm"])
       perm = tf.compat.v1.placeholder(dtype=tf.int32, name="perm", shape=shape)
       input_tensors = [input_tensor, perm]
 
-    out = tf.transpose(input_tensor, perm=perm)
+    out = tf.transpose(a=input_tensor, perm=perm)
     return input_tensors, [out]
 
   def build_inputs(parameters, sess, inputs, outputs):
     values = [
-        create_tensor_data(parameters["dtype"], parameters["input_shape"])
+        create_tensor_data(parameters["dtype"], parameters["input_shape"],
+                           min_value=-1, max_value=1)
     ]
     if not parameters["constant_perm"]:
       values.append(np.array(parameters["perm"]))
@@ -76,5 +100,4 @@ def make_transpose_tests(options):
       options,
       test_parameters,
       build_graph,
-      build_inputs,
-      expected_tf_failures=9)
+      build_inputs)

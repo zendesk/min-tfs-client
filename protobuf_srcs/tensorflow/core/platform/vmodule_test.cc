@@ -16,11 +16,18 @@ limitations under the License.
 // Test that popens a child process with the VLOG-ing environment variable set
 // for the logging framework, and observes VLOG_IS_ON and VLOG macro output.
 
+#include <stdio.h>
+#include <string.h>
+
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/platform.h"
 #include "tensorflow/core/platform/test.h"
 
-#include <string.h>
+// Make sure popen and pclose ara available on windows.
+#ifdef PLATFORM_WINDOWS
+#define popen _popen
+#define pclose _pclose
+#endif
 
 namespace tensorflow {
 namespace {
@@ -34,8 +41,9 @@ int RealMain(const char* argv0, bool do_vlog) {
     // Also, we call this internal API to simulate what would happen if
     // differently-named translation units attempted to VLOG, so we don't need
     // to create dummy translation unit files.
-    bool ok = internal::LogMessage::VmoduleActivated("vmodule_test.cc", 7) &&
-              internal::LogMessage::VmoduleActivated("shoobadooba.h", 3);
+    bool ok =
+        tsl::internal::LogMessage::VmoduleActivated("vmodule_test.cc", 7) &&
+        tsl::internal::LogMessage::VmoduleActivated("shoobadooba.h", 3);
     if (!ok) {
       fprintf(stderr, "vmodule activated levels not as expected.\n");
       return EXIT_FAILURE;
@@ -58,6 +66,9 @@ int RealMain(const char* argv0, bool do_vlog) {
   std::string command = std::string(argv0);
 #if defined(PLATFORM_GOOGLE)
   command = command + " do_vlog --vmodule=vmodule_test=7 --alsologtostderr";
+#elif defined(PLATFORM_WINDOWS)
+  command = "set TF_CPP_VMODULE=vmodule_test=7,shoobadooba=3 && " + command +
+            " do_vlog";
 #else
   command =
       "TF_CPP_VMODULE=vmodule_test=7,shoobadooba=3 " + command + " do_vlog";

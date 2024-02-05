@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for mirror_pad."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
@@ -33,49 +29,58 @@ def make_mirror_pad_tests(options):
           "input_shape": [[2, 3]],
           "padding_matrix": [[[1, 1], [2, 1]]],
           "mode": ["REFLECT"],
-          "type": ["const"]
+          "type": ["const"],
+          "fully_quantize": [True, False],
       },
       {
           "input_shape": [[2, 3]],
           "padding_matrix": [[[1, 1], [1, 1]]],
           "mode": ["REFLECT"],
-          "type": ["const"]
+          "type": ["const"],
+          "fully_quantize": [False],
       },
       {
           "input_shape": [[2, 3]],
           "padding_matrix": [[[1, 1], [2, 1]]],
           "mode": ["SYMMETRIC"],
-          "type": ["placeholder"]
+          "type": ["placeholder"],
+          "fully_quantize": [False],
       },
       {
           "input_shape": [[2, 3]],
           "padding_matrix": [[[1, 1], [2, 1]]],
           "mode": ["REFLECT"],
-          "type": ["placeholder"]
+          "type": ["placeholder"],
+          "fully_quantize": [False],
       },
       {
           "input_shape": [[3]],
           "padding_matrix": [[[0, 2]]],
           "mode": ["SYMMETRIC"],
-          "type": ["placeholder"]
+          "type": ["placeholder"],
+          "fully_quantize": [False],
       },
       {
           "input_shape": [[3]],
           "padding_matrix": [[[0, 2]]],
           "mode": ["SYMMETRIC"],
-          "type": ["const"]
+          "type": ["const"],
+          "fully_quantize": [False],
       },
       {
           "input_shape": [[3]],
           "padding_matrix": [[[0, 2]]],
           "mode": ["REFLECT"],
-          "type": ["const"]
+          "type": ["const"],
+          "fully_quantize": [False, True],
+          "quant_16x8": [False, True],
       },
       {
           "input_shape": [[3, 2, 4, 5]],
           "padding_matrix": [[[1, 1], [2, 2], [1, 1], [1, 1]]],
           "mode": ["SYMMETRIC"],
-          "type": ["placeholder"]
+          "type": ["placeholder"],
+          "fully_quantize": [False],
       },
   ]
 
@@ -83,8 +88,8 @@ def make_mirror_pad_tests(options):
     """Build the graph for the test case."""
 
     input_tensor = tf.compat.v1.placeholder(
-        dtype=tf.int32, name="input", shape=parameters["input_shape"])
-    if parameters["type"] != "const":
+        dtype=tf.float32, name="input", shape=parameters["input_shape"])
+    if parameters["type"] != "const" and not parameters["fully_quantize"]:
       padding_matrix = tf.compat.v1.placeholder(
           dtype=tf.int32,
           name="padding",
@@ -94,12 +99,18 @@ def make_mirror_pad_tests(options):
       padding_matrix = tf.constant(np.array(parameters["padding_matrix"]))
       input_tensors = [input_tensor]
     output = tf.pad(
-        input_tensor, paddings=padding_matrix, mode=parameters["mode"])
+        tensor=input_tensor, paddings=padding_matrix, mode=parameters["mode"])
 
     return input_tensors, [output]
 
   def build_inputs(parameters, sess, inputs, outputs):
-    input_values = [create_tensor_data(tf.int32, parameters["input_shape"])]
+    if not parameters["fully_quantize"]:
+      input_values = [create_tensor_data(tf.float32, parameters["input_shape"])]
+    else:
+      input_values = [
+          create_tensor_data(
+              tf.float32, parameters["input_shape"], min_value=-1, max_value=1)
+      ]
     if parameters["type"] != "const":
       input_values.append(np.array(parameters["padding_matrix"]))
     return input_values, sess.run(

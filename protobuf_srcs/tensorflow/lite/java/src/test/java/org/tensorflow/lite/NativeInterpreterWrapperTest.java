@@ -22,6 +22,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.HashMap;
 import java.util.Map;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -46,8 +47,8 @@ public final class NativeInterpreterWrapperTest {
   private static final String STRING_MODEL_PATH =
       "tensorflow/lite/java/src/testdata/string.bin";
 
-  private static final String QUANTIZED_MODEL_PATH =
-      "tensorflow/lite/java/src/testdata/quantized.bin";
+  private static final String STRING_SCALAR_MODEL_PATH =
+      "tensorflow/lite/java/src/testdata/string_scalar.bin";
 
   private static final String INVALID_MODEL_PATH =
       "tensorflow/lite/java/src/testdata/invalid_model.bin";
@@ -58,6 +59,11 @@ public final class NativeInterpreterWrapperTest {
   private static final String NONEXISTING_MODEL_PATH =
       "tensorflow/lite/java/src/testdata/nonexisting_model.bin";
 
+  @Before
+  public void setUp() {
+    TestInit.init();
+  }
+
   @Test
   public void testConstructor() {
     try (NativeInterpreterWrapper wrapper = new NativeInterpreterWrapper(FLOAT_MODEL_PATH)) {
@@ -67,9 +73,10 @@ public final class NativeInterpreterWrapperTest {
 
   @Test
   public void testConstructorWithOptions() {
+    InterpreterImpl.Options options = new InterpreterImpl.Options();
+    options.setNumThreads(2).setUseNNAPI(true);
     try (NativeInterpreterWrapper wrapper =
-        new NativeInterpreterWrapper(
-            FLOAT_MODEL_PATH, new Interpreter.Options().setNumThreads(2).setUseNNAPI(true))) {
+        new NativeInterpreterWrapper(FLOAT_MODEL_PATH, options)) {
       assertThat(wrapper).isNotNull();
     }
   }
@@ -81,7 +88,13 @@ public final class NativeInterpreterWrapperTest {
       NativeInterpreterWrapper wrapper = new NativeInterpreterWrapper(INVALID_MODEL_PATH);
       fail();
     } catch (IllegalArgumentException e) {
-      assertThat(e).hasMessageThat().contains("The model is not a valid Flatbuffer file");
+      assertThat(e)
+          .hasMessageThat()
+          .containsMatch(
+              String.join(
+                  "|",
+                  "The model is not a valid Flatbuffer",
+                  "does not encode a valid TensorFlow Lite model"));
     }
   }
 
@@ -92,7 +105,6 @@ public final class NativeInterpreterWrapperTest {
       NativeInterpreterWrapper wrapper = new NativeInterpreterWrapper(NONEXISTING_MODEL_PATH);
       fail();
     } catch (IllegalArgumentException e) {
-      assertThat(e).hasMessageThat().contains("The model is not a valid Flatbuffer file");
       assertThat(e).hasMessageThat().contains("Could not open");
     }
   }
@@ -104,7 +116,15 @@ public final class NativeInterpreterWrapperTest {
       NativeInterpreterWrapper wrapper = new NativeInterpreterWrapper(MODEL_WITH_CUSTOM_OP_PATH);
       fail();
     } catch (IllegalStateException e) {
-      assertThat(e).hasMessageThat().contains("Encountered unresolved custom op: Assign");
+      assertThat(e)
+          .hasMessageThat()
+          .contains("preparing tensor allocations: Encountered unresolved custom op: Assign");
+    } catch (IllegalArgumentException e) {
+      // As we could apply TfLite delegate by default, during which the prepration of this
+      // unresolved custom op could fail and this type of exception is thrown.
+      assertThat(e)
+          .hasMessageThat()
+          .containsMatch("Failed to apply .* delegate: Encountered unresolved custom op: Assign");
     }
   }
 
@@ -201,8 +221,20 @@ public final class NativeInterpreterWrapperTest {
       outputs.put(0, parsedOutputs);
       wrapper.run(inputs, outputs);
       long[] outputOneD = parsedOutputs[0][0][0];
-      long[] expected = {-892834092L, 923423L, 2123918239018L, -892834092L, 923423L, 2123918239018L,
-          -892834092L, 923423L, 2123918239018L, -892834092L, 923423L, 2123918239018L};
+      long[] expected = {
+        -892834092L,
+        923423L,
+        2123918239018L,
+        -892834092L,
+        923423L,
+        2123918239018L,
+        -892834092L,
+        923423L,
+        2123918239018L,
+        -892834092L,
+        923423L,
+        2123918239018L
+      };
       assertThat(outputOneD).isEqualTo(expected);
     }
   }
@@ -222,8 +254,20 @@ public final class NativeInterpreterWrapperTest {
       outputs.put(0, parsedOutputs);
       wrapper.run(inputs, outputs);
       byte[] outputOneD = parsedOutputs[0][0][0];
-      byte[] expected = {(byte) 0xe0, 0x4f, (byte) 0xd0, (byte) 0xe0, 0x4f, (byte) 0xd0,
-          (byte) 0xe0, 0x4f, (byte) 0xd0, (byte) 0xe0, 0x4f, (byte) 0xd0};
+      byte[] expected = {
+        (byte) 0xe0,
+        0x4f,
+        (byte) 0xd0,
+        (byte) 0xe0,
+        0x4f,
+        (byte) 0xd0,
+        (byte) 0xe0,
+        0x4f,
+        (byte) 0xd0,
+        (byte) 0xe0,
+        0x4f,
+        (byte) 0xd0
+      };
       assertThat(outputOneD).isEqualTo(expected);
     }
   }
@@ -242,9 +286,23 @@ public final class NativeInterpreterWrapperTest {
       wrapper.run(inputs, outputs);
       String[] outputOneD = parsedOutputs[0][0][0];
       String[] expected = {
-          "s1", "s22", "s333", "s1", "s22", "s333", "s1", "s22", "s333", "s1", "s22", "s333"
+        "s1", "s22", "s333", "s1", "s22", "s333", "s1", "s22", "s333", "s1", "s22", "s333"
       };
       assertThat(outputOneD).isEqualTo(expected);
+    }
+  }
+
+  @Test
+  public void testRunWithScalarString() {
+    try (NativeInterpreterWrapper wrapper =
+        new NativeInterpreterWrapper(STRING_SCALAR_MODEL_PATH)) {
+      String[] parsedOutputs = new String[1];
+      Map<Integer, Object> outputs = new HashMap<>();
+      outputs.put(0, parsedOutputs);
+      Object[] inputs = {"s1"};
+      wrapper.run(inputs, outputs);
+      String[] expected = {"s1"};
+      assertThat(parsedOutputs).isEqualTo(expected);
     }
   }
 
@@ -262,8 +320,8 @@ public final class NativeInterpreterWrapperTest {
       wrapper.run(inputs, outputs);
       String[] outputOneD = parsedOutputs[0][0][0];
       String[] expected = {
-          "\uD800\uDC01", "s22", "\ud841\udf0e", "\uD800\uDC01", "s22", "\ud841\udf0e",
-          "\uD800\uDC01", "s22", "\ud841\udf0e", "\uD800\uDC01", "s22", "\ud841\udf0e"
+        "\uD800\uDC01", "s22", "\ud841\udf0e", "\uD800\uDC01", "s22", "\ud841\udf0e",
+        "\uD800\uDC01", "s22", "\ud841\udf0e", "\uD800\uDC01", "s22", "\ud841\udf0e"
       };
       assertThat(outputOneD).isEqualTo(expected);
     }
@@ -287,8 +345,8 @@ public final class NativeInterpreterWrapperTest {
         assertThat(e)
             .hasMessageThat()
             .contains(
-                "Cannot copy between a TensorFlowLite tensor with shape [2, 4, 4, 12] and "
-                    + "a Java object with shape [2, 4, 4, 10]");
+                "Cannot copy from a TensorFlowLite tensor (output_tensor) with shape [2, 4, 4, 12] "
+                    + "to a Java object with shape [2, 4, 4, 10]");
       }
     }
   }
@@ -318,8 +376,8 @@ public final class NativeInterpreterWrapperTest {
       wrapper.run(inputs, outputs);
       byte[] outputOneD = parsedOutputs[0][0][0];
       byte[] expected = {
-          (byte) 0xe0, 0x4f, (byte) 0xd0, (byte) 0xe0, 0x4f, (byte) 0xd0,
-          (byte) 0xe0, 0x4f, (byte) 0xd0, (byte) 0xe0, 0x4f, (byte) 0xd0
+        (byte) 0xe0, 0x4f, (byte) 0xd0, (byte) 0xe0, 0x4f, (byte) 0xd0,
+        (byte) 0xe0, 0x4f, (byte) 0xd0, (byte) 0xe0, 0x4f, (byte) 0xd0
       };
       assertThat(outputOneD).isEqualTo(expected);
     }
@@ -351,7 +409,7 @@ public final class NativeInterpreterWrapperTest {
         assertThat(e)
             .hasMessageThat()
             .contains(
-                "Cannot convert between a TensorFlowLite buffer with 768 bytes and a "
+                "Cannot copy to a TensorFlowLite tensor (input) with 768 bytes from a "
                     + "Java Buffer with 3072 bytes.");
       }
       int[] inputDims = {4, 8, 8, 3};
@@ -379,7 +437,7 @@ public final class NativeInterpreterWrapperTest {
         assertThat(e)
             .hasMessageThat()
             .contains(
-                "Cannot convert between a TensorFlowLite buffer with 192 bytes and a "
+                "Cannot copy to a TensorFlowLite tensor (input) with 192 bytes from a "
                     + "Java Buffer with 336 bytes.");
       }
     }
@@ -426,7 +484,7 @@ public final class NativeInterpreterWrapperTest {
       wrapper.run(inputs, outputs);
       fail();
     } catch (IllegalArgumentException e) {
-      assertThat(e).hasMessageThat().contains("Invalid handle to Interpreter.");
+      assertThat(e).hasMessageThat().contains("Internal error: Found invalid handle");
     }
   }
 
@@ -480,7 +538,7 @@ public final class NativeInterpreterWrapperTest {
         assertThat(e)
             .hasMessageThat()
             .contains(
-                "Cannot copy between a TensorFlowLite tensor with shape [8, 7, 3] and a "
+                "Cannot copy from a TensorFlowLite tensor (output) with shape [8, 7, 3] to a "
                     + "Java object with shape [2, 8, 8, 3].");
       }
     }
@@ -504,7 +562,7 @@ public final class NativeInterpreterWrapperTest {
         assertThat(e)
             .hasMessageThat()
             .contains(
-                "Cannot copy between a TensorFlowLite tensor with shape [2, 8, 7, 3] and a "
+                "Cannot copy from a TensorFlowLite tensor (output) with shape [2, 8, 7, 3] to a "
                     + "Java object with shape [2, 8, 8, 3].");
       }
     }
@@ -559,18 +617,6 @@ public final class NativeInterpreterWrapperTest {
     try (NativeInterpreterWrapper wrapper = new NativeInterpreterWrapper(FLOAT_MODEL_PATH)) {
       int[] expectedDims = {1, 8, 8, 3};
       assertThat(wrapper.getInputTensor(0).shape()).isEqualTo(expectedDims);
-    }
-  }
-
-  @Test
-  public void testGetOutputQuantizationParams() {
-    try (NativeInterpreterWrapper wrapper = new NativeInterpreterWrapper(FLOAT_MODEL_PATH)) {
-      assertThat(wrapper.getOutputQuantizationZeroPoint(0)).isEqualTo(0);
-      assertThat(wrapper.getOutputQuantizationScale(0)).isWithin(1e-6f).of(0.0f);
-    }
-    try (NativeInterpreterWrapper wrapper = new NativeInterpreterWrapper(QUANTIZED_MODEL_PATH)) {
-      assertThat(wrapper.getOutputQuantizationZeroPoint(0)).isEqualTo(127);
-      assertThat(wrapper.getOutputQuantizationScale(0)).isWithin(1e-6f).of(0.25f);
     }
   }
 }

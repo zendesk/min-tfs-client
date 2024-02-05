@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for shape."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
@@ -50,7 +46,7 @@ def make_shape_tests(options):
     new_shape = tf.compat.v1.placeholder(
         dtype=tf.int32, shape=shape_of_new_shape, name="new_shape")
     reshaped = tf.reshape(input_value, shape=new_shape)
-    out = tf.shape(reshaped, out_type=parameters["out_type"])
+    out = tf.shape(input=reshaped, out_type=parameters["out_type"])
     return [input_value, new_shape], [out]
 
   def build_inputs(parameters, sess, inputs, outputs):

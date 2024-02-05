@@ -43,13 +43,10 @@ class ScopedAllocatorOptimizer : public GraphOptimizer {
 
   string name() const override { return "scoped_allocator_optimizer"; }
 
-  bool UsesFunctionLibrary() const override { return false; }
+  bool UsesFunctionLibrary() const override { return true; }
 
   Status Optimize(Cluster* cluster, const GrapplerItem& item,
                   GraphDef* optimized_graph) override;
-
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimized_graph, double result) override {}
 
   // Map from an Op name to a vector of Nodes with that Op.
   typedef absl::flat_hash_map<string, std::vector<NodeDef*>> DevOpOccurrences;
@@ -91,7 +88,7 @@ class ScopedAllocatorOptimizer : public GraphOptimizer {
     virtual ~Rewriter() {}
 
     virtual Status Rewrite(ScopedAllocatorOptimizer* paopti,
-                           int64 invocation_count, GraphDef* graph,
+                           int64_t invocation_count, GraphDef* graph,
                            const string& op_name,
                            const std::vector<NodeDef*>& nodes,
                            bool* applied) = 0;

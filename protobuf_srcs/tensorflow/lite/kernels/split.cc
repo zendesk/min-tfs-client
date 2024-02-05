@@ -12,15 +12,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include <string.h>
-#include <vector>
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include <stdint.h>
+
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+#include "tensorflow/lite/kernels/internal/types.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
-#include "tensorflow/lite/kernels/op_macros.h"
 
 namespace tflite {
 namespace ops {
@@ -40,7 +41,9 @@ struct OpContext {
 
 TfLiteStatus UseDynamicOutputTensors(TfLiteContext* context, TfLiteNode* node) {
   for (int i = 0; i < NumOutputs(node); ++i) {
-    SetTensorToDynamic(GetOutput(context, node, i));
+    TfLiteTensor* tensor;
+    TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, i, &tensor));
+    SetTensorToDynamic(tensor);
   }
   return kTfLiteOk;
 }
@@ -57,6 +60,7 @@ TfLiteStatus ResizeOutputTensors(TfLiteContext* context, TfLiteNode* node,
   TF_LITE_ENSURE(context, axis_value < NumDimensions(input));
 
   const int input_size = SizeOfDimension(input, axis_value);
+  TF_LITE_ENSURE(context, num_splits != 0);
   TF_LITE_ENSURE_MSG(context, input_size % num_splits == 0,
                      "Not an even split");
   const int slice_size = input_size / num_splits;
@@ -64,7 +68,8 @@ TfLiteStatus ResizeOutputTensors(TfLiteContext* context, TfLiteNode* node,
   for (int i = 0; i < NumOutputs(node); ++i) {
     TfLiteIntArray* output_dims = TfLiteIntArrayCopy(input->dims);
     output_dims->data[axis_value] = slice_size;
-    TfLiteTensor* output = GetOutput(context, node, i);
+    TfLiteTensor* output;
+    TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, i, &output));
     TF_LITE_ENSURE_STATUS(context->ResizeTensor(context, output, output_dims));
   }
 
@@ -84,12 +89,14 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
                      input_type == kTfLiteInt8 || input_type == kTfLiteInt16 ||
                      input_type == kTfLiteInt32);
   for (int i = 0; i < NumOutputs(node); ++i) {
-    GetOutput(context, node, i)->type = input_type;
+    TfLiteTensor* tensor;
+    TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, i, &tensor));
+    tensor->type = input_type;
   }
 
   // If we know the contents of the 'axis' tensor, resize all outputs.
   // Otherwise, wait until Eval().
-  if (IsConstantTensor(op_context.axis)) {
+  if (IsConstantOrPersistentTensor(op_context.axis)) {
     return ResizeOutputTensors(context, node, op_context.axis, op_context.input,
                                op_context.params->num_splits);
   } else {
@@ -117,9 +124,9 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE(context, axis_value >= 0);
   TF_LITE_ENSURE(context, axis_value < NumDimensions(op_context.input));
 
-  // TODO(ahentz): Our usage of VectorOfTensors could be optimized by
+  // TODO(b/173221795): Our usage of VectorOfTensors could be optimized by
   // calculating it in Prepare, unless we defer shape calculation.
-  // TODO(ahentz): We can improve the optimized_ops version to handle other
+  // We can improve the optimized_ops version to handle other
   // cases too.
 #define TF_LITE_SPLIT(scalar)                                       \
   VectorOfTensors<scalar> all_outputs(*context, *node->outputs);    \
@@ -152,8 +159,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
       break;
     }
     default:
-      context->ReportError(context, "Type %s currently not supported.",
-                           TfLiteTypeGetName(op_context.input->type));
+      TF_LITE_KERNEL_LOG(context, "Type %s currently not supported.",
+                         TfLiteTypeGetName(op_context.input->type));
       return kTfLiteError;
   }
 #undef TF_LITE_SPLIT

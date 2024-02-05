@@ -15,11 +15,17 @@ limitations under the License.
 
 #include "tensorflow/core/profiler/internal/tfprof_timeline.h"
 
+#include <algorithm>
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/stringprintf.h"
 #include "tensorflow/core/profiler/internal/tfprof_utils.h"
 
 namespace tensorflow {
@@ -27,22 +33,22 @@ namespace tfprof {
 namespace {
 int kMaxDisplayedMemNode = 10;
 
-string GetTimeDevName(const string& dev) {
+std::string GetTimeDevName(const std::string& dev) {
   if (dev.find("stream") != dev.npos) {
-    return strings::StrCat("Op execution threads: ", dev);
+    return absl::StrCat("Op execution threads: ", dev);
   } else {
-    return strings::StrCat("Op scheduling threads: ", dev);
+    return absl::StrCat("Op scheduling threads: ", dev);
   }
 }
-string GetMemoryLaneName(const string& dev) {
-  return strings::StrCat("mem usage on:", dev);
+std::string GetMemoryLaneName(const std::string& dev) {
+  return absl::StrCat("mem usage on:", dev);
 }
 }  // namespace
 
 Json::Value ChromeTraceFormatter::CreateEvent(const string& ph,
                                               const string& category,
-                                              const string& name, int64 pid,
-                                              int64 tid, int64 ts) {
+                                              const string& name, int64_t pid,
+                                              int64_t tid, int64_t ts) {
   Json::Value event(Json::objectValue);
   event["ph"] = Json::Value(ph);
   event["cat"] = Json::Value(category);
@@ -53,7 +59,7 @@ Json::Value ChromeTraceFormatter::CreateEvent(const string& ph,
   return event;
 }
 
-void ChromeTraceFormatter::EmitPID(const string& name, int64 pid) {
+void ChromeTraceFormatter::EmitPID(const string& name, int64_t pid) {
   Json::Value event(Json::objectValue);
   event["name"] = Json::Value("process_name");
   event["ph"] = Json::Value("M");
@@ -64,8 +70,8 @@ void ChromeTraceFormatter::EmitPID(const string& name, int64 pid) {
   metadata_.push_back(event);
 }
 
-void ChromeTraceFormatter::EmitRegion(int64 ts, int64 duration, int64 pid,
-                                      int64 tid, const string& category,
+void ChromeTraceFormatter::EmitRegion(int64_t ts, int64_t duration, int64_t pid,
+                                      int64_t tid, const string& category,
                                       const string& name, Json::Value args) {
   Json::Value event = CreateEvent("X", category, name, pid, tid, ts);
   event["dur"] = Json::Int64(duration);
@@ -73,24 +79,26 @@ void ChromeTraceFormatter::EmitRegion(int64 ts, int64 duration, int64 pid,
   metadata_.push_back(event);
 }
 
-void ChromeTraceFormatter::EmitFlowStart(const string& name, int64 ts,
-                                         int64 pid, int64 tid, int64 flow_id) {
+void ChromeTraceFormatter::EmitFlowStart(const string& name, int64_t ts,
+                                         int64_t pid, int64_t tid,
+                                         int64_t flow_id) {
   Json::Value event = CreateEvent("s", "DataFlow", name, pid, tid, ts);
   event["id"] = Json::Int64(flow_id);
   events_.push_back(event);
 }
 
-void ChromeTraceFormatter::EmitFlowEnd(const string& name, int64 ts, int64 pid,
-                                       int64 tid, int64 flow_id) {
+void ChromeTraceFormatter::EmitFlowEnd(const string& name, int64_t ts,
+                                       int64_t pid, int64_t tid,
+                                       int64_t flow_id) {
   Json::Value event = CreateEvent("t", "DataFlow", name, pid, tid, ts);
   event["id"] = Json::Int64(flow_id);
   events_.push_back(event);
 }
 
 void ChromeTraceFormatter::EmitCounter(
-    const string& category, const string& name, int64 pid, int64 ts,
-    const string& device, int64 bytes,
-    const std::map<int64, std::vector<string>>& tensor_mem) {
+    const string& category, const string& name, int64_t pid, int64_t ts,
+    const string& device, int64_t bytes,
+    const std::map<int64_t, std::vector<string>>& tensor_mem) {
   Json::Value event = CreateEvent("C", category, "Allocated Bytes", pid, 0, ts);
   Json::Value args(Json::objectValue);
   args["Allocator Bytes in Use"] = Json::Int64(bytes);
@@ -104,7 +112,7 @@ void ChromeTraceFormatter::EmitCounter(
   Json::Value args2(Json::objectValue);
   // Need to reserve the same args for all locations.
   for (int i = 1; i < kMaxDisplayedMemNode; ++i) {
-    args2[strings::Printf("Top Allocation %02d", i)] = Json::Value("N/A");
+    args2[absl::StrFormat("Top Allocation %02d", i)] = Json::Value("N/A");
   }
   int count = 0;
   for (auto it = tensor_mem.rbegin(); it != tensor_mem.rend(); ++it) {
@@ -112,14 +120,14 @@ void ChromeTraceFormatter::EmitCounter(
       if (bytes < it->first || count >= kMaxDisplayedMemNode) {
         break;
       }
-      args2[strings::Printf("Top Allocation %02d", count)] =
-          Json::Value(strings::StrCat(it->first / 1000000.0, " MB from ", t));
+      args2[absl::StrFormat("Top Allocation %02d", count)] =
+          Json::Value(absl::StrCat(it->first / 1000000.0, " MB from ", t));
       ++count;
       bytes -= it->first;
     }
   }
-  args2[strings::StrCat("Not Displayed")] =
-      Json::Value(strings::Printf("%.2f MB", bytes / 1000000.0));
+  args2[std::string("Not Displayed")] =
+      Json::Value(absl::StrFormat("%.2f MB", bytes / 1000000.0));
   event2["args"] = args2;
   events_.push_back(event2);
 }
@@ -136,22 +144,22 @@ string ChromeTraceFormatter::Format() {
   Json::FastWriter writer;
   string trace_str = writer.write(trace);
   if (trace_str.length() > 200 * 1024 * 1024) {
-    fprintf(stderr,
-            "Trace file is over 200MB. Chrome might not be able to "
-            "display it. Consider to use filters (e.g. -min_micros "
-            "> 1000 or -op_type .*gpu:0.* to reduce the size.\n");
+    absl::FPrintF(stderr,
+                  "Trace file is over 200MB. Chrome might not be able to "
+                  "display it. Consider to use filters (e.g. -min_micros "
+                  "> 1000 or -op_type .*gpu:0.* to reduce the size.\n");
   }
   return trace_str;
 }
 
-void MemoryTracker::TrackNode(int64 step, const GraphNode* node) {
+void MemoryTracker::TrackNode(int64_t step, const GraphNode* node) {
   if (!node->Trackable(step)) {
     return;
   }
 
   Device& dev = devices_[node->node->canonical_device()];
 
-  std::map<int64, int64> allocs;
+  std::map<int64_t, int64_t> allocs;
   for (const auto& alloc : node->node->allocations(step)) {
     allocs[alloc.alloc_micros()] += alloc.alloc_bytes();
     dev.tracked_allocations[alloc.alloc_micros()] += alloc.alloc_bytes();
@@ -159,8 +167,9 @@ void MemoryTracker::TrackNode(int64 step, const GraphNode* node) {
   dev.tracked_allocations[0] += node->node->accelerator_persistent_bytes();
   allocs[0] += node->node->accelerator_persistent_bytes();
 
-  int64 last = 0;
-  std::map<int64, int64>& aggregate_allocs = dev.tensor_allocs[node->name()];
+  int64_t last = 0;
+  std::map<int64_t, int64_t>& aggregate_allocs =
+      dev.tensor_allocs[node->name()];
   for (auto it = allocs.begin(); it != allocs.end(); ++it) {
     last += it->second;
     aggregate_allocs[it->first] = last;
@@ -179,20 +188,20 @@ void Timeline::AllocateTimeNodes(GraphNode* gnode) {
       const string& device = kernel_execs.first;
 
       if (process_.find(device) == process_.end()) {
-        int64 pid = AllocatePID();
-        process_[device].reset(new Process(device, pid));
+        int64_t pid = AllocatePID();
+        process_[device] = std::make_unique<Process>(device, pid);
         chrome_formatter_.EmitPID(GetTimeDevName(device), pid);
       }
       Process* p = process_[device].get();
 
       for (const auto& exec : kernel_execs.second) {
-        int64 start_micros = exec.first;
-        int64 exec_micros = exec.second;
+        int64_t start_micros = exec.first;
+        int64_t exec_micros = exec.second;
         // TODO(xpan): There might be start time duplication here.
         if (tnodes_[device].find(start_micros) == tnodes_[device].end()) {
           // TODO(xpan): Give each kernel call a unique_name.
-          tnodes_[device][start_micros].reset(
-              new TimeNode(p, gnode, start_micros, exec_micros));
+          tnodes_[device][start_micros] =
+              std::make_unique<TimeNode>(p, gnode, start_micros, exec_micros);
         }
       }
     }
@@ -222,7 +231,7 @@ void Timeline::GenerateGraphTimeline(const std::vector<GraphNode*>& gnodes) {
             continue;
           }
           for (const auto& exec : execs.second) {
-            int64 start_micros = exec.first;
+            int64_t start_micros = exec.first;
             auto cprocess = tnodes_.find(execs.first);
             if (cprocess == tnodes_.end()) continue;
             auto ctn = cprocess->second.find(start_micros);
@@ -235,8 +244,8 @@ void Timeline::GenerateGraphTimeline(const std::vector<GraphNode*>& gnodes) {
   }
 
   AllocateLanes();
-  fprintf(stdout, "generating trace file.\n");
-  int64 flow_id = 1;
+  absl::FPrintF(stdout, "generating trace file.\n");
+  int64_t flow_id = 1;
   for (const auto& process : alloc_nodes_) {
     for (const auto& lane : process.second) {
       for (const auto& node : lane.second) {
@@ -267,26 +276,26 @@ void Timeline::GenerateGraphTimeline(const std::vector<GraphNode*>& gnodes) {
       // TODO(xpan): Maybe also support CPU allocator memory tracking.
       continue;
     }
-    int64 pid = AllocatePID();
+    int64_t pid = AllocatePID();
     chrome_formatter_.EmitPID(GetMemoryLaneName(dev.first), pid);
-    int64 pid2 = AllocatePID();
+    int64_t pid2 = AllocatePID();
     chrome_formatter_.EmitPID(GetMemoryLaneName(dev.first) + " allocations",
                               pid2);
 
     const MemoryTracker::Device& device = dev.second;
 
-    int64 max_bytes_in_use = 0;
-    int64 cur_bytes_in_use = 0;
-    int64 last_point = 0;
+    int64_t max_bytes_in_use = 0;
+    int64_t cur_bytes_in_use = 0;
+    int64_t last_point = 0;
     for (const auto& alloc : device.allocations) {
       cur_bytes_in_use = alloc.second;
       max_bytes_in_use = std::max(max_bytes_in_use, cur_bytes_in_use);
       // Do not plot too dense to reduce file size.
-      int64 ts = alloc.first;
+      int64_t ts = alloc.first;
       if (ts - last_point < 100) continue;
       last_point = ts;
 
-      std::map<int64, std::vector<string>> tensor_mem;
+      std::map<int64_t, std::vector<string>> tensor_mem;
       for (const auto& tensor_alloc_it : dev.second.tensor_allocs) {
         const auto& tensor_alloc = tensor_alloc_it.second;
         auto it = tensor_alloc.lower_bound(ts);
@@ -301,41 +310,43 @@ void Timeline::GenerateGraphTimeline(const std::vector<GraphNode*>& gnodes) {
                                     dev.first, cur_bytes_in_use, tensor_mem);
     }
     if (IsPlacedOnAccelerator(dev.first)) {
-      fprintf(stdout, "%s peak memory: %.2f MB\n", dev.first.c_str(),
-              max_bytes_in_use / 1000000.0);
+      absl::FPrintF(stdout, "%s peak memory: %.2f MB\n", dev.first,
+                    max_bytes_in_use / 1000000.0);
     }
   }
   OutputTimeline();
 }
 
 void Timeline::GenerateScopeTimeline(const ScopeNode* node) {
-  std::set<int64> visited_depth;
+  std::set<int64_t> visited_depth;
   EmitTreeNode(node, 0, node->proto().total_exec_micros(), 0, &visited_depth);
   OutputTimeline();
 }
 
 void Timeline::GenerateCodeTimeline(const CodeNode* node) {
-  std::set<int64> visited_depth;
+  std::set<int64_t> visited_depth;
   EmitTreeNode(node, 0, node->proto().total_exec_micros(), 0, &visited_depth);
   OutputTimeline();
 }
 
 void Timeline::OutputTimeline() {
-  string outfile = strings::Printf("%s_%lld", outfile_.c_str(), step());
+  std::string outfile = absl::StrFormat("%s_%d", outfile_, step());
   Status s =
       WriteStringToFile(Env::Default(), outfile, chrome_formatter_.Format());
   if (!s.ok()) {
-    fprintf(stderr, "Failed to write timeline file: %s\nError: %s\n",
-            outfile.c_str(), s.ToString().c_str());
+    absl::FPrintF(stderr, "Failed to write timeline file: %s\nError: %s\n",
+                  outfile, s.ToString());
     return;
   }
-  fprintf(stdout, "\n******************************************************\n");
-  fprintf(stdout,
-          "Timeline file is written to %s.\n"
-          "Open a Chrome browser, enter URL chrome://tracing and "
-          "load the timeline file.",
-          outfile.c_str());
-  fprintf(stdout, "\n******************************************************\n");
+  absl::FPrintF(stdout,
+                "\n******************************************************\n");
+  absl::FPrintF(stdout,
+                "Timeline file is written to %s.\n"
+                "Open a Chrome browser, enter URL chrome://tracing and "
+                "load the timeline file.",
+                outfile);
+  absl::FPrintF(stdout,
+                "\n******************************************************\n");
   fflush(stdout);
 }
 
@@ -343,10 +354,10 @@ void Timeline::AllocateLanes() {
   for (auto& process : tnodes_) {
     Process* p = process_[process.first].get();
     for (auto& tnode : process.second) {
-      int64 start_time = tnode.second->start_micros;
-      int64 end_time = tnode.second->start_micros + tnode.second->exec_micros;
-      int64 l = -1;
-      for (int64 i = 0; i < p->lanes.size(); ++i) {
+      int64_t start_time = tnode.second->start_micros;
+      int64_t end_time = tnode.second->start_micros + tnode.second->exec_micros;
+      int64_t l = -1;
+      for (int64_t i = 0, end = p->lanes.size(); i < end; ++i) {
         const auto& lane = p->lanes[i];
         l = i;
         for (auto cur_it = lane.rbegin(); cur_it != lane.rend(); ++cur_it) {
@@ -364,7 +375,7 @@ void Timeline::AllocateLanes() {
       }
       if (l < 0) {
         l = p->lanes.size();
-        std::map<int64, int64> nlane;
+        std::map<int64_t, int64_t> nlane;
         nlane[start_time] = end_time;
         p->lanes.push_back(nlane);
       } else {
@@ -376,8 +387,8 @@ void Timeline::AllocateLanes() {
   }
 }
 
-int64 Timeline::AllocatePID() {
-  int64 cur_pid = next_pid_;
+int64_t Timeline::AllocatePID() {
+  int64_t cur_pid = next_pid_;
   next_pid_ += 1;
   return cur_pid;
 }

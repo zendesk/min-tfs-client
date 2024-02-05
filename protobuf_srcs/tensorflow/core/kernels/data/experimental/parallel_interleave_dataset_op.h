@@ -15,8 +15,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_DATA_EXPERIMENTAL_PARALLEL_INTERLEAVE_DATASET_OP_H_
 #define TENSORFLOW_CORE_KERNELS_DATA_EXPERIMENTAL_PARALLEL_INTERLEAVE_DATASET_OP_H_
 
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/framework/dataset.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
 
 namespace tensorflow {
 namespace data {
@@ -27,11 +28,12 @@ namespace experimental {
 
 class ParallelInterleaveDatasetOp : public UnaryDatasetOpKernel {
  public:
-  static constexpr const char* const kDatasetType = "ParallelInterleave";
+  static constexpr const char* const kDatasetType = "LegacyParallelInterleave";
   static constexpr const char* const kInputDataset = "input_dataset";
   static constexpr const char* const kOtherArguments = "other_arguments";
   static constexpr const char* const kCycleLength = "cycle_length";
   static constexpr const char* const kBlockLength = "block_length";
+  static constexpr const char* const kDeterministic = "deterministic";
   static constexpr const char* const kSloppy = "sloppy";
   static constexpr const char* const kBufferOutputElements =
       "buffer_output_elements";
@@ -50,10 +52,12 @@ class ParallelInterleaveDatasetOp : public UnaryDatasetOpKernel {
 
  private:
   class Dataset;
+  const int op_version_;
 
   std::shared_ptr<FunctionMetadata> func_metadata_ = nullptr;
   DataTypeVector output_types_;
   std::vector<PartialTensorShape> output_shapes_;
+  DeterminismPolicy deterministic_;
 };
 
 }  // namespace experimental

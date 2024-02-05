@@ -14,29 +14,25 @@
 # ==============================================================================
 """Tests and benchmarks for the ResNet50 model, executed eagerly."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import gc
 import os
 import tempfile
 import time
 
-from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
 from tensorflow.python.client import device_lib
 from tensorflow.python.eager import context
-from tensorflow.python.eager import tape
+from tensorflow.python.eager import record
 from tensorflow.python.eager.benchmarks.resnet50 import resnet50
 from tensorflow.python.eager.benchmarks.resnet50 import resnet50_test_util
+from tensorflow.python.framework import test_util
 
 
 def compute_gradients(model, images, labels, num_replicas=1):
   with tf.GradientTape() as grad_tape:
     logits = model(images, training=True)
-    loss = tf.losses.softmax_cross_entropy(
+    loss = tf.compat.v1.losses.softmax_cross_entropy(
         logits=logits, onehot_labels=labels)
     tf.compat.v2.summary.write('loss', loss)
     if num_replicas != 1:
@@ -45,7 +41,7 @@ def compute_gradients(model, images, labels, num_replicas=1):
   # TODO(b/110991947): We can mistakenly trace the gradient call in
   # multi-threaded environment. Explicitly disable recording until
   # this is fixed.
-  with tape.stop_recording():
+  with record.stop_recording():
     grads = grad_tape.gradient(loss, model.variables)
   return grads
 
@@ -63,10 +59,10 @@ def _events_from_file(filepath):
   Returns:
     A list of all tf.compat.v1.Event protos in the event file.
   """
-  records = list(tf.python_io.tf_record_iterator(filepath))
+  records = list(tf.compat.v1.python_io.tf_record_iterator(filepath))
   result = []
   for r in records:
-    event = tf.Event()
+    event = tf.compat.v1.Event()
     event.ParseFromString(r)
     result.append(event)
   return result
@@ -103,6 +99,7 @@ class ResNet50Test(tf.test.TestCase):
       context.async_wait()
     self.assertEqual((2, 1000), output.shape)
 
+  @test_util.disable_tfrt('Flaky test. b/157103729')
   def test_apply(self):
     self._apply(defun=False)
 
@@ -115,6 +112,7 @@ class ResNet50Test(tf.test.TestCase):
   def test_apply_with_defun_async(self):
     self._apply(defun=True, execution_mode=context.ASYNC)
 
+  @test_util.disable_tfrt('Flaky test. b/157103729')
   def test_apply_no_top(self):
     device, data_format = resnet50_test_util.device_and_data_format()
     model = resnet50.ResNet50(data_format, include_top=False)
@@ -125,6 +123,7 @@ class ResNet50Test(tf.test.TestCase):
                     if data_format == 'channels_first' else (2, 1, 1, 2048))
     self.assertEqual(output_shape, output.shape)
 
+  @test_util.disable_tfrt('Flaky test. b/157103729')
   def test_apply_with_pooling(self):
     device, data_format = resnet50_test_util.device_and_data_format()
     model = resnet50.ResNet50(data_format, include_top=False, pooling='avg')
@@ -133,17 +132,76 @@ class ResNet50Test(tf.test.TestCase):
       output = model(images, training=False)
     self.assertEqual((2, 2048), output.shape)
 
+  @test_util.disable_tfrt('Flaky test. b/157103729')
+  def test_apply_no_average_pooling(self):
+    device, data_format = resnet50_test_util.device_and_data_format()
+    model = resnet50.ResNet50(
+        data_format, average_pooling=False, include_top=False)
+    with tf.device(device):
+      images, _ = resnet50_test_util.random_batch(2, data_format)
+      output = model(images, training=False)
+    output_shape = ((2, 2048, 7, 7) if data_format == 'channels_first' else
+                    (2, 7, 7, 2048))
+    self.assertEqual(output_shape, output.shape)
+
+  @test_util.disable_tfrt('Flaky test. b/157103729')
+  def test_apply_block3_strides(self):
+    device, data_format = resnet50_test_util.device_and_data_format()
+    model = resnet50.ResNet50(
+        data_format, block3_strides=True, include_top=False)
+    with tf.device(device):
+      images, _ = resnet50_test_util.random_batch(2, data_format)
+      output = model(images, training=False)
+    output_shape = ((2, 2048, 1, 1) if data_format == 'channels_first' else
+                    (2, 1, 1, 2048))
+    self.assertEqual(output_shape, output.shape)
+
+  @test_util.disable_tfrt('Flaky test. b/157103729')
+  def test_apply_retrieve_intermediates(self):
+    device, data_format = resnet50_test_util.device_and_data_format()
+    model = resnet50.ResNet50(
+        data_format, block3_strides=True, include_top=False)
+    intermediates_dict = {}
+    with tf.device(device):
+      images, _ = resnet50_test_util.random_batch(2, data_format)
+      output = model(images, training=False,
+                     intermediates_dict=intermediates_dict)
+    output_shape = ((2, 2048, 1, 1) if data_format == 'channels_first' else
+                    (2, 1, 1, 2048))
+    self.assertEqual(output_shape, output.shape)
+
+    if data_format == 'channels_first':
+      block_shapes = {
+          'block0': (2, 64, 112, 112),
+          'block0mp': (2, 64, 55, 55),
+          'block1': (2, 256, 55, 55),
+          'block2': (2, 512, 28, 28),
+          'block3': (2, 1024, 7, 7),
+          'block4': (2, 2048, 1, 1),
+      }
+    else:
+      block_shapes = {
+          'block0': (2, 112, 112, 64),
+          'block0mp': (2, 55, 55, 64),
+          'block1': (2, 55, 55, 256),
+          'block2': (2, 28, 28, 512),
+          'block3': (2, 7, 7, 1024),
+          'block4': (2, 1, 1, 2048),
+      }
+    for (block_name, block) in intermediates_dict.items():
+      self.assertEqual(block_shapes[block_name], block.shape)
+
   def _test_train(self, execution_mode=None):
     device, data_format = resnet50_test_util.device_and_data_format()
     model = resnet50.ResNet50(data_format)
     tf.compat.v2.summary.experimental.set_step(
-        tf.train.get_or_create_global_step())
+        tf.compat.v1.train.get_or_create_global_step())
     logdir = tempfile.mkdtemp()
     with tf.compat.v2.summary.create_file_writer(
         logdir, max_queue=0,
         name='t0').as_default(), tf.compat.v2.summary.record_if(True):
       with tf.device(device), context.execution_mode(execution_mode):
-        optimizer = tf.train.GradientDescentOptimizer(0.1)
+        optimizer = tf.compat.v1.train.GradientDescentOptimizer(0.1)
         images, labels = resnet50_test_util.random_batch(2, data_format)
         apply_gradients(model, optimizer,
                         compute_gradients(model, images, labels))
@@ -153,16 +211,19 @@ class ResNet50Test(tf.test.TestCase):
     self.assertEqual(len(events), 2)
     self.assertEqual(events[1].summary.value[0].tag, 'loss')
 
+  @test_util.disable_tfrt('Flaky test. b/157103729')
   def test_train(self):
     self._test_train()
 
+  @test_util.disable_tfrt('TFE_ContextGetExecutorForThread missing b/156188669')
   def test_train_async(self):
     self._test_train(execution_mode=context.ASYNC)
 
+  @test_util.disable_tfrt('Flaky test. b/157103729')
   def test_no_garbage(self):
     device, data_format = resnet50_test_util.device_and_data_format()
     model = resnet50.ResNet50(data_format)
-    optimizer = tf.train.GradientDescentOptimizer(0.1)
+    optimizer = tf.compat.v1.train.GradientDescentOptimizer(0.1)
     with tf.device(device):
       images, labels = resnet50_test_util.random_batch(2, data_format)
       gc.disable()
@@ -200,8 +261,8 @@ class ResNet50Benchmarks(tf.test.Benchmark):
 
   def _report(self, label, start, num_iters, device, batch_size, data_format,
               num_replicas=1):
-    resnet50_test_util.report(self, label, start, num_iters, device,
-                              batch_size, data_format, num_replicas=1)
+    resnet50_test_util.report(self, label, start, num_iters, device, batch_size,
+                              data_format, num_replicas)
 
   def _train_batch_sizes(self):
     """Choose batch sizes based on GPU capability."""
@@ -216,6 +277,9 @@ class ResNet50Benchmarks(tf.test.Benchmark):
         # during the test seems to exclude the amount TensorFlow has allocated,
         # which isn't useful.
         if 'K20' in device.physical_device_desc:
+          return (16,)
+        # Quardro P1000.
+        if 'P1000' in device.physical_device_desc:
           return (16,)
         if 'P100' in device.physical_device_desc:
           return (16, 32, 64)
@@ -243,13 +307,13 @@ class ResNet50Benchmarks(tf.test.Benchmark):
       num_iters = 30
       with tf.device(device):
         images, _ = resnet50_test_util.random_batch(batch_size, data_format)
-        for _ in xrange(num_burn):
+        for _ in range(num_burn):
           model(images, training=False).cpu()
         if execution_mode:
           context.async_wait()
         gc.collect()
         start = time.time()
-        for _ in xrange(num_iters):
+        for _ in range(num_iters):
           model(images, training=False).cpu()
         if execution_mode:
           context.async_wait()
@@ -262,8 +326,10 @@ class ResNet50Benchmarks(tf.test.Benchmark):
 
   def benchmark_eager_apply_async(self):
     self._benchmark_eager_apply(
-        'eager_apply_async', resnet50_test_util.device_and_data_format(),
-        defun=False, execution_mode=context.ASYNC)
+        'eager_apply_async',
+        resnet50_test_util.device_and_data_format(),
+        defun=False,
+        execution_mode=context.ASYNC)
 
   def benchmark_eager_apply_with_defun(self):
     self._benchmark_eager_apply(
@@ -282,7 +348,9 @@ class ResNet50Benchmarks(tf.test.Benchmark):
         (images, labels) = resnet50_test_util.random_batch(
             batch_size, data_format)
         model = resnet50.ResNet50(data_format)
-        optimizer = tf.train.GradientDescentOptimizer(0.1)
+        # TODO(b/161911585): tf_to_corert MLIR lowering pipeline should handle
+        # case when momentum is not set.
+        optimizer = tf.keras.optimizers.SGD(0.1, 0.1)
         apply_grads = apply_gradients
         if defun:
           model.call = tf.function(model.call)
@@ -292,7 +360,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
         num_iters = 10
         with tf.device(device):
           iterator = make_iterator((images, labels))
-          for _ in xrange(num_burn):
+          for _ in range(num_burn):
             (images, labels) = iterator.next()
             apply_grads(model, optimizer,
                         compute_gradients(model, images, labels))
@@ -302,7 +370,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
           gc.collect()
 
           start = time.time()
-          for _ in xrange(num_iters):
+          for _ in range(num_iters):
             (images, labels) = iterator.next()
             apply_grads(model, optimizer,
                         compute_gradients(model, images, labels))
@@ -337,8 +405,10 @@ class ResNet50Benchmarks(tf.test.Benchmark):
       return iter(ds)
 
     self._benchmark_eager_train(
-        'eager_train_dataset', make_iterator,
-        resnet50_test_util.device_and_data_format(), defun=False)
+        'eager_train_dataset',
+        make_iterator,
+        resnet50_test_util.device_and_data_format(),
+        defun=False)
 
   def benchmark_eager_train_datasets_with_defun(self):
 
@@ -353,5 +423,5 @@ class ResNet50Benchmarks(tf.test.Benchmark):
 
 
 if __name__ == '__main__':
-  tf.enable_eager_execution()
+  tf.compat.v1.enable_eager_execution()
   tf.test.main()

@@ -16,24 +16,21 @@ limitations under the License.
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER5(UnaryOp, CPU, "Rsqrt", functor::rsqrt, float, Eigen::half, double,
-          complex64, complex128);
+
+REGISTER6(UnaryOp, CPU, "Rsqrt", functor::rsqrt, float, Eigen::half, bfloat16,
+          double, complex64, complex128);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 REGISTER3(UnaryOp, GPU, "Rsqrt", functor::rsqrt, float, Eigen::half, double);
 #endif
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER2(UnaryOp, SYCL, "Rsqrt", functor::rsqrt, float, double);
-#endif  // TENSORFLOW_USE_SYCL
-
-REGISTER5(SimpleBinaryOp, CPU, "RsqrtGrad", functor::rsqrt_grad, float,
-          Eigen::half, double, complex64, complex128);
-#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-REGISTER3(SimpleBinaryOp, GPU, "RsqrtGrad", functor::rsqrt_grad, float,
-          Eigen::half, double);
+REGISTER(UnaryOp, GPU, "Rsqrt", functor::rsqrt, bfloat16);
 #endif
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER2(SimpleBinaryOp, SYCL, "RsqrtGrad", functor::rsqrt_grad, float,
-          double);
-#endif  //  TENSORFLOW_USE_SYCL
+
+REGISTER6(SimpleBinaryOp, CPU, "RsqrtGrad", functor::rsqrt_grad, float,
+          Eigen::half, bfloat16, double, complex64, complex128);
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+REGISTER4(SimpleBinaryOp, GPU, "RsqrtGrad", functor::rsqrt_grad, float,
+          Eigen::half, bfloat16, double);
+#endif
 }  // namespace tensorflow

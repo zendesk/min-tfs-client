@@ -14,17 +14,18 @@ limitations under the License.
 ==============================================================================*/
 // Unit test for TFLite SOFTMAX op.
 
-#include <iomanip>
+#include "tensorflow/lite/kernels/internal/reference/softmax.h"
+
+#include <initializer_list>
 #include <memory>
 #include <vector>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
-#include "tensorflow/lite/kernels/register.h"
+#include "tensorflow/lite/kernels/internal/types.h"
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -66,7 +67,7 @@ TEST(SoftmaxOpTest, SimpleTest) {
       -1.0, -2.0, -3.0, -4.0, -5.0,  // b = 0
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(
       m.GetOutput(),
@@ -89,7 +90,7 @@ TEST(SoftmaxOpTest, CompareWithTFminiBetaEq1) {
 
   m.SetInput(0, input_buffer, input_buffer + input_size * batch_size);
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   std::unique_ptr<float[]> output_buffer(new float[input_size * batch_size]);
   auto input_shape = RuntimeShape({batch_size, 1, 1, input_size});
@@ -118,7 +119,7 @@ TEST(SoftmaxOpTest, CompareWithTFminiBetaNotEq1) {
 
   m.SetInput(0, input_buffer, input_buffer + input_size * batch_size);
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   std::unique_ptr<float[]> output_buffer(new float[input_size * batch_size]);
   auto input_shape = RuntimeShape({batch_size, 1, 1, input_size});

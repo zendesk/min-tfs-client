@@ -14,10 +14,6 @@
 # ==============================================================================
 """Model script to test TF-TensorRT integration."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.compiler.tensorrt.test import tf_trt_integration_test_base as trt_test
@@ -65,7 +61,8 @@ class BiasaddMatMulTest(trt_test.TfTrtIntegrationTestBase):
     x5 = math_ops.matmul(x, b)
     b = self._ConstOp((48,))
     x5 = nn.bias_add(x5, b)
-    x5 = gen_array_ops.reshape(x5, [4, -1])
+    # TODO(b/154672994): Put the reshape back when the bug is fixed.
+    # x5 = gen_array_ops.reshape(x5, [4, -1])
 
     x6 = gen_array_ops.reshape(x, [4, 24, 6])
     b = self._ConstOp((6,))
@@ -105,20 +102,28 @@ class BiasaddMatMulTest(trt_test.TfTrtIntegrationTestBase):
     return self.BuildParams(self.GraphFn, dtypes.float32, [[4, 144]],
                             [[4, 6680]])
 
-  def GetConversionParams(self, run_params):
-    """Return a ConversionParams for test."""
-    conversion_params = super(BiasaddMatMulTest,
-                              self).GetConversionParams(run_params)
-    return conversion_params._replace(
-        max_batch_size=4,
-        maximum_cached_engines=1,
-        # Disable layout optimizer, since it will convert BiasAdd with NHWC
-        # format to NCHW format under four dimentional input.
-        rewriter_config_template=trt_test.OptimizerDisabledRewriterConfig())
+  def setUp(self):
+    super().setUp()
+    # Disable layout optimizer, since it will convert BiasAdd with NHWC
+    # format to NCHW format under four dimentional input.
+    self.DisableNonTrtOptimizers()
+
+  def GetMaxBatchSize(self, run_params):
+    """Returns the max_batch_size that the converter should use for tests."""
+    if run_params.dynamic_engine:
+      return None
+
+    return 4
 
   def ExpectedEnginesToBuild(self, run_params):
     """Return the expected engines to build."""
-    return ["TRTEngineOp_0"]
+    if run_params.dynamic_shape:
+      # Increased conversion rate in dynamic shape mode due to a few additional
+      # conversions for MatMul, Reshape and Concat ops. This increases the size
+      # of the candidate segments and results in two more TrtEngineOps.
+      return ["TRTEngineOp_000", "TRTEngineOp_001", "TRTEngineOp_002"]
+    else:
+      return ["TRTEngineOp_000"]
 
 
 if __name__ == "__main__":

@@ -1,21 +1,31 @@
 path: "tensorflow.layers.SeparableConv1D"
 tf_class {
-  is_instance: "<class \'tensorflow.python.layers.convolutional.SeparableConv1D\'>"
-  is_instance: "<class \'tensorflow.python.keras.layers.convolutional.SeparableConv1D\'>"
-  is_instance: "<class \'tensorflow.python.keras.layers.convolutional.SeparableConv\'>"
-  is_instance: "<class \'tensorflow.python.keras.layers.convolutional.Conv\'>"
-  is_instance: "<class \'tensorflow.python.layers.base.Layer\'>"
-  is_instance: "<class \'tensorflow.python.keras.engine.base_layer.Layer\'>"
+  is_instance: "<class \'tf_keras.legacy_tf_layers.convolutional.SeparableConv1D\'>"
+  is_instance: "<class \'tf_keras.layers.convolutional.separable_conv1d.SeparableConv1D\'>"
+  is_instance: "<class \'tf_keras.layers.convolutional.base_separable_conv.SeparableConv\'>"
+  is_instance: "<class \'tf_keras.layers.convolutional.base_conv.Conv\'>"
+  is_instance: "<class \'tf_keras.legacy_tf_layers.base.Layer\'>"
+  is_instance: "<class \'tf_keras.engine.base_layer_v1.Layer\'>"
+  is_instance: "<class \'tf_keras.engine.base_layer.Layer\'>"
   is_instance: "<class \'tensorflow.python.module.module.Module\'>"
-  is_instance: "<class \'tensorflow.python.training.tracking.tracking.AutoTrackable\'>"
-  is_instance: "<class \'tensorflow.python.training.tracking.base.Trackable\'>"
+  is_instance: "<class \'tensorflow.python.trackable.autotrackable.AutoTrackable\'>"
+  is_instance: "<class \'tensorflow.python.trackable.base.Trackable\'>"
+  is_instance: "<class \'tf_keras.utils.version_utils.LayerVersionSelector\'>"
   is_instance: "<type \'object\'>"
   member {
     name: "activity_regularizer"
     mtype: "<type \'property\'>"
   }
   member {
+    name: "compute_dtype"
+    mtype: "<type \'property\'>"
+  }
+  member {
     name: "dtype"
+    mtype: "<type \'property\'>"
+  }
+  member {
+    name: "dtype_policy"
     mtype: "<type \'property\'>"
   }
   member {
@@ -99,6 +109,10 @@ tf_class {
     mtype: "<type \'property\'>"
   }
   member {
+    name: "supports_masking"
+    mtype: "<type \'property\'>"
+  }
+  member {
     name: "trainable"
     mtype: "<type \'property\'>"
   }
@@ -112,6 +126,10 @@ tf_class {
   }
   member {
     name: "updates"
+    mtype: "<type \'property\'>"
+  }
+  member {
+    name: "variable_dtype"
     mtype: "<type \'property\'>"
   }
   member {
@@ -136,7 +154,7 @@ tf_class {
   }
   member_method {
     name: "add_update"
-    argspec: "args=[\'self\', \'updates\', \'inputs\'], varargs=None, keywords=None, defaults=[\'None\'], "
+    argspec: "args=[\'self\', \'updates\'], varargs=None, keywords=None, defaults=None"
   }
   member_method {
     name: "add_variable"
@@ -148,11 +166,15 @@ tf_class {
   }
   member_method {
     name: "apply"
-    argspec: "args=[\'self\', \'inputs\'], varargs=args, keywords=kwargs, defaults=None"
+    argspec: "args=[\'self\'], varargs=args, keywords=kwargs, defaults=None"
   }
   member_method {
     name: "build"
     argspec: "args=[\'self\', \'input_shape\'], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
+    name: "build_from_config"
+    argspec: "args=[\'self\', \'config\'], varargs=None, keywords=None, defaults=None"
   }
   member_method {
     name: "call"
@@ -171,12 +193,24 @@ tf_class {
     argspec: "args=[\'self\', \'input_signature\'], varargs=None, keywords=None, defaults=None"
   }
   member_method {
+    name: "convolution_op"
+    argspec: "args=[\'self\', \'inputs\', \'kernel\'], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
     name: "count_params"
+    argspec: "args=[\'self\'], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
+    name: "finalize_state"
     argspec: "args=[\'self\'], varargs=None, keywords=None, defaults=None"
   }
   member_method {
     name: "from_config"
     argspec: "args=[\'cls\', \'config\'], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
+    name: "get_build_config"
+    argspec: "args=[\'self\'], varargs=None, keywords=None, defaults=None"
   }
   member_method {
     name: "get_config"
@@ -217,6 +251,14 @@ tf_class {
   member_method {
     name: "get_weights"
     argspec: "args=[\'self\'], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
+    name: "load_own_variables"
+    argspec: "args=[\'self\', \'store\'], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
+    name: "save_own_variables"
+    argspec: "args=[\'self\', \'store\'], varargs=None, keywords=None, defaults=None"
   }
   member_method {
     name: "set_weights"

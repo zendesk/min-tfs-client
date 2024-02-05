@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Tests of the readline-based CLI."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import argparse
 import tempfile
@@ -35,9 +31,11 @@ class MockReadlineUI(readline_ui.ReadlineUI):
   """Test subclass of ReadlineUI that bypasses terminal manipulations."""
 
   def __init__(self, on_ui_exit=None, command_sequence=None):
+    _, config_file_path = tempfile.mkstemp()  # safe to ignore fd
     readline_ui.ReadlineUI.__init__(
-        self, on_ui_exit=on_ui_exit,
-        config=cli_config.CLIConfig(config_file_path=tempfile.mktemp()))
+        self,
+        on_ui_exit=on_ui_exit,
+        config=cli_config.CLIConfig(config_file_path=config_file_path))
 
     self._command_sequence = command_sequence
     self._command_counter = 0
@@ -88,13 +86,13 @@ class CursesTest(test_util.TensorFlowTestCase):
     self.assertIsInstance(ui, readline_ui.ReadlineUI)
 
   def testUIFactoryRaisesExceptionOnInvalidUIType(self):
-    with self.assertRaisesRegexp(ValueError, "Invalid ui_type: 'foobar'"):
+    with self.assertRaisesRegex(ValueError, "Invalid ui_type: 'foobar'"):
       ui_factory.get_ui(
           "foobar",
           config=cli_config.CLIConfig(config_file_path=self._tmp_config_path))
 
   def testUIFactoryRaisesExceptionOnInvalidUITypeGivenAvailable(self):
-    with self.assertRaisesRegexp(ValueError, "Invalid ui_type: 'readline'"):
+    with self.assertRaisesRegex(ValueError, "Invalid ui_type: 'readline'"):
       ui_factory.get_ui(
           "readline",
           available_ui_types=["curses"],
@@ -168,7 +166,7 @@ class CursesTest(test_util.TensorFlowTestCase):
     self.assertTrue(observer["callback_invoked"])
 
   def testIncompleteRedirectWorks(self):
-    output_path = tempfile.mktemp()
+    _, output_path = tempfile.mkstemp()  # safe to ignore fd
 
     ui = MockReadlineUI(
         command_sequence=["babble -n 2 > %s" % output_path, "exit"])

@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Tests for forward and backwards compatibility utilties."""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+"""Tests for forward and backwards compatibility utilities."""
 
 import datetime
 import os
@@ -39,6 +35,10 @@ class CompatTest(test.TestCase):
     one_day_before = self._n_days_after(-1)
     self.assertTrue(compat.forward_compatible(*one_day_before))
     self.assertFalse(compat.forward_compatible(*compatibility_date))
+
+  def test_past(self):
+    with compat.forward_compatibility_horizon(2018, 9, 18):
+      self.assertTrue(compat.forward_compatible(2020, 4, 4))
 
   def test_decorator(self):
     compatibility_date = self._compatibility_date()

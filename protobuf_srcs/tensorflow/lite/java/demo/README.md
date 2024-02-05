@@ -2,7 +2,7 @@
 
 A simple Android example that demonstrates image classification using the camera.
 
-## Building in Android Studio with TensorFlow Lite AAR from JCenter.
+## Building in Android Studio with TensorFlow Lite AAR from MavenCentral.
 The build.gradle is configured to use TensorFlow Lite's nightly build.
 
 If you see a build error related to compatibility with Tensorflow Lite's Java API (example: method X is
@@ -41,8 +41,7 @@ code to merge.
 2. Build the app with Bazel. The demo needs C++11:
 
   ```shell
-  bazel build -c opt --cxxopt='--std=c++11' \
-    //tensorflow/lite/java/demo/app/src/main:TfLiteCameraDemo
+  bazel build -c opt //tensorflow/lite/java/demo/app/src/main:TfLiteCameraDemo
   ```
 
 3. Install the demo on a

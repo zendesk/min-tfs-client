@@ -13,50 +13,115 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for `tf.data.Dataset.skip()`."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+from absl.testing import parameterized
 import numpy as np
 
+from tensorflow.python.data.experimental.ops import random_access
+from tensorflow.python.data.kernel_tests import checkpoint_test_base
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
-from tensorflow.python.framework import test_util
+from tensorflow.python.data.ops import options as options_lib
+from tensorflow.python.framework import combinations
+from tensorflow.python.framework import errors
 from tensorflow.python.platform import test
 
 
-@test_util.run_all_in_graph_and_eager_modes
-class SkipTest(test_base.DatasetTestBase):
+class SkipTest(test_base.DatasetTestBase, parameterized.TestCase):
 
-  def testSkipTensorDataset(self):
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(count=[-1, 0, 4, 10, 25])))
+  def testBasic(self, count):
     components = (np.arange(10),)
+    dataset = dataset_ops.Dataset.from_tensor_slices(components).skip(count)
+    self.assertEqual(
+        [c.shape[1:] for c in components],
+        [shape for shape in dataset_ops.get_legacy_output_shapes(dataset)])
+    start_range = min(count, 10) if count != -1 else 10
+    self.assertDatasetProduces(
+        dataset,
+        [tuple(components[0][i:i + 1]) for i in range(start_range, 10)])
 
-    def do_test(count):
-      dataset = dataset_ops.Dataset.from_tensor_slices(components).skip(count)
+  @combinations.generate(test_base.default_test_combinations())
+  def testName(self):
+    dataset = dataset_ops.Dataset.from_tensors(42).skip(0, name="skip")
+    self.assertDatasetProduces(dataset, [42])
+
+
+class SkipDatasetCheckpointTest(checkpoint_test_base.CheckpointTestBase,
+                                parameterized.TestCase):
+
+  def _build_skip_dataset(self, count, options=None):
+    dataset = dataset_ops.Dataset.range(100).skip(count)
+    if options:
+      dataset = dataset.with_options(options)
+    return dataset
+
+  @combinations.generate(
+      combinations.times(
+          test_base.default_test_combinations(),
+          checkpoint_test_base.default_test_combinations(),
+          combinations.combine(symbolic_checkpoint=[False, True]),
+          combinations.combine(count=[50], num_outputs=[50]) +
+          combinations.combine(count=[200, 100, -1], num_outputs=[0]) +
+          combinations.combine(count=[0], num_outputs=[100])))
+  def test(self, verify_fn, count, num_outputs, symbolic_checkpoint):
+    options = options_lib.Options()
+    options.experimental_symbolic_checkpoint = symbolic_checkpoint
+    verify_fn(self, lambda: self._build_skip_dataset(count, options),
+              num_outputs)
+
+
+class SkipRandomAccessTest(test_base.DatasetTestBase, parameterized.TestCase):
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(index=[-1, 2, 3])))
+  def testInvalidIndex(self, index):
+    dataset = dataset_ops.Dataset.range(10).skip(8)
+    with self.assertRaises(errors.OutOfRangeError):
+      self.evaluate(random_access.at(dataset, index=index))
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(index=[-1, 0])))
+  def testEmptyDataset(self, index):
+    dataset = dataset_ops.Dataset.from_tensor_slices([]).skip(8)
+    with self.assertRaises(errors.OutOfRangeError):
+      self.evaluate(random_access.at(dataset, index=index))
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations()))
+  def testBasic(self):
+    dataset = dataset_ops.Dataset.range(11).skip(3)
+    for i in range(8):
+      self.assertEqual(self.evaluate(random_access.at(dataset, index=i)), i + 3)
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(skip=[-2, -1])))
+  def testNegativeSkip(self, skip):
+    dataset = dataset_ops.Dataset.range(11).skip(skip)
+    with self.assertRaises(errors.OutOfRangeError):
+      self.evaluate(random_access.at(dataset, index=0))
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(skip=[5, 8])))
+  def testSkipGreaterThanNumElements(self, skip):
+    dataset = dataset_ops.Dataset.range(4).skip(skip)
+    with self.assertRaises(errors.OutOfRangeError):
+      self.evaluate(random_access.at(dataset, index=0))
+
+  @combinations.generate(
+      combinations.times(
+          test_base.default_test_combinations(),
+          combinations.combine(elements=[0, 5, 10], skip=[-1, 0, 5, 15])))
+  def testMultipleCombinations(self, elements, skip):
+    dataset = dataset_ops.Dataset.range(elements).skip(skip)
+    for i in range(self.evaluate(dataset.cardinality())):
       self.assertEqual(
-          [c.shape[1:] for c in components],
-          [shape for shape in dataset_ops.get_legacy_output_shapes(dataset)])
-      start_range = min(count, 10) if count != -1 else 10
-      self.assertDatasetProduces(
-          dataset,
-          [tuple(components[0][i:i + 1]) for i in range(start_range, 10)])
-
-    # Skip fewer than input size, we should skip
-    # the first 4 elements and then read the rest.
-    do_test(4)
-
-    # Skip more than input size: get nothing.
-    do_test(25)
-
-    # Skip exactly input size.
-    do_test(10)
-
-    # Set -1 for 'count': skip the entire dataset.
-    do_test(-1)
-
-    # Skip nothing
-    do_test(0)
-
+          self.evaluate(random_access.at(dataset, index=i)), i + skip)
 
 
 if __name__ == "__main__":

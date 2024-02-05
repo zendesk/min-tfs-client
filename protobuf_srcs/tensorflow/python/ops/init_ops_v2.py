@@ -12,23 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Operations often used for initializing tensors.
-
-All variable initializers returned by functions in this file should have the
-following signature:
-
-def _initializer(shape, dtype=dtypes.float32):
-  Args:
-    shape: List of `int` representing the shape of the output `Tensor`. Some
-      initializers may also be able to accept a `Tensor`.
-    dtype: (Optional) Type of the output `Tensor`.
-  Returns:
-    A `Tensor` of type `dtype` and `shape`.
-"""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+"""Initializers for TF 2."""
 import math
 
 import numpy as np
@@ -41,20 +25,43 @@ from tensorflow.python.ops import linalg_ops_impl
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import stateless_random_ops
+from tensorflow.python.ops.init_ops import _compute_fans
 from tensorflow.python.util.tf_export import tf_export
 
+_PARTITION_SHAPE = "partition_shape"
+_PARTITION_OFFSET = "partition_offset"
 
-class Initializer(object):
+
+class Initializer:
   """Initializer base class: all initializers inherit from this class.
+
+  Initializers should implement a `__call__` method with the following
+  signature:
+
+  ```python
+  def __call__(self, shape, dtype=None, **kwargs):
+    # returns a tensor of shape `shape` and dtype `dtype`
+    # containing values drawn from a distribution of your choice.
+  ```
   """
 
-  def __call__(self, shape, dtype=None):
+  def __call__(self, shape, dtype=None, **kwargs):
     """Returns a tensor object initialized as specified by the initializer.
 
     Args:
       shape: Shape of the tensor.
       dtype: Optional dtype of the tensor. If not provided will return tensor
-       of `tf.float32`.
+        of `tf.float32`.
+      **kwargs: Additional keyword arguments. Accepted values:
+        `partition_shape` and `partition_offset`. Used when creating a single
+        partition in a partitioned variable. `partition_shape` is the shape of
+        the partition (i.e. the shape of the returned tensor) and
+        `partition_offset` is a tuple of `int` specifying the offset of this
+        partition w.r.t each axis. For example, a tensor of shape `(30, 100)`
+        can be partitioned into two partitions: `p0` of shape `(10, 100)` and
+        `p1` of shape `(20, 100)`; if the initializer is called with
+        `partition_shape=(20, 100)` and `partition_offset=(10, 0)`, it should
+        return the value for `p1`.
     """
     raise NotImplementedError
 
@@ -88,34 +95,109 @@ class Initializer(object):
     config.pop("dtype", None)
     return cls(**config)
 
+  def _validate_kwargs(self, kwargs, support_partition=True):
+    for kwarg in kwargs:
+      if kwarg not in [_PARTITION_SHAPE, _PARTITION_OFFSET]:
+        raise TypeError(
+            "Keyword argument should be one of "
+            f"{list([_PARTITION_SHAPE, _PARTITION_OFFSET])}. Received: {kwarg}")
+      elif not support_partition:
+        raise ValueError(
+            f"{self.__class__.__name__} initializer doesn't support "
+            "partition-related arguments")
+
 
 @tf_export("zeros_initializer", v1=[])
 class Zeros(Initializer):
-  """Initializer that generates tensors initialized to 0."""
+  """Initializer that generates tensors initialized to 0.
 
-  def __call__(self, shape, dtype=dtypes.float32):
-    dtype = dtypes.as_dtype(dtype)
-    return array_ops.zeros(shape, dtype)
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
 
+  Examples:
 
-@tf_export("ones_initializer", v1=[])
-class Ones(Initializer):
-  """Initializer that generates tensors initialized to 1."""
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.zeros_initializer())
+  >>> v1
+  <tf.Variable ... shape=(3,) ... numpy=array([0., 0., 0.], dtype=float32)>
+  >>> v2
+  <tf.Variable ... shape=(3, 3) ... numpy=
+  array([[0., 0., 0.],
+         [0., 0., 0.],
+         [0., 0., 0.]], dtype=float32)>
+  >>> make_variables(4, tf.random_uniform_initializer(minval=-1., maxval=1.))
+  (<tf.Variable...shape=(4,) dtype=float32...>, <tf.Variable...shape=(4, 4) ...
+  """
 
-  def __call__(self, shape, dtype=dtypes.float32):
+  def __call__(self, shape, dtype=dtypes.float32, **kwargs):
     """Returns a tensor object initialized as specified by the initializer.
 
     Args:
       shape: Shape of the tensor.
       dtype: Optional dtype of the tensor. Only numeric or boolean dtypes are
        supported.
+      **kwargs: Additional keyword arguments.
 
     Raises:
       ValuesError: If the dtype is not numeric or boolean.
     """
+    self._validate_kwargs(kwargs)
     dtype = dtypes.as_dtype(dtype)
     if not dtype.is_numpy_compatible or dtype == dtypes.string:
-      raise ValueError("Expected numeric or boolean dtype, got %s." % dtype)
+      raise ValueError("Argument `dtype` expected to be numeric or boolean. "
+                       f"Received {dtype}.")
+    if _PARTITION_SHAPE in kwargs:
+      shape = kwargs[_PARTITION_SHAPE]
+    return array_ops.zeros(shape, dtype)
+
+
+@tf_export("ones_initializer", v1=[])
+class Ones(Initializer):
+  """Initializer that generates tensors initialized to 1.
+
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.ones_initializer())
+  >>> v1
+  <tf.Variable ... shape=(3,) ... numpy=array([1., 1., 1.], dtype=float32)>
+  >>> v2
+  <tf.Variable ... shape=(3, 3) ... numpy=
+  array([[1., 1., 1.],
+         [1., 1., 1.],
+         [1., 1., 1.]], dtype=float32)>
+  >>> make_variables(4, tf.random_uniform_initializer(minval=-1., maxval=1.))
+  (<tf.Variable...shape=(4,) dtype=float32...>, <tf.Variable...shape=(4, 4) ...
+  """
+
+  def __call__(self, shape, dtype=dtypes.float32, **kwargs):
+    """Returns a tensor object initialized as specified by the initializer.
+
+    Args:
+      shape: Shape of the tensor.
+      dtype: Optional dtype of the tensor. Only numeric or boolean dtypes are
+        supported.
+      **kwargs: Additional keyword arguments.
+
+    Raises:
+      ValuesError: If the dtype is not numeric or boolean.
+    """
+    self._validate_kwargs(kwargs)
+    dtype = dtypes.as_dtype(dtype)
+    if not dtype.is_numpy_compatible or dtype == dtypes.string:
+      raise ValueError("Argument `dtype` expected to be numeric or boolean. "
+                       f"Received {dtype}.")
+    if _PARTITION_SHAPE in kwargs:
+      shape = kwargs[_PARTITION_SHAPE]
     return array_ops.ones(shape, dtype)
 
 
@@ -123,81 +205,95 @@ class Ones(Initializer):
 class Constant(Initializer):
   """Initializer that generates tensors with constant values.
 
-  The resulting tensor is populated with values of type `dtype`, as
-  specified by arguments `value` following the desired `shape` of the
-  new tensor (see examples below).
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
 
-  The argument `value` can be a constant value, or a list of values of type
-  `dtype`. If `value` is a list, then the length of the list must be less
-  than or equal to the number of elements implied by the desired shape of the
-  tensor. In the case where the total number of elements in `value` is less
-  than the number of elements required by the tensor shape, the last element
-  in `value` will be used to fill the remaining entries. If the total number of
-  elements in `value` is greater than the number of elements required by the
-  tensor shape, the initializer will raise a `ValueError`.
+  `tf.constant_initializer` returns an object which when called returns a tensor
+  populated with the `value` specified in the constructor. This `value` must be
+  convertible to the requested `dtype`.
+
+  The argument `value` can be a scalar constant value, or a list of
+  values. Scalars broadcast to whichever shape is requested from the
+  initializer.
+
+  If `value` is a list, then the length of the list must be equal to the number
+  of elements implied by the desired shape of the tensor. If the total number of
+  elements in `value` is not equal to the number of elements required by the
+  tensor shape, the initializer will raise a `TypeError`.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.constant_initializer(2.))
+  >>> v1
+  <tf.Variable ... shape=(3,) ... numpy=array([2., 2., 2.], dtype=float32)>
+  >>> v2
+  <tf.Variable ... shape=(3, 3) ... numpy=
+  array([[2., 2., 2.],
+         [2., 2., 2.],
+         [2., 2., 2.]], dtype=float32)>
+  >>> make_variables(4, tf.random_uniform_initializer(minval=-1., maxval=1.))
+  (<tf.Variable...shape=(4,) dtype=float32...>, <tf.Variable...shape=(4, 4) ...
+
+  >>> value = [0, 1, 2, 3, 4, 5, 6, 7]
+  >>> init = tf.constant_initializer(value)
+  >>> # Fitting shape
+  >>> tf.Variable(init(shape=[2, 4], dtype=tf.float32))
+  <tf.Variable ...
+  array([[0., 1., 2., 3.],
+         [4., 5., 6., 7.]], dtype=float32)>
+  >>> # Larger shape
+  >>> tf.Variable(init(shape=[3, 4], dtype=tf.float32))
+  Traceback (most recent call last):
+  ...
+  TypeError: ...value has 8 elements, shape is (3, 4) with 12 elements...
+  >>> # Smaller shape
+  >>> tf.Variable(init(shape=[2, 3], dtype=tf.float32))
+  Traceback (most recent call last):
+  ...
+  TypeError: ...value has 8 elements, shape is (2, 3) with 6 elements...
 
   Args:
     value: A Python scalar, list or tuple of values, or a N-dimensional numpy
       array. All elements of the initialized variable will be set to the
       corresponding value in the `value` argument.
-
+    support_partition: If true, the initizer supports passing partition
+        offset and partition shape arguments to variable creators. This is
+        particularly useful when initializing sharded variables where each
+        variable shard is initialized to a slice of constant initializer.
+      
   Raises:
     TypeError: If the input `value` is not one of the expected types.
-
-  Examples:
-    The following example can be rewritten using a numpy.ndarray instead
-    of the `value` list, even reshaped, as shown in the two commented lines
-    below the `value` list initialization.
-
-  >>> value = [0, 1, 2, 3, 4, 5, 6, 7]
-  >>> init = tf.compat.v1.constant_initializer(value)
-  >>> # Fitting shape
-  >>> with tf.compat.v1.Session():
-  ...   x = tf.compat.v1.get_variable('x', shape=[2, 4], initializer=init)
-  ...   x.initializer.run()
-  ...   print(x.eval())
-  [[0. 1. 2. 3.]
-   [4. 5. 6. 7.]]
-  >>> # Larger shape
-  >>> with tf.compat.v1.Session():
-  ...   y = tf.compat.v1.get_variable('y', shape=[3, 4], initializer=init)
-  ...   y.initializer.run()
-  ...   print(y.eval())
-  [[0. 1. 2. 3.]
-   [4. 5. 6. 7.]
-   [7. 7. 7. 7.]]
-  >>> # Smaller shape
-  >>> with tf.compat.v1.Session():
-  ...   z = tf.compat.v1.get_variable('z', shape=[2, 3], initializer=init)
-  Traceback (most recent call last):
-  ...
-  ValueError: Too many elements provided. Needed at most 6, but received 8
-
   """
 
-  def __init__(self, value=0):
+  def __init__(self, value=0, support_partition=False):
     if not (np.isscalar(value) or isinstance(value, (list, tuple, np.ndarray))):
       raise TypeError(
-          "Invalid type for initial value: %s (expected Python scalar, list or "
-          "tuple of values, or numpy.ndarray)." % type(value))
+          f"Invalid type for initial value: {type(value).__name__}. Expected "
+          "Python scalar, list or tuple of values, or numpy.ndarray.")
     self.value = value
+    self.support_partition = support_partition
 
-  def __call__(self, shape, dtype=None):
+  def __call__(self, shape, dtype=None, **kwargs):
     """Returns a tensor object initialized as specified by the initializer.
 
     Args:
       shape: Shape of the tensor.
       dtype: Optional dtype of the tensor. If not provided the dtype of the
-       tensor created will be the type of the inital value.
+        tensor created will be the type of the inital value.
+      **kwargs: Additional keyword arguments.
 
     Raises:
       TypeError: If the initializer cannot create a tensor of the requested
        dtype.
     """
+    self._validate_kwargs(kwargs, support_partition=self.support_partition)
     if dtype is not None:
       dtype = dtypes.as_dtype(dtype)
-    return constant_op.constant(
-        self.value, dtype=dtype, shape=shape)
+    return constant_op.constant(self.value, dtype=dtype, shape=shape)
 
   def get_config(self):
     return {"value": self.value}
@@ -207,14 +303,33 @@ class Constant(Initializer):
 class RandomUniform(Initializer):
   """Initializer that generates tensors with a uniform distribution.
 
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.ones_initializer())
+  >>> v1
+  <tf.Variable ... shape=(3,) ... numpy=array([1., 1., 1.], dtype=float32)>
+  >>> v2
+  <tf.Variable ... shape=(3, 3) ... numpy=
+  array([[1., 1., 1.],
+         [1., 1., 1.],
+         [1., 1., 1.]], dtype=float32)>
+  >>> make_variables(4, tf.random_uniform_initializer(minval=-1., maxval=1.))
+  (<tf.Variable...shape=(4,) dtype=float32...>, <tf.Variable...shape=(4, 4) ...
+
   Args:
-    minval: A python scalar or a scalar tensor. Lower bound of the range
-      of random values to generate.
-    maxval: A python scalar or a scalar tensor. Upper bound of the range
-      of random values to generate.  Defaults to 1 for float types.
+    minval: A python scalar or a scalar tensor. Lower bound of the range of
+      random values to generate (inclusive).
+    maxval: A python scalar or a scalar tensor. Upper bound of the range of
+      random values to generate (exclusive).
     seed: A Python integer. Used to create random seeds. See
-      `tf.compat.v1.set_random_seed`
-      for behavior.
+      `tf.random.set_seed` for behavior.
   """
 
   def __init__(self, minval=-0.05, maxval=0.05, seed=None):
@@ -223,20 +338,25 @@ class RandomUniform(Initializer):
     self.seed = seed
     self._random_generator = _RandomGenerator(seed)
 
-  def __call__(self, shape, dtype=dtypes.float32):
+  def __call__(self, shape, dtype=dtypes.float32, **kwargs):
     """Returns a tensor object initialized as specified by the initializer.
 
     Args:
       shape: Shape of the tensor.
       dtype: Optional dtype of the tensor. Only floating point and integer
-      types are supported.
+        types are supported.
+      **kwargs: Additional keyword arguments.
 
     Raises:
       ValueError: If the dtype is not numeric.
     """
+    self._validate_kwargs(kwargs)
     dtype = dtypes.as_dtype(dtype)
     if not dtype.is_floating and not dtype.is_integer:
-      raise ValueError("Expected float or integer dtype, got %s." % dtype)
+      raise ValueError("Argument `dtype` expected to be numeric or boolean. "
+                       f"Received {dtype}.")
+    if _PARTITION_SHAPE in kwargs:
+      shape = kwargs[_PARTITION_SHAPE]
     return self._random_generator.random_uniform(shape, self.minval,
                                                  self.maxval, dtype)
 
@@ -252,14 +372,33 @@ class RandomUniform(Initializer):
 class RandomNormal(Initializer):
   """Initializer that generates tensors with a normal distribution.
 
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3,
+  ...                         tf.random_normal_initializer(mean=1., stddev=2.))
+  >>> v1
+  <tf.Variable ... shape=(3,) ... numpy=array([...], dtype=float32)>
+  >>> v2
+  <tf.Variable ... shape=(3, 3) ... numpy=
+  ...
+  >>> make_variables(4, tf.random_uniform_initializer(minval=-1., maxval=1.))
+  (<tf.Variable...shape=(4,) dtype=float32...>, <tf.Variable...shape=(4, 4) ...
+
   Args:
-    mean: a python scalar or a scalar tensor. Mean of the random values
-      to generate.
-    stddev: a python scalar or a scalar tensor. Standard deviation of the
-      random values to generate.
+    mean: a python scalar or a scalar tensor. Mean of the random values to
+      generate.
+    stddev: a python scalar or a scalar tensor. Standard deviation of the random
+      values to generate.
     seed: A Python integer. Used to create random seeds. See
-      `tf.compat.v1.set_random_seed`
-      for behavior.
+      `tf.random.set_seed` for behavior.
+
   """
 
   def __init__(self, mean=0.0, stddev=0.05, seed=None):
@@ -268,18 +407,22 @@ class RandomNormal(Initializer):
     self.seed = seed
     self._random_generator = _RandomGenerator(seed)
 
-  def __call__(self, shape, dtype=dtypes.float32):
+  def __call__(self, shape, dtype=dtypes.float32, **kwargs):
     """Returns a tensor object initialized as specified by the initializer.
 
     Args:
       shape: Shape of the tensor.
       dtype: Optional dtype of the tensor. Only floating point types are
-       supported.
+        supported.
+      **kwargs: Additional keyword arguments.
 
     Raises:
       ValueError: If the dtype is not floating point
     """
+    self._validate_kwargs(kwargs)
     dtype = _assert_float_dtype(dtype)
+    if _PARTITION_SHAPE in kwargs:
+      shape = kwargs[_PARTITION_SHAPE]
     return self._random_generator.random_normal(shape, self.mean, self.stddev,
                                                 dtype)
 
@@ -294,10 +437,29 @@ class RandomNormal(Initializer):
 class TruncatedNormal(Initializer):
   """Initializer that generates a truncated normal distribution.
 
-  These values are similar to values from a `random_normal_initializer`
-  except that values more than two standard deviations from the mean
-  are discarded and re-drawn. This is the recommended initializer for
-  neural network weights and filters.
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
+
+  These values are similar to values from a `tf.initializers.RandomNormal`
+  except that values more than two standard deviations from the mean are
+  discarded and re-drawn. This is the recommended initializer for neural network
+  weights and filters.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(
+  ...     3, tf.initializers.TruncatedNormal(mean=1., stddev=2.))
+  >>> v1
+  <tf.Variable ... shape=(3,) ... numpy=array([...], dtype=float32)>
+  >>> v2
+  <tf.Variable ... shape=(3, 3) ... numpy=
+  ...
+  >>> make_variables(4, tf.initializers.RandomUniform(minval=-1., maxval=1.))
+  (<tf.Variable...shape=(4,) dtype=float32...>, <tf.Variable...shape=(4, 4) ...
 
   Args:
     mean: a python scalar or a scalar tensor. Mean of the random values
@@ -305,8 +467,7 @@ class TruncatedNormal(Initializer):
     stddev: a python scalar or a scalar tensor. Standard deviation of the
       random values to generate.
     seed: A Python integer. Used to create random seeds. See
-      `tf.compat.v1.set_random_seed`
-      for behavior.
+      `tf.random.set_seed` for behavior.
   """
 
   def __init__(self, mean=0.0, stddev=0.05, seed=None):
@@ -315,18 +476,22 @@ class TruncatedNormal(Initializer):
     self.seed = seed
     self._random_generator = _RandomGenerator(seed)
 
-  def __call__(self, shape, dtype=dtypes.float32):
+  def __call__(self, shape, dtype=dtypes.float32, **kwargs):
     """Returns a tensor object initialized as specified by the initializer.
 
     Args:
       shape: Shape of the tensor.
       dtype: Optional dtype of the tensor. Only floating point types are
-       supported.
+        supported.
+      **kwargs: Additional keyword arguments.
 
     Raises:
       ValueError: If the dtype is not floating point
     """
+    self._validate_kwargs(kwargs)
     dtype = _assert_float_dtype(dtype)
+    if _PARTITION_SHAPE in kwargs:
+      shape = kwargs[_PARTITION_SHAPE]
     return self._random_generator.truncated_normal(shape, self.mean,
                                                    self.stddev, dtype)
 
@@ -341,11 +506,15 @@ class TruncatedNormal(Initializer):
 class VarianceScaling(Initializer):
   """Initializer capable of adapting its scale to the shape of weights tensors.
 
-  With `distribution="truncated_normal" or "untruncated_normal"`,
-  samples are drawn from a truncated/untruncated normal
-  distribution with a mean of zero and a standard deviation (after truncation,
-  if used) `stddev = sqrt(scale / n)`
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
+
+  With `distribution="truncated_normal" or "untruncated_normal"`, samples are
+  drawn from a truncated/untruncated normal distribution with a mean of zero and
+  a standard deviation (after truncation, if used) `stddev = sqrt(scale / n)`
   where n is:
+
     - number of input units in the weight tensor, if mode = "fan_in"
     - number of output units, if mode = "fan_out"
     - average of the numbers of input and output units, if mode = "fan_avg"
@@ -353,14 +522,27 @@ class VarianceScaling(Initializer):
   With `distribution="uniform"`, samples are drawn from a uniform distribution
   within [-limit, limit], with `limit = sqrt(3 * scale / n)`.
 
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.initializers.VarianceScaling(scale=1.))
+  >>> v1
+  <tf.Variable ... shape=(3,) ... numpy=array([...], dtype=float32)>
+  >>> v2
+  <tf.Variable ... shape=(3, 3) ... numpy=
+  ...
+  >>> make_variables(4, tf.initializers.VarianceScaling(distribution='uniform'))
+  (<tf.Variable...shape=(4,) dtype=float32...>, <tf.Variable...shape=(4, 4) ...
+
   Args:
     scale: Scaling factor (positive float).
     mode: One of "fan_in", "fan_out", "fan_avg".
     distribution: Random distribution to use. One of "truncated_normal",
       "untruncated_normal" and  "uniform".
     seed: A Python integer. Used to create random seeds. See
-      `tf.compat.v1.set_random_seed`
-      for behavior.
+      `tf.random.set_seed` for behavior.
 
   Raises:
     ValueError: In case of an invalid value for the "scale", mode" or
@@ -373,40 +555,44 @@ class VarianceScaling(Initializer):
                distribution="truncated_normal",
                seed=None):
     if scale <= 0.:
-      raise ValueError("`scale` must be positive float.")
+      raise ValueError("Argument `scale` must be a positive float. Received: "
+                       f"{scale}")
     if mode not in {"fan_in", "fan_out", "fan_avg"}:
-      raise ValueError("Invalid `mode` argument:", mode)
+      raise ValueError("Argument `mode` should be one of ('fan_in', 'fan_out', "
+                       f"'fan_avg'). Received: {mode}")
     distribution = distribution.lower()
     # Compatibility with keras-team/keras.
     if distribution == "normal":
       distribution = "truncated_normal"
     if distribution not in {"uniform", "truncated_normal",
                             "untruncated_normal"}:
-      raise ValueError("Invalid `distribution` argument:", distribution)
+      raise ValueError("Argument `distribution` should be one of ('uniform', "
+                       "'truncated_normal', 'untruncated_normal'). Received: "
+                       f"{distribution}")
     self.scale = scale
     self.mode = mode
     self.distribution = distribution
     self.seed = seed
     self._random_generator = _RandomGenerator(seed)
 
-  def __call__(self, shape, dtype=dtypes.float32):
+  def __call__(self, shape, dtype=dtypes.float32, **kwargs):
     """Returns a tensor object initialized as specified by the initializer.
 
     Args:
       shape: Shape of the tensor.
       dtype: Optional dtype of the tensor. Only floating point types are
-       supported.
+        supported.
+      **kwargs: Additional keyword arguments.
 
     Raises:
       ValueError: If the dtype is not floating point
     """
-    partition_info = None  # Keeps logic so can be readded later if necessary
+    self._validate_kwargs(kwargs)
     dtype = _assert_float_dtype(dtype)
     scale = self.scale
-    scale_shape = shape
-    if partition_info is not None:
-      scale_shape = partition_info.full_shape
-    fan_in, fan_out = _compute_fans(scale_shape)
+    fan_in, fan_out = _compute_fans(shape)
+    if _PARTITION_SHAPE in kwargs:
+      shape = kwargs[_PARTITION_SHAPE]
     if self.mode == "fan_in":
       scale /= max(1., fan_in)
     elif self.mode == "fan_out":
@@ -436,6 +622,10 @@ class VarianceScaling(Initializer):
 class Orthogonal(Initializer):
   """Initializer that generates an orthogonal matrix.
 
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
+
   If the shape of the tensor to initialize is two-dimensional, it is initialized
   with an orthogonal matrix obtained from the QR decomposition of a matrix of
   random numbers drawn from a normal distribution.
@@ -447,11 +637,24 @@ class Orthogonal(Initializer):
   is initialized, where `n` is the length of the shape vector.
   The matrix is subsequently reshaped to give a tensor of the desired shape.
 
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k, k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.initializers.Orthogonal())
+  >>> v1
+  <tf.Variable ... shape=(3, 3) ...
+  >>> v2
+  <tf.Variable ... shape=(3, 3, 3) ...
+  >>> make_variables(4, tf.initializers.Orthogonal(gain=0.5))
+  (<tf.Variable ... shape=(4, 4) dtype=float32...
+   <tf.Variable ... shape=(4, 4, 4) dtype=float32...
+
   Args:
     gain: multiplicative factor to apply to the orthogonal matrix
     seed: A Python integer. Used to create random seeds. See
-      `tf.compat.v1.set_random_seed`
-    for behavior.
+      `tf.random.set_seed` for behavior.
 
   References:
       [Saxe et al., 2014](https://openreview.net/forum?id=_wzZwKpTDF_9C)
@@ -463,23 +666,26 @@ class Orthogonal(Initializer):
     self.seed = seed
     self._random_generator = _RandomGenerator(seed)
 
-  def __call__(self, shape, dtype=dtypes.float32):
+  def __call__(self, shape, dtype=dtypes.float32, **kwargs):
     """Returns a tensor object initialized as specified by the initializer.
 
     Args:
       shape: Shape of the tensor.
       dtype: Optional dtype of the tensor. Only floating point types are
         supported.
+      **kwargs: Additional keyword arguments.
 
     Raises:
       ValueError: If the dtype is not floating point or the input shape is not
        valid.
     """
+    self._validate_kwargs(kwargs, support_partition=False)
     dtype = _assert_float_dtype(dtype)
     # Check the shape
     if len(shape) < 2:
-      raise ValueError("The tensor to initialize must be "
-                       "at least two-dimensional")
+      raise ValueError("The tensor to initialize, specified by argument `shape`"
+                       " must be at least two-dimensional. Received shape="
+                       f"{shape}")
     # Flatten the input shape with the last dimension remaining
     # its original shape so it works for conv2d
     num_rows = 1
@@ -506,7 +712,25 @@ class Orthogonal(Initializer):
 class Identity(Initializer):
   """Initializer that generates the identity matrix.
 
-  Only use for 2D matrices.
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
+
+  Only usable for generating 2D matrices.
+
+  Examples:
+
+  >>> def make_variable(k, initializer):
+  ...   return tf.Variable(initializer(shape=[k, k], dtype=tf.float32))
+  >>> make_variable(2, tf.initializers.Identity())
+  <tf.Variable ... shape=(2, 2) dtype=float32, numpy=
+  array([[1., 0.],
+         [0., 1.]], dtype=float32)>
+  >>> make_variable(3, tf.initializers.Identity(gain=0.5))
+  <tf.Variable ... shape=(3, 3) dtype=float32, numpy=
+  array([[0.5, 0. , 0. ],
+         [0. , 0.5, 0. ],
+         [0. , 0. , 0.5]], dtype=float32)>
 
   Args:
     gain: Multiplicative factor to apply to the identity matrix.
@@ -515,27 +739,26 @@ class Identity(Initializer):
   def __init__(self, gain=1.0):
     self.gain = gain
 
-  def __call__(self, shape, dtype=dtypes.float32):
+  def __call__(self, shape, dtype=dtypes.float32, **kwargs):
     """Returns a tensor object initialized as specified by the initializer.
 
     Args:
       shape: Shape of the tensor.
       dtype: Optional dtype of the tensor. Only floating point types are
        supported.
+      **kwargs: Additional keyword arguments.
 
     Raises:
       ValueError: If the dtype is not floating point
+      ValueError: If the requested shape does not have exactly two axes.
     """
-    partition_info = None  # Keeps logic so can be readded later if necessary
+    self._validate_kwargs(kwargs, support_partition=False)
     dtype = _assert_float_dtype(dtype)
-    full_shape = shape if partition_info is None else partition_info.full_shape
-    if len(full_shape) != 2:
-      raise ValueError(
-          "Identity matrix initializer can only be used for 2D matrices.")
-    initializer = linalg_ops_impl.eye(*full_shape, dtype=dtype)
-    if partition_info is not None:
-      initializer = array_ops.slice(initializer, partition_info.var_offset,
-                                    shape)
+    if len(shape) != 2:
+      raise ValueError("The tensor to initialize, specified by argument `shape`"
+                       " must be at least two-dimensional. Received shape="
+                       f"{shape}")
+    initializer = linalg_ops_impl.eye(*shape, dtype=dtype)
     return self.gain * initializer
 
   def get_config(self):
@@ -545,15 +768,32 @@ class Identity(Initializer):
 class GlorotUniform(VarianceScaling):
   """The Glorot uniform initializer, also called Xavier uniform initializer.
 
-  It draws samples from a uniform distribution within [-limit, limit]
-  where `limit` is `sqrt(6 / (fan_in + fan_out))`
-  where `fan_in` is the number of input units in the weight tensor
-  and `fan_out` is the number of output units in the weight tensor.
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
+
+  Draws samples from a uniform distribution within [-limit, limit] where `limit`
+  is `sqrt(6 / (fan_in + fan_out))` where `fan_in` is the number of input units
+  in the weight tensor and `fan_out` is the number of output units in the weight
+  tensor.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k, k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.initializers.GlorotUniform())
+  >>> v1
+  <tf.Variable ... shape=(3, 3) ...
+  >>> v2
+  <tf.Variable ... shape=(3, 3, 3) ...
+  >>> make_variables(4, tf.initializers.RandomNormal())
+  (<tf.Variable ... shape=(4, 4) dtype=float32...
+   <tf.Variable ... shape=(4, 4, 4) dtype=float32...
 
   Args:
     seed: A Python integer. Used to create random seeds. See
-      `tf.compat.v1.set_random_seed`
-      for behavior.
+      `tf.random.set_seed` for behavior.
 
   References:
       [Glorot et al., 2010](http://proceedings.mlr.press/v9/glorot10a.html)
@@ -574,14 +814,32 @@ class GlorotUniform(VarianceScaling):
 class GlorotNormal(VarianceScaling):
   """The Glorot normal initializer, also called Xavier normal initializer.
 
-  It draws samples from a truncated normal distribution centered on 0
-  with `stddev = sqrt(2 / (fan_in + fan_out))`
-  where `fan_in` is the number of input units in the weight tensor
-  and `fan_out` is the number of output units in the weight tensor.
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
+
+  Draws samples from a truncated normal distribution centered on 0 with `stddev
+  = sqrt(2 / (fan_in + fan_out))` where `fan_in` is the number of input units in
+  the weight tensor and `fan_out` is the number of output units in the weight
+  tensor.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k, k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.initializers.GlorotNormal())
+  >>> v1
+  <tf.Variable ... shape=(3, 3) ...
+  >>> v2
+  <tf.Variable ... shape=(3, 3, 3) ...
+  >>> make_variables(4, tf.initializers.RandomNormal())
+  (<tf.Variable ... shape=(4, 4) dtype=float32...
+   <tf.Variable ... shape=(4, 4, 4) dtype=float32...
 
   Args:
     seed: A Python integer. Used to create random seeds. See
-      `tf.compat.v1.set_random_seed` for behavior.
+      `tf.random.set_seed` for behavior.
 
   References:
       [Glorot et al., 2010](http://proceedings.mlr.press/v9/glorot10a.html)
@@ -619,15 +877,34 @@ identity_initializer = Identity
 def lecun_normal(seed=None):
   """LeCun normal initializer.
 
-  It draws samples from a truncated normal distribution centered on 0
-  with `stddev = sqrt(1 / fan_in)`
-  where `fan_in` is the number of input units in the weight tensor.
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
 
-  Arguments:
+  Draws samples from a truncated normal distribution centered on 0 with `stddev
+  = sqrt(1 / fan_in)` where `fan_in` is the number of input units in the weight
+  tensor.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k, k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.initializers.lecun_normal())
+  >>> v1
+  <tf.Variable ... shape=(3, 3) ...
+  >>> v2
+  <tf.Variable ... shape=(3, 3, 3) ...
+  >>> make_variables(4, tf.initializers.RandomNormal())
+  (<tf.Variable ... shape=(4, 4) dtype=float32...
+   <tf.Variable ... shape=(4, 4, 4) dtype=float32...
+
+  Args:
     seed: A Python integer. Used to seed the random generator.
 
   Returns:
-    An initializer.
+    A callable Initializer with `shape` and `dtype` arguments which generates a
+    tensor.
 
   References:
       - Self-Normalizing Neural Networks,
@@ -645,15 +922,34 @@ def lecun_normal(seed=None):
 def lecun_uniform(seed=None):
   """LeCun uniform initializer.
 
-  It draws samples from a uniform distribution within [-limit, limit]
-  where `limit` is `sqrt(3 / fan_in)`
-  where `fan_in` is the number of input units in the weight tensor.
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
 
-  Arguments:
+  Draws samples from a uniform distribution within [-limit, limit] where `limit`
+  is `sqrt(3 / fan_in)` where `fan_in` is the number of input units in the
+  weight tensor.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k, k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.initializers.lecun_uniform())
+  >>> v1
+  <tf.Variable ... shape=(3, 3) ...
+  >>> v2
+  <tf.Variable ... shape=(3, 3, 3) ...
+  >>> make_variables(4, tf.initializers.RandomNormal())
+  (<tf.Variable ... shape=(4, 4) dtype=float32...
+   <tf.Variable ... shape=(4, 4, 4) dtype=float32...
+
+  Args:
     seed: A Python integer. Used to seed the random generator.
 
   Returns:
-    An initializer.
+    A callable Initializer with `shape` and `dtype` arguments which generates a
+    tensor.
 
   References:
       - Self-Normalizing Neural Networks,
@@ -669,15 +965,34 @@ def lecun_uniform(seed=None):
 def he_normal(seed=None):
   """He normal initializer.
 
-  It draws samples from a truncated normal distribution centered on 0
-  with `stddev = sqrt(2 / fan_in)`
-  where `fan_in` is the number of input units in the weight tensor.
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
 
-  Arguments:
+  It draws samples from a truncated normal distribution centered on 0 with
+  `stddev = sqrt(2 / fan_in)` where `fan_in` is the number of input units in the
+  weight tensor.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k, k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.initializers.he_normal())
+  >>> v1
+  <tf.Variable ... shape=(3, 3) ...
+  >>> v2
+  <tf.Variable ... shape=(3, 3, 3) ...
+  >>> make_variables(4, tf.initializers.RandomNormal())
+  (<tf.Variable ... shape=(4, 4) dtype=float32...
+   <tf.Variable ... shape=(4, 4, 4) dtype=float32...
+
+  Args:
     seed: A Python integer. Used to seed the random generator.
 
   Returns:
-    An initializer.
+    A callable Initializer with `shape` and `dtype` arguments which generates a
+    tensor.
 
   References:
       [He et al., 2015](https://www.cv-foundation.org/openaccess/content_iccv_2015/html/He_Delving_Deep_into_ICCV_2015_paper.html) # pylint: disable=line-too-long
@@ -690,15 +1005,34 @@ def he_normal(seed=None):
 def he_uniform(seed=None):
   """He uniform variance scaling initializer.
 
-  It draws samples from a uniform distribution within [-limit, limit]
-  where `limit` is `sqrt(6 / fan_in)`
-  where `fan_in` is the number of input units in the weight tensor.
+  Initializers allow you to pre-specify an initialization strategy, encoded in
+  the Initializer object, without knowing the shape and dtype of the variable
+  being initialized.
 
-  Arguments:
+  Draws samples from a uniform distribution within [-limit, limit] where `limit`
+  is `sqrt(6 / fan_in)` where `fan_in` is the number of input units in the
+  weight tensor.
+
+  Examples:
+
+  >>> def make_variables(k, initializer):
+  ...   return (tf.Variable(initializer(shape=[k, k], dtype=tf.float32)),
+  ...           tf.Variable(initializer(shape=[k, k, k], dtype=tf.float32)))
+  >>> v1, v2 = make_variables(3, tf.initializers.he_uniform())
+  >>> v1
+  <tf.Variable ... shape=(3, 3) ...
+  >>> v2
+  <tf.Variable ... shape=(3, 3, 3) ...
+  >>> make_variables(4, tf.initializers.RandomNormal())
+  (<tf.Variable ... shape=(4, 4) dtype=float32...
+   <tf.Variable ... shape=(4, 4, 4) dtype=float32...
+
+  Args:
     seed: A Python integer. Used to seed the random generator.
 
   Returns:
-    An initializer.
+    A callable Initializer with `shape` and `dtype` arguments which generates a
+    tensor.
 
   References:
       [He et al., 2015](https://www.cv-foundation.org/openaccess/content_iccv_2015/html/He_Delving_Deep_into_ICCV_2015_paper.html) # pylint: disable=line-too-long
@@ -709,33 +1043,6 @@ def he_uniform(seed=None):
 
 
 # Utility functions.
-
-
-def _compute_fans(shape):
-  """Computes the number of input and output units for a weight shape.
-
-  Args:
-    shape: Integer shape tuple or TF tensor shape.
-
-  Returns:
-    A tuple of scalars (fan_in, fan_out).
-  """
-  if len(shape) < 1:  # Just to avoid errors for constants.
-    fan_in = fan_out = 1
-  elif len(shape) == 1:
-    fan_in = fan_out = shape[0]
-  elif len(shape) == 2:
-    fan_in = shape[0]
-    fan_out = shape[1]
-  else:
-    # Assuming convolution kernels (2D, 3D, or more).
-    # kernel shape: (..., input_depth, depth)
-    receptive_field_size = 1.
-    for dim in shape[:-2]:
-      receptive_field_size *= dim
-    fan_in = shape[-2] * receptive_field_size
-    fan_out = shape[-1] * receptive_field_size
-  return fan_in, fan_out
 
 
 def _assert_float_dtype(dtype):
@@ -754,11 +1061,12 @@ def _assert_float_dtype(dtype):
   """
   dtype = dtypes.as_dtype(dtype)
   if not dtype.is_floating:
-    raise ValueError("Expected floating point type, got %s." % dtype)
+    raise ValueError("Argument `dtype` is expected to be floating point. "
+                     f"Received: {dtype}.")
   return dtype
 
 
-class _RandomGenerator(object):
+class _RandomGenerator:
   """Random generator that selects appropriate random ops."""
 
   def __init__(self, seed=None):

@@ -20,9 +20,11 @@ limitations under the License.
 #define TENSORFLOW_CORE_FRAMEWORK_OP_DEF_UTIL_H_
 
 #include <string>
+
 #include "tensorflow/core/framework/api_def.pb.h"
 #include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/platform/protobuf.h"
 
 namespace tensorflow {
@@ -54,7 +56,7 @@ const ApiDef::Arg* FindInputArg(StringPiece name, const ApiDef& api_def);
 
 // Produce a human-readable version of an op_def that is more concise
 // than a text-format proto.  Excludes descriptions.
-string SummarizeOpDef(const OpDef& op_def);
+std::string SummarizeOpDef(const OpDef& op_def);
 
 // Returns an error if new_op is not backwards-compatible with (more
 // accepting than) old_op.

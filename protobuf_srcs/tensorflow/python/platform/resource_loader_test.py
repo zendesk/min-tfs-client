@@ -13,19 +13,21 @@
 # limitations under the License.
 # ==============================================================================
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.platform import googletest
 from tensorflow.python.platform import resource_loader
 
 
-class DefaultResourceLoaderTest(googletest.TestCase):
+class ResourceLoaderTest(googletest.TestCase):
 
   def test_exception(self):
     with self.assertRaises(IOError):
       resource_loader.load_resource("/fake/file/path/dne")
+
+  def test_exists(self):
+    contents = resource_loader.load_resource(
+        "python/platform/resource_loader.py")
+    self.assertIn(b"tensorflow", contents)
+
 
 if __name__ == "__main__":
   googletest.main()

@@ -21,25 +21,7 @@ limitations under the License.
 // stable and can change without notice.
 
 #include "tensorflow/c/c_api.h"
-
-// Macro to control visibility of exported symbols in the shared library (.so,
-// .dylib, .dll).
-// This duplicates the TF_EXPORT macro definition in
-// tensorflow/core/platform/macros.h in order to keep this .h file independent
-// of any other includes.$a
-#ifdef SWIG
-#define TF_CAPI_EXPORT
-#else
-#if defined(_WIN32)
-#ifdef TF_COMPILE_LIBRARY
-#define TF_CAPI_EXPORT __declspec(dllexport)
-#else
-#define TF_CAPI_EXPORT __declspec(dllimport)
-#endif  // TF_COMPILE_LIBRARY
-#else
-#define TF_CAPI_EXPORT __attribute__((visibility("default")))
-#endif  // _WIN32
-#endif  // SWIG
+#include "tensorflow/c/c_api_macros.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -74,7 +56,7 @@ typedef enum TFE_ContextDevicePlacementPolicy {
   // Placement policy which silently copies int32 tensors but not other dtypes.
   TFE_DEVICE_PLACEMENT_SILENT_FOR_INT32 = 3,
 } TFE_ContextDevicePlacementPolicy;
-// LINT.ThenChange(//tensorflow/core/common_runtime/eager/context.h)
+// LINT.ThenChange(//tensorflow/c/eager/immediate_execution_context.h)
 
 // Sets the default execution mode (sync/async). Note that this can be
 // overridden per thread using TFE_ContextSetExecutorForThread.
@@ -119,7 +101,7 @@ TF_CAPI_EXPORT extern TFE_ContextDevicePlacementPolicy
 TFE_ContextGetDevicePlacementPolicy(TFE_Context* ctx);
 
 // A tensorflow.ServerDef specifies remote workers (in addition to the current
-// workers name). Operations created on this context can then be executed on
+// workers name). Operations created in this context can then be executed on
 // any of these remote workers by setting an appropriate device.
 //
 // If the following is set, all servers identified by the
@@ -134,10 +116,10 @@ TF_CAPI_EXPORT extern void TFE_ContextSetServerDef(TFE_Context* ctx,
 //
 // Like a TF_Tensor, a TFE_TensorHandle refers to a tensor with a value, shape,
 // type etc. Unlike a TF_Tensor, a TFE_TensorHandle may refer to such tensors
-// placed in memory of different devices or remote address spaces.
+// placed in the memory of different devices or remote address spaces.
 typedef struct TFE_TensorHandle TFE_TensorHandle;
 
-TF_CAPI_EXPORT extern TFE_TensorHandle* TFE_NewTensorHandle(TF_Tensor* t,
+TF_CAPI_EXPORT extern TFE_TensorHandle* TFE_NewTensorHandle(const TF_Tensor* t,
                                                             TF_Status* status);
 // Indicates that the caller will not be using `h` any more.
 TF_CAPI_EXPORT extern void TFE_DeleteTensorHandle(TFE_TensorHandle* h);
@@ -206,14 +188,14 @@ typedef struct TFE_TensorDebugInfo TFE_TensorDebugInfo;
 // error and nullptr is returned. This function can block till the operation
 // that produces `handle` has completed.
 TF_CAPI_EXPORT extern TFE_TensorDebugInfo* TFE_TensorHandleTensorDebugInfo(
-    TFE_TensorHandle* handle, TF_Status* status);
+    TFE_TensorHandle* h, TF_Status* status);
 
 // Deletes `debug_info`.
 TF_CAPI_EXPORT extern void TFE_DeleteTensorDebugInfo(
     TFE_TensorDebugInfo* debug_info);
 
 // Returns the number of dimensions used to represent the tensor on its device.
-// The number of dimensions used to reprensent the tensor on device can be
+// The number of dimensions used to represent the tensor on device can be
 // different from the number returned by TFE_TensorHandleNumDims.
 // The return value was current at the time of TFE_TensorDebugInfo creation.
 TF_CAPI_EXPORT extern int TFE_TensorDebugInfoOnDeviceNumDims(
@@ -248,21 +230,21 @@ typedef struct TFE_Op TFE_Op;
 TF_CAPI_EXPORT extern TFE_Op* TFE_NewOp(TFE_Context* ctx,
                                         const char* op_or_function_name,
                                         TF_Status* status);
-
 TF_CAPI_EXPORT extern void TFE_DeleteOp(TFE_Op* op);
+
+// Returns the op or function name `op` will execute.
+//
+// The returned string remains valid throughout the lifetime of 'op'.
+TF_CAPI_EXPORT extern const char* TFE_OpGetName(const TFE_Op* op,
+                                                TF_Status* status);
+TF_CAPI_EXPORT extern TFE_Context* TFE_OpGetContext(const TFE_Op* op,
+                                                    TF_Status* status);
 
 TF_CAPI_EXPORT extern void TFE_OpSetDevice(TFE_Op* op, const char* device_name,
                                            TF_Status* status);
 // The returned string remains valid throughout the lifetime of 'op'.
-TF_CAPI_EXPORT extern const char* TFE_OpGetDevice(TFE_Op* op,
+TF_CAPI_EXPORT extern const char* TFE_OpGetDevice(const TFE_Op* op,
                                                   TF_Status* status);
-
-// When 'enable' is set to 1, and if TensorFlow library is built with XLA
-// support, a subsequent TFE_Execute() call on `op` will run the op via XLA.
-//
-// If the library is not built with XLA support, this call would be a no-op.
-TF_CAPI_EXPORT extern void TFE_OpSetXLACompilation(TFE_Op* op,
-                                                   unsigned char enable);
 
 TF_CAPI_EXPORT extern void TFE_OpAddInput(TFE_Op* op, TFE_TensorHandle* input,
                                           TF_Status* status);
@@ -271,6 +253,23 @@ TF_CAPI_EXPORT extern void TFE_OpAddInputList(TFE_Op* op,
                                               TFE_TensorHandle** inputs,
                                               int num_inputs,
                                               TF_Status* status);
+
+// Fetches the current number of inputs attached to `op`.
+//
+// Does not use the operation's definition to determine how many inputs should
+// be attached. It is intended for use with TFE_OpGetFlatInput to inspect an
+// already-finalized operation.
+//
+// Note that TFE_OpGetFlatInputCount and TFE_OpGetFlatInput operate on a flat
+// sequence of inputs, unlike TFE_OpGetInputLength (for getting the length of a
+// particular named input list, which may only be part of the op's inputs).
+TF_CAPI_EXPORT extern int TFE_OpGetFlatInputCount(const TFE_Op* op,
+                                                  TF_Status* status);
+// Returns a borrowed reference to one of `op`'s inputs. Use
+// `TFE_TensorHandleCopySharingTensor` to make a new reference.
+TF_CAPI_EXPORT extern TFE_TensorHandle* TFE_OpGetFlatInput(const TFE_Op* op,
+                                                           int index,
+                                                           TF_Status* status);
 
 TF_CAPI_EXPORT extern TF_AttrType TFE_OpGetAttrType(TFE_Op* op,
                                                     const char* attr_name,
@@ -425,7 +424,7 @@ TF_CAPI_EXPORT extern void TFE_ContextStartStep(TFE_Context* ctx);
 
 // Ends a step. When there is no active step (that is, every started step has
 // been ended) step containers will be cleared. Note: it is not safe to call
-// TFE_ContextEndStep while ops which rely on the step container may be running.
+// TFE_ContextEndStep while ops that rely on the step container may be running.
 TF_CAPI_EXPORT extern void TFE_ContextEndStep(TFE_Context* ctx);
 
 #ifdef __cplusplus

@@ -12,6 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -19,10 +20,10 @@ limitations under the License.
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/lite/toco/graph_transformations/graph_transformations.h"
 #include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/tooling_util.h"
-#include "tensorflow/core/platform/logging.h"
 
 namespace toco {
 
@@ -64,7 +65,7 @@ void CopyTensorSegments(const std::vector<Array*>& input_arrays,
   // Copy the data from input_arrays to concatenated_array_buffer.
   T* dest_ptr = concatenated_array_buffer.data();
   for (int s = 0; s < total_copy_steps; s++) {
-    for (int i = 0; i < input_arrays.size(); i++) {
+    for (size_t i = 0; i < input_arrays.size(); i++) {
       std::copy(src_ptr[i], src_ptr[i] + array_copy_size[i], dest_ptr);
       src_ptr[i] += array_copy_size[i];
       dest_ptr += array_copy_size[i];
@@ -142,34 +143,35 @@ void SetMinMaxForConcatenedArray(GraphTransformation* transformation,
   const auto concat_it = model->operators.begin() + op_index;
   const auto* concat_base_op = concat_it->get();
   if (concat_base_op->type != OperatorType::kConcatenation) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   const auto* concat_op =
       static_cast<const ConcatenationOperator*>(concat_base_op);
 
-  for (const string& input_name : concat_op->inputs) {
+  for (const std::string& input_name : concat_op->inputs) {
     // We only expect constant unquantized arrays as input, otherwise we return.
     // We  also make sure the shapes of the input arrays are known and they are
     // all discardable.
     const Operator* input_op = GetOpWithOutput(*model, input_name);
-    if (input_op) return ::tensorflow::Status::OK();
+    if (input_op) return ::tensorflow::OkStatus();
     if (!IsConstantParameterArray(*model, input_name))
-      return ::tensorflow::Status::OK();
+      return ::tensorflow::OkStatus();
     if (!model->GetArray(input_name).has_shape())
-      return ::tensorflow::Status::OK();
+      return ::tensorflow::OkStatus();
     if (model->GetArray(input_name).quantization_params)
-      return ::tensorflow::Status::OK();
+      return ::tensorflow::OkStatus();
     if (!IsDiscardableArray(*model, input_name))
-      return ::tensorflow::Status::OK();
+      return ::tensorflow::OkStatus();
   }
 
   const int concatenation_axis = concat_op->axis;
 
   CHECK_EQ(concat_op->outputs.size(), 1);
-  string concatenated_array_name = concat_op->outputs[0];
+  std::string concatenated_array_name = concat_op->outputs[0];
   Array& concatenated_array = model->GetOrCreateArray(concatenated_array_name);
   std::vector<Array*> input_arrays;
-  for (const string& input_name : concat_op->inputs) {
+  input_arrays.reserve(concat_op->inputs.size());
+  for (const std::string& input_name : concat_op->inputs) {
     input_arrays.push_back(&model->GetArray(input_name));
   }
 
@@ -208,7 +210,7 @@ void SetMinMaxForConcatenedArray(GraphTransformation* transformation,
 
   DeleteOpAndArrays(model, concat_op);
   *modified = true;
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

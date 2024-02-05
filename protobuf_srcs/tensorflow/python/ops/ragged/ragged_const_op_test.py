@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for ragged_factory_ops.constant."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
@@ -122,7 +118,7 @@ class RaggedConstOpTest(test_util.TensorFlowTestCase,
           expected_shape=(3, None, None, None)),
       dict(
           pylist=np.array([np.array([[], []]),
-                           np.array([]), [[], [[]]]]),
+                           np.array([]), [[], [[]]]], dtype=object),
           expected_shape=(3, None, None, None)),
 
       #=========================================================================
@@ -301,7 +297,7 @@ class RaggedConstOpTest(test_util.TensorFlowTestCase,
                            exception=None,
                            message=None):
     """Tests that `ragged_const()` raises an expected exception."""
-    self.assertRaisesRegexp(
+    self.assertRaisesRegex(
         exception,
         message,
         ragged_factory_ops.constant,
@@ -341,9 +337,9 @@ class RaggedConstOpTest(test_util.TensorFlowTestCase,
                                   message=None):
     """Tests for the _find_scalar_and_max_depth helper function."""
     if exception is not None:
-      self.assertRaisesRegexp(exception, message,
-                              ragged_factory_ops._find_scalar_and_max_depth,
-                              pylist)
+      self.assertRaisesRegex(exception, message,
+                             ragged_factory_ops._find_scalar_and_max_depth,
+                             pylist)
     else:
       self.assertEqual(
           ragged_factory_ops._find_scalar_and_max_depth(pylist),
@@ -391,7 +387,7 @@ class RaggedConstOpTest(test_util.TensorFlowTestCase,
                                            message=None):
     """Tests for the _default_inner_shape_for_pylist helper function."""
     if exception is not None:
-      self.assertRaisesRegexp(
+      self.assertRaisesRegex(
           exception, message,
           ragged.ragged_factory_ops._default_inner_shape_for_pylist, pylist,
           ragged_rank)
@@ -404,10 +400,11 @@ class RaggedConstOpTest(test_util.TensorFlowTestCase,
 def _normalize_pylist(item):
   """Convert all (possibly nested) np.arrays contained in item to list."""
   # convert np.arrays in current level to list
-  if np.ndim(item) == 0:
+  if not isinstance(item, (list, np.ndarray)):
     return item
   level = (x.tolist() if isinstance(x, np.ndarray) else x for x in item)
-  return [_normalize_pylist(el) if np.ndim(el) != 0 else el for el in level]
+  return [_normalize_pylist(el) if isinstance(item, (list, np.ndarray))
+          else el for el in level]
 
 
 if __name__ == '__main__':

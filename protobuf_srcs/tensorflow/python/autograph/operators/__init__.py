@@ -33,10 +33,7 @@ closures for the body.
 # subclasses namedtuple and contains any arguments that are only required
 # for some specializations of the operator.
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+from tensorflow.python.autograph.operators.conditional_expressions import if_exp
 from tensorflow.python.autograph.operators.control_flow import for_stmt
 from tensorflow.python.autograph.operators.control_flow import if_stmt
 from tensorflow.python.autograph.operators.control_flow import while_stmt
@@ -60,8 +57,7 @@ from tensorflow.python.autograph.operators.py_builtins import range_
 from tensorflow.python.autograph.operators.slices import get_item
 from tensorflow.python.autograph.operators.slices import GetItemOpts
 from tensorflow.python.autograph.operators.slices import set_item
-from tensorflow.python.autograph.operators.special_values import is_undefined
-from tensorflow.python.autograph.operators.special_values import is_undefined_return
-from tensorflow.python.autograph.operators.special_values import retval
-from tensorflow.python.autograph.operators.special_values import Undefined
-from tensorflow.python.autograph.operators.special_values import UndefinedReturnValue
+from tensorflow.python.autograph.operators.variables import ld
+from tensorflow.python.autograph.operators.variables import ldu
+from tensorflow.python.autograph.operators.variables import Undefined
+from tensorflow.python.autograph.operators.variables import UndefinedReturnValue

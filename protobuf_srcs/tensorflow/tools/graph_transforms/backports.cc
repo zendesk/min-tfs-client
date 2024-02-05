@@ -13,14 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
-
 #include "tensorflow/core/common_runtime/constant_folding.h"
-#include "tensorflow/core/graph/graph_constructor.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/subgraph.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/public/session.h"
+#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
 #include "tensorflow/tools/graph_transforms/transform_utils.h"
 
 namespace tensorflow {
@@ -51,11 +50,11 @@ Status BackportConcatV2Transform(const GraphDef& input_graph_def,
         // Tidx attribute must be deleted because it's not used in Concat.
         concat_node.mutable_attr()->erase("Tidx");
         new_nodes->push_back(concat_node);
-        return Status::OK();
+        return OkStatus();
       },
       {true}, output_graph_def));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("backport_concatv2", BackportConcatV2Transform);
@@ -101,7 +100,7 @@ Status BackportTensorArrayV3Transform(const GraphDef& input_graph_def,
 
         new_nodes->push_back(tensor_array_v2_node);
         new_nodes->push_back(replacement_flow_node);
-        return Status::OK();
+        return OkStatus();
       },
       {true}, &replaced_graph_def));
   // Update the graph so that any nodes that referred to removed inputs now
@@ -122,10 +121,10 @@ Status BackportTensorArrayV3Transform(const GraphDef& input_graph_def,
         NodeDef v2_node = v3_node;
         v2_node.set_op(v3_node.op().substr(0, v3_node.op().size() - 1) + "2");
         new_nodes->push_back(v2_node);
-        return Status::OK();
+        return OkStatus();
       },
       {true}, output_graph_def));
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("backport_tensor_array_v3",

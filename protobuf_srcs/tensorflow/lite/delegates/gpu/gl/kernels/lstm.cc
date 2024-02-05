@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "absl/memory/memory.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
@@ -43,8 +44,8 @@ namespace {
 //
 class LstmNodeShader : public NodeShader {
  public:
-  Status GenerateCode(const GenerationContext& ctx,
-                      GeneratedCode* generated_code) const final {
+  absl::Status GenerateCode(const GenerationContext& ctx,
+                            GeneratedCode* generated_code) const final {
     std::string code = R"(
       vec4 prev_state  = $input_data_1[gid.x, gid.y, gid.z]$;
 
@@ -80,14 +81,14 @@ class LstmNodeShader : public NodeShader {
         /*input=*/IOStructure::ONLY_DEFINITIONS,
         /*output=*/IOStructure::AUTO,
     };
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 
 }  // namespace
 
 std::unique_ptr<NodeShader> NewLstmNodeShader() {
-  return absl::make_unique<LstmNodeShader>();
+  return std::make_unique<LstmNodeShader>();
 }
 
 }  // namespace gl

@@ -40,14 +40,14 @@ Status SqliteQueryConnection::Open(const string& data_source_name,
       data_source_name, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, &db_));
   query_ = query;
   output_types_ = output_types;
-  return Status::OK();
+  return OkStatus();
 }
 
 Status SqliteQueryConnection::Close() {
   stmt_ = SqliteStatement();
   db_->Unref();
   db_ = nullptr;
-  return Status::OK();
+  return OkStatus();
 }
 
 Status SqliteQueryConnection::GetNext(IteratorContext* ctx,
@@ -63,13 +63,13 @@ Status SqliteQueryConnection::GetNext(IteratorContext* ctx,
       FillTensorWithResultSetEntry(dt, i, &out_tensors->back());
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status SqliteQueryConnection::PrepareQuery() {
   TF_RETURN_IF_ERROR(db_->Prepare(query_, &stmt_));
   int column_count = stmt_.ColumnCount();
-  if (column_count != output_types_.size()) {
+  if (column_count != static_cast<int>(output_types_.size())) {
     stmt_ = SqliteStatement();
     return errors::InvalidArgument(tensorflow::strings::Printf(
         "The number of columns in query (%d) must match the number of "
@@ -77,7 +77,7 @@ Status SqliteQueryConnection::PrepareQuery() {
         column_count, output_types_.size()));
   }
   column_count_ = column_count;
-  return Status::OK();
+  return OkStatus();
 }
 
 void SqliteQueryConnection::FillTensorWithResultSetEntry(

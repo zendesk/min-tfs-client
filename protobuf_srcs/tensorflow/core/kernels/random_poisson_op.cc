@@ -28,6 +28,7 @@ limitations under the License.
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/lib/random/random_distributions.h"
 #include "tensorflow/core/lib/random/simple_philox.h"
 #include "tensorflow/core/util/guarded_philox_random.h"
@@ -67,17 +68,10 @@ struct PoissonComputeType {
 
 namespace functor {
 
-template <typename Device, typename T, typename U>
-struct PoissonFunctor {
-  void operator()(OpKernelContext* ctx, const Device& d, const T* rate_flat,
-                  int num_rate, int num_samples,
-                  const random::PhiloxRandom& rng, U* samples_flat);
-};
-
 template <typename T, typename U>
 struct PoissonFunctor<CPUDevice, T, U> {
   void operator()(OpKernelContext* ctx, const CPUDevice& d, const T* rate_flat,
-                  int num_rate, int num_samples,
+                  int64_t num_rate, int64_t num_samples,
                   const random::PhiloxRandom& rng, U* samples_flat) {
     // Two different algorithms are employed, depending on the size of
     // rate.
@@ -103,16 +97,16 @@ struct PoissonFunctor<CPUDevice, T, U> {
     typedef random::UniformDistribution<random::PhiloxRandom, CT> Uniform;
 
     auto DoWork = [num_samples, num_rate, &rng, samples_flat, rate_flat](
-                      int start_output, int limit_output) {
+                      int64_t start_output, int64_t limit_output) {
       // Capturing "rng" by value would only make a copy for the _shared_
       // lambda.  Since we want to let each worker have its own copy, we pass
       // "rng" by reference and explicitly do a copy assignment.
 
       Uniform uniform;
       typename Uniform::ResultType uniform_result;
-      for (int64 output_idx = start_output; output_idx < limit_output;
+      for (int64_t output_idx = start_output; output_idx < limit_output;
            /* output_idx incremented within inner loop below */) {
-        const int64 rate_idx = output_idx / num_samples;
+        const int64_t rate_idx = output_idx / num_samples;
 
         // Several calculations can be done on a per-rate basis.
         const CT rate = CT(rate_flat[rate_idx]);
@@ -131,12 +125,12 @@ struct PoissonFunctor<CPUDevice, T, U> {
           const CT exp_neg_rate = Eigen::numext::exp(-rate);
 
           // Compute the rest of the samples for the current rate value.
-          for (int64 sample_idx = output_idx % num_samples;
+          for (int64_t sample_idx = output_idx % num_samples;
                sample_idx < num_samples && output_idx < limit_output;
                sample_idx++, output_idx++) {
             random::PhiloxRandom gen = rng;
             gen.Skip(kReservedSamplesPerOutput * output_idx);
-            int16 uniform_remaining = 0;
+            int16_t uniform_remaining = 0;
 
             CT prod = 1;
             CT x = 0;
@@ -153,6 +147,16 @@ struct PoissonFunctor<CPUDevice, T, U> {
               }
               x += 1;
             }
+          }
+          continue;
+        }
+        if (Eigen::numext::isinf(rate) && rate > CT(0)) {
+          // Fill the rest of the samples for the current rate value.
+          for (int64_t sample_idx = output_idx % num_samples;
+               sample_idx < num_samples && output_idx < limit_output;
+               sample_idx++, output_idx++) {
+            U k = Eigen::NumTraits<U>::infinity();
+            samples_rate_output[sample_idx * num_rate] = k;
           }
           continue;
         }
@@ -193,12 +197,12 @@ struct PoissonFunctor<CPUDevice, T, U> {
         const CT inv_alpha = CT(1.1239) + CT(1.1328) / (b - CT(3.4));
 
         // Compute the rest of the samples for the current rate value.
-        for (int64 sample_idx = output_idx % num_samples;
+        for (int64_t sample_idx = output_idx % num_samples;
              sample_idx < num_samples && output_idx < limit_output;
              sample_idx++, output_idx++) {
           random::PhiloxRandom gen = rng;
           gen.Skip(kReservedSamplesPerOutput * output_idx);
-          int16 uniform_remaining = 0;
+          int16_t uniform_remaining = 0;
 
           while (true) {
             UNIFORM(u);
@@ -290,17 +294,17 @@ class RandomPoissonOp : public OpKernel {
     const Tensor& rate_t = ctx->input(1);
 
     TensorShape samples_shape;
-    OP_REQUIRES_OK(ctx, MakeShape(shape_t, &samples_shape));
-    const int64 num_samples = samples_shape.num_elements();
+    OP_REQUIRES_OK(ctx, tensor::MakeShape(shape_t, &samples_shape));
+    const int64_t num_samples = samples_shape.num_elements();
+    OP_REQUIRES_OK(ctx, samples_shape.AppendShapeWithStatus(rate_t.shape()));
 
-    samples_shape.AppendShape(rate_t.shape());
     // Allocate output samples.
     Tensor* samples_t = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, samples_shape, &samples_t));
     if (num_samples == 0) return;
 
     const auto rate_flat = rate_t.flat<T>().data();
-    const int64 num_rate = rate_t.NumElements();
+    const int64_t num_rate = rate_t.NumElements();
     auto samples_flat = samples_t->flat<U>().data();
     random::PhiloxRandom rng = generator_.ReserveRandomOutputs(
         num_samples * num_rate, kReservedSamplesPerOutput);
@@ -313,7 +317,8 @@ class RandomPoissonOp : public OpKernel {
  private:
   GuardedPhiloxRandom generator_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(RandomPoissonOp);
+  RandomPoissonOp(const RandomPoissonOp&) = delete;
+  void operator=(const RandomPoissonOp&) = delete;
 };
 }  // namespace
 
@@ -328,11 +333,12 @@ TF_CALL_half(REGISTER);
 TF_CALL_float(REGISTER);
 TF_CALL_double(REGISTER);
 
-#define REGISTER_V2(RTYPE, OTYPE)                              \
-  REGISTER_KERNEL_BUILDER(Name("RandomPoissonV2")              \
-                              .Device(DEVICE_CPU)              \
-                              .TypeConstraint<RTYPE>("R")      \
-                              .TypeConstraint<OTYPE>("dtype"), \
+#define REGISTER_V2(RTYPE, OTYPE)                                   \
+  template struct functor::PoissonFunctor<CPUDevice, RTYPE, OTYPE>; \
+  REGISTER_KERNEL_BUILDER(Name("RandomPoissonV2")                   \
+                              .Device(DEVICE_CPU)                   \
+                              .TypeConstraint<RTYPE>("R")           \
+                              .TypeConstraint<OTYPE>("dtype"),      \
                           RandomPoissonOp<RTYPE, OTYPE>);
 
 #define REGISTER_ALL(RTYPE)        \
@@ -340,13 +346,13 @@ TF_CALL_double(REGISTER);
   REGISTER_V2(RTYPE, float);       \
   REGISTER_V2(RTYPE, double);      \
   REGISTER_V2(RTYPE, int32);       \
-  REGISTER_V2(RTYPE, int64);
+  REGISTER_V2(RTYPE, int64_t);
 
 REGISTER_ALL(Eigen::half);
 REGISTER_ALL(float);
 REGISTER_ALL(double);
 REGISTER_ALL(int32);
-REGISTER_ALL(int64);
+REGISTER_ALL(int64_t);
 
 #undef REGISTER_ALL
 #undef REGISTER_V2

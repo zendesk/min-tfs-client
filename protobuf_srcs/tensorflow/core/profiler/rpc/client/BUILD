@@ -1,66 +1,86 @@
-load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_cuda_library")
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
+load("//tensorflow:tensorflow.default.bzl", "tf_grpc_cc_dependencies")
+load(
+    "//tensorflow/core/profiler/builds:build_config.bzl",
+    "tf_profiler_copts",
+    "tf_profiler_pybind_cc_library_wrapper",
+)
 
 package(
-    licenses = ["notice"],  # Apache 2.0
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
 )
 
-tf_cuda_library(
-    name = "capture_profile",
-    srcs = [
-        "capture_profile.cc",
-    ],
-    hdrs = [
-        "capture_profile.h",
-    ],
-    visibility = ["//visibility:public"],
+cc_library(
+    name = "save_profile",
+    hdrs = ["save_profile.h"],
+    copts = tf_profiler_copts(),
+    visibility = ["//tensorflow/core/profiler:internal"],
     deps = [
-        ":dump_tpu_profile",
-        "//tensorflow:grpc++",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:grpc_services",
         "//tensorflow/core:lib",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_util",
-        "//tensorflow/core/profiler:protos_all_cc",
+        "//tensorflow/core:lib_internal",
+        "//tensorflow/core/profiler/protobuf:xplane_proto_cc",
+        "@local_tsl//tsl/profiler/protobuf:profiler_service_proto_cc",
+        "@local_tsl//tsl/profiler/rpc/client:save_profile",
+    ],
+)
+
+tf_profiler_pybind_cc_library_wrapper(
+    name = "profiler_client_for_pybind",
+    actual = ":profiler_client",
+)
+
+cc_library(
+    name = "profiler_client",
+    hdrs = ["profiler_client.h"],
+    visibility = [
+        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
+    ],
+    deps = [
+        ":profiler_client_impl",
+        "//tensorflow/core:lib",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@local_tsl//tsl/profiler/protobuf:profiler_analysis_cc_grpc_proto",
+        "@local_tsl//tsl/profiler/protobuf:profiler_service_cc_grpc_proto",
+        "@local_tsl//tsl/profiler/rpc/client:profiler_client",
+        "@local_tsl//tsl/profiler/rpc/client:profiler_client_impl",
     ],
+)
+
+# Linked to pywrap_tensorflow to avoid ODR violation due to tf_grpc_cc_dependencies().
+cc_library(
+    name = "profiler_client_impl",
+    srcs = [
+        "profiler_client.h",
+    ],
+    copts = tf_profiler_copts(),
+    visibility = [
+        "//tensorflow:__pkg__",
+        "//tensorflow/python:__pkg__",
+    ],
+    deps = [
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@local_tsl//tsl/profiler/protobuf:profiler_analysis_cc_grpc_proto",
+        "@local_tsl//tsl/profiler/protobuf:profiler_service_cc_grpc_proto",
+        "@local_tsl//tsl/profiler/rpc/client:profiler_client",
+        "@local_tsl//tsl/profiler/rpc/client:profiler_client_impl",
+    ] + tf_grpc_cc_dependencies(),
+    alwayslink = True,
 )
 
 cc_library(
-    name = "dump_tpu_profile",
-    srcs = ["dump_tpu_profile.cc"],
-    hdrs = ["dump_tpu_profile.h"],
-    visibility = ["//visibility:public"],
+    name = "remote_profiler_session_manager",
+    hdrs = ["remote_profiler_session_manager.h"],
+    copts = tf_profiler_copts(),
     deps = [
-        ":trace_events_to_json",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:grpc_services",
+        ":profiler_client_for_pybind",
         "//tensorflow/core:lib",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core/profiler:op_profile_proto_cc",
-    ],
-)
-
-cc_library(
-    name = "trace_events_to_json",
-    srcs = ["trace_events_to_json.cc"],
-    hdrs = ["trace_events_to_json.h"],
-    deps = [
-        "//tensorflow/core:lib",
-        "//tensorflow/core:protos_all_cc",
-        "@jsoncpp_git//:jsoncpp",
-    ],
-)
-
-tf_cc_test(
-    name = "trace_events_to_json_test",
-    srcs = ["trace_events_to_json_test.cc"],
-    deps = [
-        ":trace_events_to_json",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core:test",
-        "//tensorflow/core:test_main",
-        "//tensorflow/core/profiler:protos_all_cc",
-        "@jsoncpp_git//:jsoncpp",
+        "@com_google_absl//absl/strings",
+        "@local_tsl//tsl/profiler/rpc/client:remote_profiler_session_manager",
     ],
 )

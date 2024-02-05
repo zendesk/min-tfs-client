@@ -126,7 +126,7 @@ Node* RandomPoisson(Graph* g, Node* shape, Node* lam);
 Node* Roll(Graph* g, Node* input, Node* shift, Node* axis);
 
 // Generates random parameters from the truncated standard normal distribution
-// of the nput shape
+// of the input shape
 Node* TruncatedNormal(Graph* g, Node* input, DataType dtype);
 
 // Adds an error node in "g". The node's computation always
@@ -218,10 +218,10 @@ Node* DiagPart(Graph* g, Node* in, DataType type);
 Node* CheckNumerics(Graph* g, Node* in, const string& message);
 
 // Add an _Arg node in "g".
-Node* Arg(Graph* g, int64 index, DataType type);
+Node* Arg(Graph* g, int64_t index, DataType type);
 
 // Add a _Retval node in "g".
-Node* Retval(Graph* g, int64 index, Node* in);
+Node* Retval(Graph* g, int64_t index, Node* in, int64_t in_index = 0);
 
 }  // end namespace graph
 }  // end namespace test

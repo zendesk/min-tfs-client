@@ -13,14 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
-
 #include "tensorflow/core/common_runtime/constant_folding.h"
-#include "tensorflow/core/graph/graph_constructor.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/subgraph.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/public/session.h"
+#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
 #include "tensorflow/tools/graph_transforms/transform_utils.h"
 
 namespace tensorflow {
@@ -63,7 +62,7 @@ Status FoldBatchNorms(const GraphDef& input_graph_def,
             new_nodes->insert(new_nodes->end(),
                               {mul_node, conv_node, input_node, weights_node,
                                mul_values_node});
-            return Status::OK();
+            return OkStatus();
           }
         }
 
@@ -72,7 +71,7 @@ Status FoldBatchNorms(const GraphDef& input_graph_def,
 
         // Make sure all the inputs really are vectors, with as many entries as
         // there are columns in the weights.
-        int64 weights_cols;
+        int64_t weights_cols;
         if (conv_node.op() == "Conv2D") {
           weights_cols = weights.shape().dim_size(3);
         } else if (conv_node.op() == "DepthwiseConv2dNative") {
@@ -92,7 +91,7 @@ Status FoldBatchNorms(const GraphDef& input_graph_def,
         auto weights_vector = weights.flat<float>();
         Tensor scaled_weights(DT_FLOAT, weights.shape());
         auto scaled_weights_vector = scaled_weights.flat<float>();
-        for (int64 row = 0; row < weights_vector.dimension(0); ++row) {
+        for (int64_t row = 0; row < weights_vector.dimension(0); ++row) {
           scaled_weights_vector(row) =
               weights_vector(row) *
               mul_values.flat<float>()(row % weights_cols);
@@ -113,11 +112,11 @@ Status FoldBatchNorms(const GraphDef& input_graph_def,
         new_conv_node.set_name(mul_node.name());
         new_nodes->push_back(new_conv_node);
 
-        return Status::OK();
+        return OkStatus();
       },
       {}, &replaced_graph_def));
   *output_graph_def = replaced_graph_def;
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("fold_batch_norms", FoldBatchNorms);

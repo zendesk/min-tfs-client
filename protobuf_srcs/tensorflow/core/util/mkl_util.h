@@ -24,7 +24,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "mkldnn.hpp"
+#include "dnnl.hpp"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -36,19 +36,22 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/util/env_var.h"
+#include "tensorflow/core/util/onednn_env_vars.h"
 #include "tensorflow/core/util/padding.h"
 #include "tensorflow/core/util/tensor_format.h"
+#if defined(DNNL_AARCH64_USE_ACL) && defined(ENABLE_ONEDNN_OPENMP)
+#include "tensorflow/core/platform/mutex.h"
+#endif
+#include "tsl/util/onednn_threadpool.h"
 
-using mkldnn::engine;
-using mkldnn::memory;
-using mkldnn::padding_kind;
-using mkldnn::primitive;
-using mkldnn::reorder;
-using mkldnn::stream;
-
+using dnnl::engine;
+using dnnl::memory;
+using dnnl::primitive;
+using dnnl::reorder;
+using dnnl::stream;
 using CPUDevice = Eigen::ThreadPoolDevice;
 using MemoryArgsMap = std::unordered_map<int, memory>;
-using ReorderPd = mkldnn::reorder::primitive_desc;
+using ReorderPd = dnnl::reorder::primitive_desc;
 
 #ifdef _WIN32
 typedef unsigned int uint;
@@ -64,7 +67,7 @@ namespace tensorflow {
 // MKL operation, and did not go through a conversion to a standard
 // Tensorflow tensor.
 
-// The dimensions order that MKL-DNN internally uses for 2D activations
+// The dimensions order that oneDNN internally uses for 2D activations
 // [Batch, Channel, Height, Width] and
 // for 2D filters [Out_Channel, In_Channel, Height, Width].
 typedef enum {
@@ -76,7 +79,7 @@ typedef enum {
   Dim_I = 1
 } MklDnnDims;
 
-// The dimensions order that MKL-DNN internally uses for 3D activations
+// The dimensions order that oneDNN internally uses for 3D activations
 // [Batch, Channel, Depth, Height, Width] and
 // for 3D filters [Out_Channel, In_Channel, Depth, Height, Width].
 typedef enum {
@@ -108,7 +111,7 @@ typedef enum {
   TF_3DFILTER_DIM_O = 4
 } TFFilterDims3d;
 
-// The dimensions order that MKL-DNN requires for the filter in a grouped
+// The dimensions order that oneDNN requires for the filter in a grouped
 // convolution (2D only)
 typedef enum {
   MKL_GROUP_FILTER_DIM_G = 0,
@@ -127,105 +130,117 @@ enum class MklQuantization {
 
 static const int kSmallBatchSize = 32;
 
-#ifdef ENABLE_MKLDNN_V1
-#define ENGINE_CPU engine::kind::cpu
-#define GET_CHECK_REORDER_TO_OP_MEM_ARGS(md, tensor, net, net_args, \
-                                         engine_ptr)                \
-  md, tensor, net, net_args, &engine_ptr
-#define GET_MEMORY_DESC_FROM_MEM_PTR(mem_ptr) mem_ptr->get_desc()
-#define GET_MEMORY_PRIMITIVE_DESC_FROM_MEM_PTR(mem_ptr) \
-  GET_MEMORY_DESC_FROM_MEM_PTR(mem_ptr)
-#define MEMORY_CONSTRUCTOR(mem_desc, cpu_engine, data) \
-  memory(mem_desc, cpu_engine, data)
-#define MEMORY_CONSTRUCTOR_WITH_MEM_PD(mem_ptr, cpu_engine, data) \
-  memory(GET_MEMORY_DESC_FROM_MEM_PTR(mem_ptr), cpu_engine, data)
-#define MEMORY_CONSTRUCTOR_WITHOUT_DATA(mem_desc, cpu_engine) \
-  memory(mem_desc, cpu_engine)
-#define MEMORY_FORMAT memory::format_tag
-#define MKL_TENSOR_FORMAT MklTensorFormat
-#define MKL_TENSOR_FORMAT_BLOCKED MklTensorFormat::FORMAT_BLOCKED
-#define MKL_TENSOR_FORMAT_INVALID MklTensorFormat::FORMAT_INVALID
-#define MKL_TENSOR_FORMAT_NCDHW MklTensorFormat::FORMAT_NCDHW
-#define MKL_TENSOR_FORMAT_NDHWC MklTensorFormat::FORMAT_NDHWC
-#define MKL_TENSOR_FORMAT_NHWC MklTensorFormat::FORMAT_NHWC
-#define MKL_TENSOR_FORMAT_NCHW MklTensorFormat::FORMAT_NCHW
-#define MKL_TENSOR_FORMAT_UNDEF MKL_TENSOR_FORMAT_BLOCKED
-#define MEMORY_DATA_TYPE_UNDEF memory::data_type::undef
-#define MEMORY_PRIMITIVE_DESC memory::desc
-#define NET_ARGS_PTR &net_args
-#define OUTPUT_TF_MD output_tf_md
-#define TENSOR_FORMAT MKL_TENSOR_FORMAT
-#define TENSOR_FORMAT_NHWC MKL_TENSOR_FORMAT_NHWC
-#else
-#define ENGINE_CPU engine::cpu
-#define GET_CHECK_REORDER_TO_OP_MEM_ARGS(pd, tensor, net_ptr, net_args, \
-                                         engine_ptr)                    \
-  pd, tensor, &net_ptr
-#define GET_MEMORY_DESC_FROM_MEM_PTR(mem_ptr) \
-  mem_ptr->get_primitive_desc().desc()
-#define GET_MEMORY_PRIMITIVE_DESC_FROM_MEM_PTR(mem_ptr) \
-  mem_ptr->get_primitive_desc()
-#define MEMORY_CONSTRUCTOR(mem_pd, cpu_engine, data) memory(mem_pd, data)
-#define MEMORY_CONSTRUCTOR_WITH_MEM_PD(mem_ptr, cpu_engine, data) \
-  memory({GET_MEMORY_DESC_FROM_MEM_PTR(mem_ptr), cpu_engine}, data)
-#define MEMORY_CONSTRUCTOR_WITHOUT_DATA(mem_pd, cpu_engine) memory(mem_pd)
-#define MEMORY_FORMAT memory::format
-#define MKL_TENSOR_FORMAT memory::format
-#define MKL_TENSOR_FORMAT_BLOCKED memory::format::blocked
-#define MKL_TENSOR_FORMAT_INVALID memory::format::format_undef
-#define MKL_TENSOR_FORMAT_NCDHW memory::format::ncdhw
-#define MKL_TENSOR_FORMAT_NDHWC memory::format::ndhwc
-#define MKL_TENSOR_FORMAT_NHWC memory::format::nhwc
-#define MKL_TENSOR_FORMAT_NCHW memory::format::nchw
-#define MKL_TENSOR_FORMAT_UNDEF MKL_TENSOR_FORMAT_INVALID
-#define MEMORY_DATA_TYPE_UNDEF memory::data_type::data_undef
-#define MEMORY_PRIMITIVE_DESC memory::primitive_desc
-#define NET_ARGS_PTR nullptr
-#define OUTPUT_TF_MD output_tf_pd
-#define TENSOR_FORMAT TensorFormat
-#define TENSOR_FORMAT_NHWC FORMAT_NHWC
-#endif  // ENABLE_MKLDNN_V1
+enum class OneDNNMathModeSetting {
+  kNone = 0,
+  kBF16,
+};
 
-#ifdef ENABLE_MKLDNN_V1
-// In MKL-DNN v1.x, the format (ex. NCHW) used to initialize a memory descriptor
+inline OneDNNMathModeSetting SetFPMathMode() {
+  static OneDNNMathModeSetting math_mode = [] {
+    OneDNNMathModeSetting mode = OneDNNMathModeSetting::kNone;
+    if (FPMathModeSetting() == "BF16") {
+      if (dnnl::set_default_fpmath_mode(dnnl::fpmath_mode::bf16) ==
+          dnnl::status::success) {
+        mode = OneDNNMathModeSetting::kBF16;
+      }
+    }
+    return mode;
+  }();
+
+  return math_mode;
+}
+
+inline void execute_primitives(
+    std::vector<dnnl::primitive>& primitives, std::shared_ptr<stream> stream,
+    std::vector<std::unordered_map<int, memory>>& net_args) {
+  DCHECK_EQ(primitives.size(), net_args.size());
+  for (size_t i = 0; i < primitives.size(); ++i) {
+    primitives.at(i).execute(*stream, net_args.at(i));
+  }
+}
+
+#ifndef ENABLE_ONEDNN_V3
+#define ARE_MEMORY_DESCS_EQUAL(md1, md2) dnnl_memory_desc_equal(&md1, &md2)
+#define CREATE_MEMORY_DESC_USING_STRIDES dnnl_memory_desc_init_by_strides
+#define GET_DATA_TYPE data_type
+#define GET_DIMS dims
+#define GET_INNER_BLKS format_desc.blocking.inner_blks
+#define GET_INNER_DIMS(dims, dims_1) dims_1
+#define GET_INNER_IDXS format_desc.blocking.inner_idxs
+#define GET_INNER_NBLKS format_desc.blocking.inner_nblks
+#define GET_MEMORY_DESC get_desc().data
+#define GET_MEMORY_DESC_FLAGS extra.flags
+#define GET_MEMORY_DESC_USING_MKLDNN_SHAPE_PTR GetMklLayout().data
+#define GET_NDIMS ndims
+#define GET_STRIDES format_desc.blocking.strides
+#define GET_STRIDES_DIMS(dims, dims_outer_blocks) dims_outer_blocks
+#define INIT_DIMS_FROM_DESC(in_dims, md) in_dims(md.dims, &md.dims[md.ndims])
+#define MEMORY_DESC dnnl_memory_desc_t
+#else
+#define ARE_MEMORY_DESCS_EQUAL(md1, md2) md1 == md2
+#define CREATE_MEMORY_DESC_USING_STRIDES dnnl_memory_desc_create_with_strides
+#define GET_DATA_TYPE get_data_type()
+#define GET_DIMS get_dims()
+#define GET_INNER_BLKS get_inner_blks()
+#define GET_INNER_DIMS(dims, dims_1) dims
+#define GET_INNER_IDXS get_inner_idxs()
+#define GET_INNER_NBLKS get_inner_nblks()
+#define GET_MEMORY_DESC get_desc()
+#define GET_MEMORY_DESC_FLAGS get_size()
+#define GET_MEMORY_DESC_USING_MKLDNN_SHAPE_PTR GetMklLayout()
+#define GET_NDIMS get_ndims()
+#define GET_STRIDES get_strides()
+#define GET_STRIDES_DIMS(dims, dims_outer_blocks) dims
+#define INIT_DIMS_FROM_DESC(in_dims, md) in_dims = md.get_dims()
+#define MEMORY_DESC memory::desc
+#endif  // !ENABLE_ONEDNN_V3
+
+// In oneDNN v1.x, the format (ex. NCHW) used to initialize a memory descriptor
 // (md) structure will no longer be recorded in its `format` field. Instead, it
 // will be set to a canonical `blocked` format for every fully described md.
 //
-// Currently, we query this `format` field while mapping MKL-DNN's data format
+// Currently, we query this `format` field while mapping oneDNN's data format
 // to TF's data format. Due to the above restriction, we will now get this data
 // format information from TF's `data_format` attribute (i.e. via
-// `TensorFormat`) for MKL-DNN v1.x.
+// `TensorFormat`) for oneDNN v1.x.
 //
-// Some MKL-DNN operators such as ReLU do not have a `data_format` attribute
+// Some oneDNN operators such as ReLU do not have a `data_format` attribute
 // since they are usually in `blocked` format. Therefore, in order to
 // distinguish between blocked and non-blocked formats, we have defined a new
 // enum called `MklTensorFormat` that is semantically similar to `TensorFormat`
-// but with two additional fields namely:
+// but with the following additional fields namely:
 //  1) FORMAT_BLOCKED: as described above, this is needed for element-wise
 //     operators such as ReLU.
 //  2) FORMAT_INVALID: for error-checking (ex. unsupported format)
+//  3) FORMAT_X, FORMAT_NC, FORMAT_TNC: to distinguish between MKL tensors based
+//     on their dimensions in operators such as Softmax, i.e.:
+//        FORMAT_X   - 1D tensor
+//        FORMAT_NC  - 2D tensor
+//        FORMAT_TNC - 3D tensor
 enum class MklTensorFormat {
   FORMAT_NHWC = 0,
   FORMAT_NCHW = 1,
   FORMAT_NDHWC = 2,
   FORMAT_NCDHW = 3,
-  FORMAT_BLOCKED = 4,
-  FORMAT_INVALID = 5,
+  FORMAT_X = 4,
+  FORMAT_NC = 5,
+  FORMAT_TNC = 6,
+  FORMAT_BLOCKED = 7,
+  FORMAT_INVALID = 8,
 };
 
 // Forward declarations
 memory::format_tag MklTensorFormatToMklDnnDataFormat(MklTensorFormat format);
-#endif  // ENABLE_MKLDNN_V1
 
-TensorFormat MklDnn3DDataFormatToTFDataFormat(MKL_TENSOR_FORMAT format);
-TensorFormat MklDnnDataFormatToTFDataFormat(MKL_TENSOR_FORMAT format);
+TensorFormat MklDnn3DDataFormatToTFDataFormat(MklTensorFormat format);
+TensorFormat MklDnnDataFormatToTFDataFormat(MklTensorFormat format);
 
 memory::dims CalculateTFStrides(const memory::dims& dims_tf_order);
-memory::desc CreateBlockedMemDescHelper(const memory::dims& dim,
-                                        const memory::dims& strides,
-                                        memory::data_type dtype);
+Status CreateBlockedMemDescHelper(const memory::dims& dim,
+                                  const memory::dims& strides,
+                                  memory::data_type dtype,
+                                  dnnl_memory_desc_t* blocked_md);
 
-#ifdef ENABLE_MKLDNN_V1
 inline std::ostream& operator<<(std::ostream& os,
                                 const memory::format_tag& tag) {
   if (tag == memory::format_tag::undef) {
@@ -238,8 +253,7 @@ inline std::ostream& operator<<(std::ostream& os,
   return os;
 }
 
-inline std::ostream& operator<<(std::ostream& os,
-                                const MklTensorFormat& format) {
+inline void operator<<(std::ostream& os, const MklTensorFormat& format) {
   if (format == MklTensorFormat::FORMAT_NHWC) {
     os << "FORMAT_NHWC";
   } else if (format == MklTensorFormat::FORMAT_NCHW) {
@@ -248,36 +262,66 @@ inline std::ostream& operator<<(std::ostream& os,
     os << "FORMAT_NDHWC";
   } else if (format == MklTensorFormat::FORMAT_NCDHW) {
     os << "FORMAT_NCDHW";
+  } else if (format == MklTensorFormat::FORMAT_X) {
+    os << "FORMAT_X";
+  } else if (format == MklTensorFormat::FORMAT_NC) {
+    os << "FORMAT_NC";
+  } else if (format == MklTensorFormat::FORMAT_TNC) {
+    os << "FORMAT_TNC";
   } else if (format == MklTensorFormat::FORMAT_BLOCKED) {
     os << "FORMAT_BLOCKED";
   } else {
     os << "INVALID FORMAT";
   }
 }
-#endif  // ENABLE_MKLDNN_V1
+
+template <typename T>
+inline bool array_cmp(const T* a1, const T* a2, size_t size) {
+  for (size_t i = 0; i < size; ++i)
+    if (a1[i] != a2[i]) return false;
+  return true;
+}
+
+inline dnnl::stream* CreateStream(tsl::OneDnnThreadPool* eigen_tp,
+                                  const engine& engine) {
+#ifndef ENABLE_ONEDNN_OPENMP
+  if (eigen_tp != nullptr) {
+    stream* tp_stream =
+        new stream(dnnl::threadpool_interop::make_stream(engine, eigen_tp));
+    return tp_stream;
+  } else {
+    stream* tp_stream = new stream(engine);
+    return tp_stream;
+  }
+#else
+  stream* tp_stream = new stream(engine);
+  return tp_stream;
+#endif  // !ENABLE_ONEDNN_OPENMP
+}
 
 class MklDnnShape {
  private:
-  typedef struct {
+  struct MklShapeData {
     // Flag to indicate if the tensor is an MKL tensor or not
     bool is_mkl_tensor_ = false;
     // Number of dimensions in Tensorflow format
     size_t dimension_ = 0;
-    mkldnn_dims_t sizes_;  // Required by MKL for conversions
-    MKL_TENSOR_FORMAT tf_data_format_ = MKL_TENSOR_FORMAT_UNDEF;
-    memory::data_type T_ = MEMORY_DATA_TYPE_UNDEF;
+    dnnl_dims_t sizes_;  // Required by MKL for conversions
+    MklTensorFormat tf_data_format_ = MklTensorFormat::FORMAT_BLOCKED;
+    memory::data_type T_ = memory::data_type::undef;
     // MKL layout
-    mkldnn_memory_desc_t mkl_md_;
+    MEMORY_DESC mkl_md_;
     /// TF dimension corresponding to this MKL dimension
-    mkldnn_dims_t map_;
-  } MklShapeData;
+    dnnl_dims_t map_;
+  };
   MklShapeData data_;
 
-  typedef std::remove_extent<mkldnn_dims_t>::type mkldnn_dim_t;
+  typedef std::remove_extent<dnnl_dims_t>::type dnnl_dim_t;
+
 #define INVALID_DIM_SIZE -1
 
  public:
-  MklDnnShape() {
+  MklDnnShape() : data_{} {
     for (size_t i = 0; i < sizeof(data_.sizes_) / sizeof(data_.sizes_[0]);
          ++i) {
       data_.sizes_[i] = -1;
@@ -288,25 +332,8 @@ class MklDnnShape {
   }
 
   ~MklDnnShape() {}
-  TF_DISALLOW_COPY_AND_ASSIGN(MklDnnShape);  // Cannot copy
-
-  /// Helper function to compare memory::desc objects for MklDnn.
-  /// May be this should go into MklDnn directly.
-  inline bool CompareMklDnnLayouts(const memory::desc& md1,
-                                   const memory::desc& md2) const {
-    mkldnn_memory_desc_t mdd1 = md1.data;
-    mkldnn_memory_desc_t mdd2 = md2.data;
-    const char* d1 = reinterpret_cast<const char*>(&mdd1);
-    const char* d2 = reinterpret_cast<const char*>(&mdd2);
-
-    size_t md_size = sizeof(mdd1);
-    for (size_t i = 0; i < md_size; i++) {
-      if (*d1++ != *d2++) {
-        return false;
-      }
-    }
-    return true;
-  }
+  MklDnnShape(const MklDnnShape&) = delete;
+  void operator=(const MklDnnShape&) = delete;  // Cannot copy
 
   /// Equality function for MklDnnShape objects
   /// @return true if both are equal; false otherwise.
@@ -318,17 +345,11 @@ class MklDnnShape {
     // If input tensors are in MKL layout, then we check for dimensions and
     // sizes.
     if (this->IsMklTensor()) {
-#ifdef ENABLE_MKLDNN_V1
-      const mkldnn_memory_desc_t& cur_md = (this->GetMklLayout()).data;
-      const mkldnn_memory_desc_t& input_shape_md =
-          input_shape.GetMklLayout().data;
-      return this->GetTfShape() == input_shape.GetTfShape() &&
-             mkldnn_memory_desc_equal(&cur_md, &input_shape_md);
-#else
-      return this->GetTfShape() == input_shape.GetTfShape() &&
-             CompareMklDnnLayouts(this->GetMklLayout(),
-                                  input_shape.GetMklLayout());
-#endif  // ENABLE_MKLDNN_V1
+      auto const& cur_md = this->GET_MEMORY_DESC_USING_MKLDNN_SHAPE_PTR;
+      auto const& input_shape_md =
+          input_shape.GET_MEMORY_DESC_USING_MKLDNN_SHAPE_PTR;
+      return (this->GetTfShape() == input_shape.GetTfShape()) &&
+             ARE_MEMORY_DESCS_EQUAL(cur_md, input_shape_md);
     }
 
     // Both inputs are not MKL tensors.
@@ -406,7 +427,7 @@ class MklDnnShape {
     return reinterpret_cast<const int*>(&data_.sizes_[0]);
   }
 
-  // Returns an mkldnn::memory::dims object that contains the sizes of this
+  // Returns an dnnl::memory::dims object that contains the sizes of this
   // MklDnnShape object.
   inline memory::dims GetSizesAsMklDnnDims() const {
     memory::dims retVal;
@@ -435,7 +456,7 @@ class MklDnnShape {
     std::vector<int32> shape(data_.dimension_, -1);
     // As mentioned in the comment above, we now rely on TF's `data_format`
     // attribute to determine if TF shape is in blocked format or not.
-    if (data_.tf_data_format_ != MKL_TENSOR_FORMAT_BLOCKED) {
+    if (data_.tf_data_format_ != MklTensorFormat::FORMAT_BLOCKED) {
       for (size_t idx = 0; idx < data_.dimension_; ++idx) {
         shape[idx] = data_.sizes_[TfDimIdx(idx)];
       }
@@ -457,24 +478,20 @@ class MklDnnShape {
   inline void SetElemType(memory::data_type dt) { data_.T_ = dt; }
   inline const memory::data_type GetElemType() { return data_.T_; }
 
-#ifndef ENABLE_MKLDNN_V1
-  // Memory primitive descriptor is deprecated in MKL-DNN v1.x.
-  inline void SetMklLayout(memory::primitive_desc* pd) {
-    CHECK_NOTNULL(pd);
-    data_.mkl_md_ = pd->desc().data;
-  }
-#endif  // !ENABLE_MKLDNN_V1
-
+#ifndef ENABLE_ONEDNN_V3
   inline void SetMklLayout(memory::desc* md) {
     CHECK_NOTNULL(md);
     data_.mkl_md_ = md->data;
   }
+#else
+  inline void SetMklLayout(const memory::desc& md) { data_.mkl_md_ = md; }
+#endif  // !ENABLE_ONEDNN_V3
 
   inline const memory::desc GetMklLayout() const {
     return memory::desc(data_.mkl_md_);
   }
 
-  inline MKL_TENSOR_FORMAT GetTfDataFormat() const {
+  inline MklTensorFormat GetTfDataFormat() const {
     return data_.tf_data_format_;
   }
 
@@ -482,7 +499,7 @@ class MklDnnShape {
   /// We use lazy evaluation and create it only when needed. Input format can
   /// also be Blocked format.
   inline void SetTfLayout(size_t dims, const memory::dims& sizes,
-                          MKL_TENSOR_FORMAT format) {
+                          MklTensorFormat format) {
     DCHECK_EQ(dims, sizes.size())
         << "SetTfLayout: Number of dimensions does not"
            "match with dimension array";
@@ -491,7 +508,7 @@ class MklDnnShape {
       data_.sizes_[ii] = sizes[ii];
     }
     data_.tf_data_format_ = format;
-    if (format != MKL_TENSOR_FORMAT_BLOCKED) {
+    if (format != MklTensorFormat::FORMAT_BLOCKED) {
       if (dims == 2) {
         data_.map_[0] = MklDnnDims::Dim_N;
         data_.map_[1] = MklDnnDims::Dim_C;
@@ -508,18 +525,16 @@ class MklDnnShape {
     }
 
     // Create Blocked memory desc if input TF format was set like that.
-    if (data_.tf_data_format_ == MKL_TENSOR_FORMAT_BLOCKED) {
+    if (data_.tf_data_format_ == MklTensorFormat::FORMAT_BLOCKED) {
       auto strides = CalculateTFStrides(dims);
-      return CreateBlockedMemDescHelper(dims, strides, data_.T_);
+      dnnl_memory_desc_t blocked_md;
+      TF_CHECK_OK(
+          CreateBlockedMemDescHelper(dims, strides, data_.T_, &blocked_md));
+      return memory::desc(blocked_md);
     } else {
-#ifdef ENABLE_MKLDNN_V1
       auto format_tag =
           MklTensorFormatToMklDnnDataFormat(data_.tf_data_format_);
-      DCHECK_NE(format_tag, memory::format_tag::undef);
       return memory::desc(dims, data_.T_, format_tag);
-#else
-      return memory::desc(dims, data_.T_, data_.tf_data_format_);
-#endif  // ENABLE_MKLDNN_V1
     }
   }
 
@@ -530,7 +545,7 @@ class MklDnnShape {
   // We don't need a case of default dimension order because
   // when an operator that does not get data_format attribute gets all inputs
   // in Tensorflow format, it will produce output in Tensorflow format.
-  inline void SetTfDimOrder(const size_t dimension, const mkldnn_dims_t map) {
+  inline void SetTfDimOrder(const size_t dimension, const dnnl_dims_t map) {
     CHECK(dimension == data_.dimension_);
     for (size_t ii = 0; ii < dimension; ii++) {
       data_.map_[ii] = map[ii];
@@ -560,12 +575,12 @@ class MklDnnShape {
     }
   }
 
-  inline void SetTfDimOrder(const size_t dimension, MKL_TENSOR_FORMAT format) {
+  inline void SetTfDimOrder(const size_t dimension, MklTensorFormat format) {
     TensorFormat data_format = MklDnnDataFormatToTFDataFormat(format);
     SetTfDimOrder(dimension, data_format);
   }
 
-  inline const mkldnn_dim_t* GetTfToMklDimMap() const { return &data_.map_[0]; }
+  inline const dnnl_dim_t* GetTfToMklDimMap() const { return &data_.map_[0]; }
   inline size_t TfDimIdx(int index) const { return data_.map_[index]; }
   inline int64 TfDimSize(int index) const {
     return data_.sizes_[TfDimIdx(index)];
@@ -643,28 +658,44 @@ class MklDnnShape {
   }
 };
 
+inline Eigen::ThreadPoolInterface* EigenThreadPoolFromTfContext(
+    OpKernelContext* context) {
+  return context->device()
+      ->tensorflow_cpu_worker_threads()
+      ->workers->AsEigenThreadPool();
+}
+
 // List of MklShape objects. Used in Concat/Split layers.
 typedef std::vector<MklDnnShape> MklDnnShapeList;
 
 template <typename T>
 class MklDnnData;
 
+// TODO(intel-tf): Merge with the execute_primitives.
 inline void ExecutePrimitive(const std::vector<primitive>& net,
                              const std::vector<MemoryArgsMap>* net_args,
-                             const engine& cpu_engine) {
-#ifdef ENABLE_MKLDNN_V1
+                             const engine& cpu_engine,
+                             OpKernelContext* context = nullptr) {
   DCHECK(net_args);
   DCHECK_EQ(net.size(), net_args->size());
-  stream cpu_stream(cpu_engine);
-  for (size_t i = 0; i < net.size(); ++i) {
-    net.at(i).execute(cpu_stream, net_args->at(i));
+  std::unique_ptr<stream> cpu_stream;
+  // Create the oneDNN wrapper over Eigen threadpool and set max threads
+  // in oneDNN.
+  tsl::OneDnnThreadPool eigen_tp;
+  if (context != nullptr) {
+    Eigen::ThreadPoolInterface* eigen_interface =
+        EigenThreadPoolFromTfContext(context);
+    eigen_tp =
+        tsl::OneDnnThreadPool(eigen_interface, ThreadPoolUseCallerThread());
+    cpu_stream.reset(CreateStream(&eigen_tp, cpu_engine));
+  } else {
+    cpu_stream.reset(CreateStream(nullptr, cpu_engine));
   }
-  cpu_stream.wait();
-#else
-  stream(stream::kind::eager).submit(net).wait();
-#endif  // ENABLE_MKLDNN_V1
+  for (size_t i = 0; i < net.size(); ++i) {
+    net.at(i).execute(*cpu_stream, net_args->at(i));
+  }
+  cpu_stream->wait();
 }
-
 template <typename T>
 inline Status ConvertMklToTF(OpKernelContext* context,
                              const Tensor& input_mkl_tensor,
@@ -674,7 +705,7 @@ inline Status ConvertMklToTF(OpKernelContext* context,
     if (!input_mkl_shape.IsMklTensor()) {
       // Return input as is since it is already a TF tensor
       *output_tf_tensor = input_mkl_tensor;
-      return Status::OK();
+      return OkStatus();
     }
 
     // Allocate output tensor.
@@ -682,40 +713,35 @@ inline Status ConvertMklToTF(OpKernelContext* context,
     TF_CHECK_OK(context->allocate_temp(DataTypeToEnum<T>::v(), output_tf_shape,
                                        output_tf_tensor));
 
-    engine cpu_engine(ENGINE_CPU, 0);
+    engine cpu_engine(engine::kind::cpu, 0);
     MklDnnData<T> input(&cpu_engine);
 
     // Get MKL layout of input tensor.
     auto input_mkl_md = input_mkl_shape.GetMklLayout();
     auto output_tf_md = input_mkl_shape.GetTfLayout();
-#ifndef ENABLE_MKLDNN_V1
-    // Memory primitive descriptor is deprecated in MKL-DNN v1.x.
-    auto output_tf_pd = memory::primitive_desc(output_tf_md, cpu_engine);
-#endif  // !ENABLE_MKLDNN_V1
     input.SetUsrMem(input_mkl_md, &input_mkl_tensor);
 
-    if (input.IsReorderNeeded(OUTPUT_TF_MD)) {
+    if (input.IsReorderNeeded(output_tf_md)) {
       std::vector<primitive> net;
       std::vector<MemoryArgsMap> net_args;
-      bool status = input.CheckReorderToOpMem(GET_CHECK_REORDER_TO_OP_MEM_ARGS(
-          OUTPUT_TF_MD, output_tf_tensor, net, net_args, cpu_engine));
+      bool status = input.CheckReorderToOpMem(output_tf_md, output_tf_tensor,
+                                              net, net_args, cpu_engine);
       if (!status) {
-        return Status(error::Code::INTERNAL,
-                      "ConvertMklToTF(): Failed to create reorder for input");
+        return absl::InternalError(
+            "ConvertMklToTF(): Failed to create reorder for input");
       }
-      ExecutePrimitive(net, NET_ARGS_PTR, cpu_engine);
+      ExecutePrimitive(net, &net_args, cpu_engine, context);
     } else {
       // If not, just forward input tensor to output tensor.
       bool status =
           output_tf_tensor->CopyFrom(input_mkl_tensor, output_tf_shape);
       if (!status) {
-        return Status(
-            error::Code::INTERNAL,
+        return absl::InternalError(
             "ConvertMklToTF(): Failed to forward input tensor to output");
       }
     }
-    return Status::OK();
-  } catch (mkldnn::error& e) {
+    return OkStatus();
+  } catch (dnnl::error& e) {
     string error_msg = "Status: " + std::to_string(e.status) +
                        ", message: " + string(e.message) + ", in file " +
                        string(__FILE__) + ":" + std::to_string(__LINE__);
@@ -756,14 +782,21 @@ inline void GetMklInputList(OpKernelContext* ctext, StringPiece name,
 }
 
 inline void GetMklShapeList(OpKernelContext* ctext, StringPiece name,
-                            MklDnnShapeList* mkl_shapes) {
-  OpInputList input_mkl_tensors;
-  GetMklInputList(ctext, strings::StrCat("mkl_", name), &input_mkl_tensors);
+                            MklDnnShapeList* mkl_shapes,
+                            bool native_format = false) {
+  if (!native_format) {
+    OpInputList input_mkl_tensors;
+    GetMklInputList(ctext, strings::StrCat("mkl_", name), &input_mkl_tensors);
 
-  for (int i = 0; i < input_mkl_tensors.size(); i++) {
-    (*mkl_shapes)[i].DeSerializeMklDnnShape(
-        input_mkl_tensors[i].flat<uint8>().data(),
-        input_mkl_tensors[i].flat<uint8>().size() * sizeof(uint8));
+    for (int i = 0; i < input_mkl_tensors.size(); i++) {
+      (*mkl_shapes)[i].DeSerializeMklDnnShape(
+          input_mkl_tensors[i].flat<uint8>().data(),
+          input_mkl_tensors[i].flat<uint8>().size() * sizeof(uint8));
+    }
+  } else {
+    for (int i = 0; i < mkl_shapes->size(); ++i) {
+      (*mkl_shapes)[i].SetMklTensor(false);
+    }
   }
 }
 
@@ -827,7 +860,7 @@ inline void AllocateOutputSetMklShape(OpKernelContext* ctext, int n,
 // Allocates a temp tensor and returns the data buffer for temporary storage.
 template <typename T>
 inline void AllocTmpBuffer(OpKernelContext* context, Tensor* tensor_out,
-                           const MEMORY_PRIMITIVE_DESC& pd, void** buf_out) {
+                           const memory::desc& pd, void** buf_out) {
   TensorShape tf_shape;
 
   tf_shape.AddDim(pd.get_size() / sizeof(T) + 1);
@@ -843,13 +876,42 @@ inline void AllocTmpBuffer(OpKernelContext* context, Tensor* tensor_out,
                                                  tf_shape, tensor_out));
 }
 
-inline void GetStridesFromSizes(TENSOR_FORMAT data_format, size_t* strides,
+template <typename T>
+struct UserScratchPad {
+  template <typename MklPrim>
+  // NOTE: if scratchpad is not required for a particular primitive the
+  //      spad_md.get_size() will return 0. It is fine to return
+  //      nullptr in this case
+  inline void AllocateSPTensor(MklPrim* mkl_prim, OpKernelContext* context) {
+    allocated_ = false;
+    auto spad_md = mkl_prim->GetScratchPadDesc();
+    size_t spad_size = spad_md.get_size();
+    if (spad_size == 0) return;
+
+    size_t allocate_size = (spad_size + sizeof(T) - 1) / sizeof(T);
+    TensorShape tf_shape;
+    tf_shape.AddDim(allocate_size);
+    AllocTmpBuffer<T>(context, &scratch_pad_, tf_shape);
+    allocated_ = true;
+  }
+  inline void* Get() {
+    if (allocated_) {
+      return static_cast<void*>(scratch_pad_.flat<T>().data());
+    } else {
+      return nullptr;
+    }
+  }
+
+ private:
+  Tensor scratch_pad_;
+  bool allocated_ = false;
+};
+
+inline void GetStridesFromSizes(MklTensorFormat data_format, size_t* strides,
                                 const size_t* sizes) {
-#ifdef ENABLE_MKLDNN_V1
   DCHECK_NE(data_format, MklTensorFormat::FORMAT_INVALID);
-#endif  // ENABLE_MKLDNN_V1
   // MKL requires strides in NCHW
-  if (data_format == TENSOR_FORMAT_NHWC) {
+  if (data_format == MklTensorFormat::FORMAT_NHWC) {
     strides[0] = sizes[2];
     strides[1] = sizes[0] * sizes[2];
     strides[2] = 1;
@@ -876,7 +938,7 @@ inline void CopyMklTensorInToOut(OpKernelContext* context, int idx_in,
   Tensor output(data.dtype());
   Tensor meta_output(meta.dtype());
 
-  // TODO(intel_tf): alternatively, call forward_input_to_output_with_shape(...)
+  // TODO(intel-tf): alternatively, call forward_input_to_output_with_shape(...)
   CHECK(output.CopyFrom(data, data.shape()));
   CHECK(meta_output.CopyFrom(meta, meta.shape()));
   context->set_output(idx_data_out, output);
@@ -896,7 +958,7 @@ inline void CopyTfTensorInToOutWithShape(OpKernelContext* context, int idx_in,
   mkl_shape_output.SetMklTensor(false);
   AllocateOutputSetMklShape(context, idx_out, mkl_shape_output);
   Tensor output(data.dtype());
-  // TODO(intel_tf): alternatively, call forward_input_to_output_with_shape(...)
+  // TODO(intel-tf): alternatively, call forward_input_to_output_with_shape(...)
   CHECK(output.CopyFrom(data, shape));
   context->set_output(idx_data_out, output);
 }
@@ -936,7 +998,7 @@ inline void ForwardMklTensorInToOut(OpKernelContext* context, int idx_in,
   }
 }
 
-// Set a dummy MKLDNN shape (called when the output is in TF format)
+// Set a dummy oneDNN shape (called when the output is in TF format)
 inline void SetDummyMklDnnShapeOutput(OpKernelContext* context,
                                       uint32 idx_data_out) {
   MklDnnShape mkl_shape_output;
@@ -944,21 +1006,36 @@ inline void SetDummyMklDnnShapeOutput(OpKernelContext* context,
   AllocateOutputSetMklShape(context, idx_data_out, mkl_shape_output);
 }
 
-inline void ForwardMklTensorInToOutWithMklShape(OpKernelContext* context,
+// If the input tensor has ref count as 1, it is forwarded to the desired
+// output port and the function returns true. In that case, it also allocates
+// the serialized MklDnnShape object. Otherwise, the function returns false.
+inline bool ForwardMklTensorInToOutWithMklShape(OpKernelContext* context,
                                                 int idx_in, int idx_out,
-                                                const MklDnnShape& mkl_shape) {
+                                                Tensor** output,
+                                                const MklDnnShape& mkl_shape,
+                                                bool always_forward = true) {
   int num_inputs = context->num_inputs();
   int num_outputs = context->num_outputs();
   int idx_data_in = GetTensorDataIndex(idx_in, num_inputs);
   int idx_data_out = GetTensorDataIndex(idx_out, num_outputs);
-
-  AllocateOutputSetMklShape(context, idx_out, mkl_shape);
-
-  if (IsRefType(context->input_dtype(idx_data_in))) {
-    context->forward_ref_input_to_ref_output(idx_data_in, idx_data_out);
+  bool is_forwarded = false;
+  const Tensor& input_tensor = context->input(idx_data_in);
+  const auto output_shape = input_tensor.shape();
+  if (always_forward) {
+    if (IsRefType(context->input_dtype(idx_data_in))) {
+      context->forward_ref_input_to_ref_output(idx_data_in, idx_data_out);
+    } else {
+      context->set_output(idx_data_out, input_tensor);
+    }
   } else {
-    context->set_output(idx_data_out, context->input(idx_data_in));
+    is_forwarded = context->forward_input_to_output_with_shape(
+        idx_data_in, idx_data_out, output_shape, output);
   }
+  if (is_forwarded || always_forward) {
+    AllocateOutputSetMklShape(context, idx_out, mkl_shape);
+    return true;
+  }
+  return false;
 }
 
 // Forward the MKL shape ONLY (used in elementwise and other ops where
@@ -979,8 +1056,23 @@ inline void ForwardMklMetaDataInToOut(OpKernelContext* context,
 }
 
 // -------------------------------------------------------------------
+//          Common utility functions used by MKL unit tests
 
-/// Return MKL-DNN data type (memory::data_type) for input type T
+inline Tensor GetMklMetaTensor() {
+  MklDnnShape non_mkl_shape;
+  non_mkl_shape.SetMklTensor(false);
+
+  auto size = static_cast<int64_t>(non_mkl_shape.GetSerializeBufferSize());
+  Tensor tensor(DT_UINT8, {size});
+
+  non_mkl_shape.SerializeMklDnnShape(tensor.flat<uint8>().data(),
+                                     size * sizeof(uint8));
+  return tensor;
+}
+
+// -------------------------------------------------------------------
+
+/// Return oneDNN data type (memory::data_type) for input type T
 ///
 /// @input None
 /// @return memory::data_type corresponding to type T
@@ -1000,6 +1092,11 @@ memory::data_type MklDnnType<quint8>() {
 }
 
 template <>
+memory::data_type MklDnnType<uint8>() {
+  return memory::data_type::u8;
+}
+
+template <>
 memory::data_type MklDnnType<qint8>() {
   return memory::data_type::s8;
 }
@@ -1010,74 +1107,71 @@ memory::data_type MklDnnType<qint32>() {
 }
 template <>
 memory::data_type MklDnnType<bfloat16>() {
-#ifdef ENABLE_INTEL_MKL_BFLOAT16
   return memory::data_type::bf16;
-#else
-  return memory::data_type::f32;
-#endif
 }
 
-#ifdef ENABLE_MKLDNN_V1
-// Map MklTensorFormat to MKL-DNN format tag
+// Map MklTensorFormat to oneDNN format tag
 //
 // @input: MklTensorFormat i.e. TensorFlow data format
-// @return: MKL-DNN's memory format tag corresponding to MklTensorFormat.
+// @return: oneDNN's memory format tag corresponding to MklTensorFormat.
 //          Fails with an error if invalid data format.
 inline memory::format_tag MklTensorFormatToMklDnnDataFormat(
     MklTensorFormat format) {
-  DCHECK_NE(format, MklTensorFormat::FORMAT_INVALID);
-  using tag = memory::format_tag;
-  if (format == MklTensorFormat::FORMAT_NHWC) return tag::nhwc;
-  if (format == MklTensorFormat::FORMAT_NCHW) return tag::nchw;
-  if (format == MklTensorFormat::FORMAT_NDHWC) return tag::ndhwc;
-  if (format == MklTensorFormat::FORMAT_NCDHW) return tag::ncdhw;
-  return tag::undef;
+  if (format == MklTensorFormat::FORMAT_NHWC) return memory::format_tag::nhwc;
+  if (format == MklTensorFormat::FORMAT_NCHW) return memory::format_tag::nchw;
+  if (format == MklTensorFormat::FORMAT_NDHWC) return memory::format_tag::ndhwc;
+  if (format == MklTensorFormat::FORMAT_NCDHW) return memory::format_tag::ncdhw;
+  if (format == MklTensorFormat::FORMAT_X) return memory::format_tag::x;
+  if (format == MklTensorFormat::FORMAT_NC) return memory::format_tag::nc;
+  if (format == MklTensorFormat::FORMAT_TNC) return memory::format_tag::tnc;
+  return memory::format_tag::undef;
 }
-#endif  // ENABLE_MKLDNN_V1
 
-/// Map TensorFlow data format into MKL-DNN 3D data format
+/// Map TensorFlow data format into oneDNN 3D data format
 /// @input: TensorFlow data format
-/// @return: MKL-DNN 3D data format corresponding to TensorFlow data format;
+/// @return: oneDNN 3D data format corresponding to TensorFlow data format;
 ///          Fails with an error if invalid data format.
-inline MKL_TENSOR_FORMAT TFDataFormatToMklDnn3DDataFormat(TensorFormat format) {
-  if (format == FORMAT_NHWC) return MKL_TENSOR_FORMAT_NDHWC;
-  if (format == FORMAT_NCHW) return MKL_TENSOR_FORMAT_NCDHW;
-  TF_CHECK_OK(Status(error::Code::INVALID_ARGUMENT, "Unsupported data format"));
-  return MKL_TENSOR_FORMAT_INVALID;
+inline MklTensorFormat TFDataFormatToMklDnn3DDataFormat(TensorFormat format) {
+  if (format == FORMAT_NHWC) return MklTensorFormat::FORMAT_NDHWC;
+  if (format == FORMAT_NCHW) return MklTensorFormat::FORMAT_NCDHW;
+  TF_CHECK_OK(absl::InvalidArgumentError("Unsupported data format"));
+  return MklTensorFormat::FORMAT_INVALID;
 }
 
-/// Map TensorFlow data format into MKL-DNN data format
+/// Map TensorFlow data format into oneDNN data format
 ///
 /// @input: TensorFlow data format
-/// @return: MKL-DNN data format corresponding to TensorFlow data format;
+/// @return: oneDNN data format corresponding to TensorFlow data format;
 ///          Fails with an error if invalid data format.
-inline MKL_TENSOR_FORMAT TFDataFormatToMklDnnDataFormat(TensorFormat format) {
-  if (format == FORMAT_NHWC) return MKL_TENSOR_FORMAT_NHWC;
-  if (format == FORMAT_NCHW) return MKL_TENSOR_FORMAT_NCHW;
-  TF_CHECK_OK(Status(error::Code::INVALID_ARGUMENT, "Unsupported data format"));
-  return MKL_TENSOR_FORMAT_INVALID;
+inline MklTensorFormat TFDataFormatToMklDnnDataFormat(TensorFormat format) {
+  if (format == FORMAT_NHWC) return MklTensorFormat::FORMAT_NHWC;
+  if (format == FORMAT_NCHW) return MklTensorFormat::FORMAT_NCHW;
+  TF_CHECK_OK(absl::InvalidArgumentError("Unsupported data format"));
+  return MklTensorFormat::FORMAT_INVALID;
 }
 
-/// Map MKL-DNN data format into TensorFlow data format
+/// Map oneDNN data format into TensorFlow data format
 ///
-/// @input: MKL-DNN data format
-/// @return: Tensorflow data format corresponding to MKL-DNN data format;
+/// @input: oneDNN data format
+/// @return: Tensorflow data format corresponding to oneDNN data format;
 ///          Fails with an error if invalid data format.
-inline TensorFormat MklDnnDataFormatToTFDataFormat(MKL_TENSOR_FORMAT format) {
-  if (format == MKL_TENSOR_FORMAT_NHWC || format == MKL_TENSOR_FORMAT_NDHWC)
+inline TensorFormat MklDnnDataFormatToTFDataFormat(MklTensorFormat format) {
+  if (format == MklTensorFormat::FORMAT_NHWC ||
+      format == MklTensorFormat::FORMAT_NDHWC)
     return FORMAT_NHWC;
-  if (format == MKL_TENSOR_FORMAT_NCHW || format == MKL_TENSOR_FORMAT_NCDHW)
+  if (format == MklTensorFormat::FORMAT_NCHW ||
+      format == MklTensorFormat::FORMAT_NCDHW)
     return FORMAT_NCHW;
-  TF_CHECK_OK(Status(error::Code::INVALID_ARGUMENT, "Unsupported data format"));
+  TF_CHECK_OK(absl::InvalidArgumentError("Unsupported data format"));
 
   // Return to prevent compiler warnings, otherwise TF_CHECK_OK will ensure
   // that we don't come here.
   return FORMAT_NHWC;
 }
 
-/// Map TensorShape object into memory::dims required by MKL-DNN
+/// Map TensorShape object into memory::dims required by oneDNN
 ///
-/// This function will simply map input TensorShape into MKL-DNN dims
+/// This function will simply map input TensorShape into oneDNN dims
 /// naively. So it will preserve the order of dimensions. E.g., if
 /// input tensor is in NHWC format, then dims will be in NHWC format also.
 ///
@@ -1091,26 +1185,27 @@ inline memory::dims TFShapeToMklDnnDims(const TensorShape& shape) {
   return dims;
 }
 
-/// Map TensorShape object into memory::dims in NCHW format required by MKL-DNN
+/// Map TensorShape object into memory::dims in NCHW format required by oneDNN
 ///
 /// This function is a specific one than above function. It will map input
-/// TensorShape into MKL-DNN dims in NCHW format. So it may not preserve the
+/// TensorShape into oneDNN dims in NCHW format. So it may not preserve the
 /// order of dimensions. E.g., if input tensor is in NHWC format, then dims
 /// will be in NCHW format, and not in NHWC format.
 ///
 /// @input TensorShape object in shape
-/// @return memory::dims in MKL-DNN required NCHW format
+/// @return memory::dims in oneDNN required NCHW format
 inline memory::dims TFShapeToMklDnnDimsInNCHW(const TensorShape& shape,
                                               TensorFormat format) {
   // Check validity of format.
-  DCHECK_NE(TFDataFormatToMklDnnDataFormat(format), MKL_TENSOR_FORMAT_INVALID);
+  DCHECK_NE(TFDataFormatToMklDnnDataFormat(format),
+            MklTensorFormat::FORMAT_INVALID);
 
   int n = shape.dim_size(GetTensorDimIndex(format, 'N'));
   int c = shape.dim_size(GetTensorDimIndex(format, 'C'));
   int h = shape.dim_size(GetTensorDimIndex(format, 'H'));
   int w = shape.dim_size(GetTensorDimIndex(format, 'W'));
 
-  // MKL-DNN requires dimensions in NCHW format.
+  // oneDNN requires dimensions in NCHW format.
   return memory::dims({n, c, h, w});
 }
 
@@ -1118,7 +1213,7 @@ inline memory::dims TFShapeToMklDnnDimsInNCDHW(const TensorShape& shape,
                                                TensorFormat format) {
   // Validate format.
   DCHECK_NE(TFDataFormatToMklDnn3DDataFormat(format),
-            MKL_TENSOR_FORMAT_INVALID);
+            MklTensorFormat::FORMAT_INVALID);
 
   int n = shape.dim_size(GetTensorDimIndex<3>(format, 'N'));
   int c = shape.dim_size(GetTensorDimIndex<3>(format, 'C'));
@@ -1126,7 +1221,7 @@ inline memory::dims TFShapeToMklDnnDimsInNCDHW(const TensorShape& shape,
   int h = shape.dim_size(GetTensorDimIndex<3>(format, '1'));
   int w = shape.dim_size(GetTensorDimIndex<3>(format, '2'));
 
-  // MKL-DNN requires dimensions in NCDHW format.
+  // oneDNN requires dimensions in NCDHW format.
   return memory::dims({n, c, d, h, w});
 }
 
@@ -1135,14 +1230,15 @@ inline memory::dims TFShapeToMklDnnDimsInNCDHW(const TensorShape& shape,
 inline memory::dims MklDnnDimsInNCHW(const memory::dims& in_dims,
                                      TensorFormat format) {
   // Validate format.
-  DCHECK_NE(TFDataFormatToMklDnnDataFormat(format), MKL_TENSOR_FORMAT_INVALID);
+  DCHECK_NE(TFDataFormatToMklDnnDataFormat(format),
+            MklTensorFormat::FORMAT_INVALID);
 
   int n = in_dims[GetTensorDimIndex(format, 'N')];
   int c = in_dims[GetTensorDimIndex(format, 'C')];
   int h = in_dims[GetTensorDimIndex(format, 'H')];
   int w = in_dims[GetTensorDimIndex(format, 'W')];
 
-  // MKL-DNN requires dimensions in NCHW format.
+  // oneDNN requires dimensions in NCHW format.
   return memory::dims({n, c, h, w});
 }
 
@@ -1152,7 +1248,7 @@ inline memory::dims MklDnnDimsInNCDHW(const memory::dims& in_dims,
                                       TensorFormat format) {
   // Validate format.
   DCHECK_NE(TFDataFormatToMklDnnDataFormat(format),
-            memory::format::format_undef);
+            MklTensorFormat::FORMAT_INVALID);
 
   int n = in_dims[GetTensorDimIndex<3>(format, 'N')];
   int c = in_dims[GetTensorDimIndex<3>(format, 'C')];
@@ -1166,10 +1262,10 @@ inline memory::dims MklDnnDimsInNCDHW(const memory::dims& in_dims,
 
 /// Map MklDnn memory::dims object into TensorShape object.
 ///
-/// This function will simply map input shape in MKL-DNN memory::dims format
+/// This function will simply map input shape in oneDNN memory::dims format
 /// in Tensorflow's TensorShape object by preserving dimension order.
 ///
-/// @input MKL-DNN memory::dims object
+/// @input oneDNN memory::dims object
 /// @output TensorShape corresponding to memory::dims
 inline TensorShape MklDnnDimsToTFShape(const memory::dims& dims) {
   std::vector<int32> shape(dims.size(), -1);
@@ -1201,88 +1297,81 @@ inline memory::dims CalculateTFStrides(const memory::dims& dims_tf_order) {
   return strides;
 }
 
-inline padding_kind TFPaddingToMklDnnPadding(Padding pad) {
-  // MKL-DNN only supports zero padding.
-  return padding_kind::zero;
-}
-
 /// Helper function to create memory descriptor in Blocked format
 ///
 /// @input: Tensor dimensions
 /// @input: strides corresponding to dimensions. One can use utility
 ///         function such as CalculateTFStrides to compute strides
 ///         for given dimensions.
-/// @return: memory::desc object corresponding to blocked memory format
-///          for given dimensions and strides.
-inline memory::desc CreateBlockedMemDescHelper(const memory::dims& dim,
-                                               const memory::dims& strides,
-                                               memory::data_type dtype) {
+/// @output: dnnl_memory_desc_t object corresponding to blocked memory
+///          format for given dimensions and strides.
+/// @return: Status indicating whether the blocked memory descriptor
+///          was successfully created.
+inline Status CreateBlockedMemDescHelper(const memory::dims& dim,
+                                         const memory::dims& strides,
+                                         memory::data_type dtype,
+                                         dnnl_memory_desc_t* blocked_md) {
   DCHECK_EQ(dim.size(), strides.size());
-#ifdef ENABLE_MKLDNN_V1
-  mkldnn_dim_t input_dims[dim.size()];
-  mkldnn_dim_t input_strides[dim.size()];
-  for (size_t i = 0; i < dim.size(); ++i) {
+  const int kNumDims = dim.size();
+  dnnl_dim_t* input_dims = new dnnl_dim_t[kNumDims];
+  dnnl_dim_t* input_strides = new dnnl_dim_t[kNumDims];
+  for (int i = 0; i < kNumDims; ++i) {
     input_dims[i] = dim[i];
     input_strides[i] = strides[i];
   }
-  mkldnn_memory_desc_t md;
-  auto status = mkldnn_memory_desc_init_by_strides(
-      &md, dim.size(), input_dims, memory::convert_to_c(dtype), input_strides);
-  if (!status) {
-    TF_CHECK_OK(Status(error::Code::INTERNAL,
-                       "Failed to create blocked memory descriptor"));
+  try {
+    CREATE_MEMORY_DESC_USING_STRIDES(blocked_md, kNumDims, input_dims,
+                                     memory::convert_to_c(dtype),
+                                     input_strides);
+    delete[] input_dims;
+    delete[] input_strides;
+  } catch (dnnl::error& e) {
+    delete[] input_dims;
+    delete[] input_strides;
+    return absl::InternalError(
+        absl::StrCat("Failed to create blocked memory descriptor.",
+                     "Status: ", e.status, ", message: ", e.message));
   }
-#else
-  // We have to construct memory descriptor in a C style. This is not at all
-  // ideal but MKL-DNN does not offer any API to construct descriptor in
-  // blocked format except a copy constructor that accepts
-  // mkldnn_memory_desc_t.
-  mkldnn_memory_desc_t md;
-  md.primitive_kind = mkldnn_memory;
-  md.ndims = dim.size();
-  md.format = mkldnn_blocked;
-  md.data_type = memory::convert_to_c(dtype);
-
-  for (size_t i = 0; i < dim.size(); i++) {
-    md.layout_desc.blocking.block_dims[i] = 1;
-    md.layout_desc.blocking.strides[1][i] = 1;
-    md.layout_desc.blocking.strides[0][i] = strides[i];
-    md.layout_desc.blocking.padding_dims[i] = dim[i];
-    md.layout_desc.blocking.offset_padding_to_data[i] = 0;
-    md.dims[i] = dim[i];
-  }
-  md.layout_desc.blocking.offset_padding = 0;
-#endif  // ENABLE_MKLDNN_V1
-  return memory::desc(md);
+  return OkStatus();
 }
 
 inline void CreateAndExecuteReorder(const ReorderPd& reorder_desc,
                                     const memory& src_mem,
-                                    const memory& dst_mem,
-                                    const engine& engine) {
+                                    const memory& dst_mem, const engine& engine,
+                                    OpKernelContext* ctx = nullptr,
+                                    memory* scale_mem = nullptr) {
   std::vector<primitive> net;
-#ifdef ENABLE_MKLDNN_V1
-  net.push_back(mkldnn::reorder(reorder_desc));
+  net.push_back(dnnl::reorder(reorder_desc));
   std::vector<MemoryArgsMap> net_args;
-  net_args.push_back({{MKLDNN_ARG_FROM, src_mem}, {MKLDNN_ARG_TO, dst_mem}});
+#ifndef ENABLE_ONEDNN_V3
+  net_args.push_back({{DNNL_ARG_FROM, src_mem}, {DNNL_ARG_TO, dst_mem}});
 #else
-  net.push_back(mkldnn::reorder(reorder_desc, src_mem, dst_mem));
-#endif  // ENABLE_MKLDNN_V1
-  ExecutePrimitive(net, NET_ARGS_PTR, engine);
+  if (scale_mem != nullptr) {
+    net_args.push_back({{DNNL_ARG_FROM, src_mem},
+                        {DNNL_ARG_TO, dst_mem},
+                        {DNNL_ARG_ATTR_SCALES | DNNL_ARG_DST, *scale_mem}});
+  } else {
+    net_args.push_back({{DNNL_ARG_FROM, src_mem}, {DNNL_ARG_TO, dst_mem}});
+  }
+#endif  // !ENABLE_ONEDNN_V3
+  ExecutePrimitive(net, &net_args, engine, ctx);
 }
 
+class MklReorderPrimitive;
+
 template <typename T>
-inline primitive FindOrCreateReorder(const memory* from, const memory* to);
+inline MklReorderPrimitive* FindOrCreateReorder(const memory* from,
+                                                const memory* to);
 
 // Class to represent all the resources corresponding to a tensor in TensorFlow
 // that are required to execute an operation (such as Convolution).
 template <typename T>
 class MklDnnData {
  private:
-  /// MKL-DNN memory primitive for input user memory
+  /// oneDNN memory primitive for input user memory
   memory* user_memory_;
 
-  /// MKL-DNN memory primitive in case input or output reorder is needed.
+  /// oneDNN memory primitive in case input or output reorder is needed.
   memory* reorder_memory_;
 
   /// Operations memory descriptor
@@ -1302,6 +1391,14 @@ class MklDnnData {
         bIs3D(false),
         allocated_buffer_(nullptr),
         cpu_engine_(e) {}
+
+  // MklDnnData does not use any smart pointers,
+  // hence default operator= will result in memory leak if user_memory was
+  // already initialized. See
+  // https://github.com/tensorflow/tensorflow/pull/45593 as an example of such
+  // leak.
+  MklDnnData(const MklDnnData&) = default;
+  MklDnnData& operator=(const MklDnnData&) = delete;
 
   ~MklDnnData() {
     if (allocated_buffer_ != nullptr) {
@@ -1330,13 +1427,13 @@ class MklDnnData {
   /// an operation. E.g., filter of Conv2D is of shape {1, 2, 3, 4}, and
   /// memory format tag HWIO, and the buffer that contains actual values is
   /// pointed by data_buffer.
-  inline void SetUsrMem(const memory::dims& dim, MEMORY_FORMAT fm,
+  inline void SetUsrMem(const memory::dims& dim, memory::format_tag fm,
                         void* data_buffer = nullptr) {
     auto md = memory::desc(dim, MklDnnType<T>(), fm);
     SetUsrMem(md, data_buffer);
   }
 
-  inline void SetUsrMem(const memory::dims& dim, MEMORY_FORMAT fm,
+  inline void SetUsrMem(const memory::dims& dim, memory::format_tag fm,
                         const Tensor* tensor) {
     DCHECK(tensor);
     SetUsrMem(dim, fm, GetTensorBuffer(tensor));
@@ -1352,13 +1449,16 @@ class MklDnnData {
   ///          for given dimensions and strides.
   static inline memory::desc CreateBlockedMemDesc(const memory::dims& dim,
                                                   const memory::dims& strides) {
-    return CreateBlockedMemDescHelper(dim, strides, MklDnnType<T>());
+    dnnl_memory_desc_t blocked_md;
+    TF_CHECK_OK(
+        CreateBlockedMemDescHelper(dim, strides, MklDnnType<T>(), &blocked_md));
+    return memory::desc(blocked_md);
   }
 
   /// A version of SetUsrMem call that allows user to create memory in blocked
   /// format. So in addition to accepting dimensions, it also accepts strides.
   /// This allows user to create memory for tensor in a format that is not
-  /// supported by MKLDNN. E.g., MKLDNN does not support tensor format for 6
+  /// supported by oneDNN. E.g., oneDNN does not support tensor format for 6
   /// dimensional tensor as a native format. But by using blocked format, a user
   /// can create memory for 6D tensor.
   inline void SetUsrMem(const memory::dims& dim, const memory::dims& strides,
@@ -1374,18 +1474,6 @@ class MklDnnData {
     SetUsrMem(dim, strides, GetTensorBuffer(tensor));
   }
 
-#ifndef ENABLE_MKLDNN_V1
-  /// Memory primitive descriptor is deprecated in MKL-DNN v1.x.
-  /// A version of function to set user memory primitive that accepts memory
-  /// descriptor directly, instead of accepting dimensions and format. This
-  /// function is more generic that the one above, but the function above is
-  /// sufficient in most cases.
-  inline void SetUsrMem(const memory::desc& md, void* data_buffer = nullptr) {
-    auto pd = memory::primitive_desc(md, *cpu_engine_);
-    SetUsrMem(pd, data_buffer);
-  }
-#endif  // !ENABLE_MKLDNN_V1
-
   /// A version of SetUsrMem with memory descriptor and tensor
   inline void SetUsrMem(const memory::desc& md, const Tensor* tensor) {
     CHECK_NOTNULL(tensor);
@@ -1396,50 +1484,24 @@ class MklDnnData {
   /// descriptor directly, instead of accepting dimensions and format. This
   /// function is more generic than the one above, but the function above is
   /// sufficient in most cases.
-  inline void SetUsrMem(const MEMORY_PRIMITIVE_DESC& pd,
-                        void* data_buffer = nullptr) {
+  inline void SetUsrMem(const memory::desc& pd, void* data_buffer = nullptr) {
     DCHECK(cpu_engine_);
     if (user_memory_) delete user_memory_;
-    // TODO(nhasabni): can we remove dynamic memory allocation?
+    // TODO(intel-tf): can we remove dynamic memory allocation?
     if (data_buffer) {
-      user_memory_ = new MEMORY_CONSTRUCTOR(pd, *cpu_engine_, data_buffer);
+      user_memory_ = new memory(pd, *cpu_engine_, data_buffer);
     } else {
-      user_memory_ = new MEMORY_CONSTRUCTOR_WITHOUT_DATA(pd, *cpu_engine_);
+      user_memory_ = new memory(pd, *cpu_engine_);
     }
   }
-
-#ifndef ENABLE_MKLDNN_V1
-  /// Memory primitive descriptor is deprecated in MKL-DNN v1.x
-  /// A version of SetUsrMem with primitive descriptor and tensor
-  inline void SetUsrMem(const memory::primitive_desc& pd,
-                        const Tensor* tensor) {
-    DCHECK(tensor);
-    SetUsrMem(pd, GetTensorBuffer(tensor));
-  }
-#endif  // !ENABLE_MKLDNN_V1
 
   /// Get function for user memory primitive.
   inline const memory* GetUsrMem() const { return user_memory_; }
 
-#ifndef ENABLE_MKLDNN_V1
-  /// Memory primitive descriptor is deprecated in MKL-DNN v1.x.
-  /// Get function for primitive descriptor of user memory primitive.
-  inline const memory::primitive_desc GetUsrMemPrimDesc() const {
-    DCHECK(user_memory_);
-    return user_memory_->get_primitive_desc();
-  }
-#endif  // !ENABLE_MKLDNN_V1
-
   /// Get function for descriptor of user memory.
   inline memory::desc GetUsrMemDesc() const {
-#ifdef ENABLE_MKLDNN_V1
     DCHECK(user_memory_);
     return user_memory_->get_desc();
-#else
-    // This is ugly. Why MKL-DNN does not provide desc() method of const type??
-    const memory::primitive_desc pd = GetUsrMemPrimDesc();
-    return const_cast<memory::primitive_desc*>(&pd)->desc();
-#endif  // ENABLE_MKLDNN_V1
   }
 
   /// Get function for data buffer of user memory primitive.
@@ -1449,23 +1511,27 @@ class MklDnnData {
   }
 
   /// Set function for data buffer of user memory primitive.
-  inline void SetUsrMemDataHandle(void* data_buffer) {
+  inline void SetUsrMemDataHandle(void* data_buffer,
+                                  std::shared_ptr<stream> t_stream = nullptr) {
     CHECK_NOTNULL(user_memory_);
     CHECK_NOTNULL(data_buffer);
+#if !defined(ENABLE_ONEDNN_OPENMP) && !defined(ENABLE_ONEDNN_V3)
+    user_memory_->set_data_handle(data_buffer, *t_stream);
+#else
     user_memory_->set_data_handle(data_buffer);
+#endif  // !ENABLE_ONEDNN_OPENMP && !ENABLE_ONEDNN_V3
   }
 
   /// Set function for data buffer of user memory primitive.
-  inline void SetUsrMemDataHandle(const Tensor* tensor) {
-    CHECK_NOTNULL(user_memory_);
-    CHECK_NOTNULL(tensor);
-    user_memory_->set_data_handle(GetTensorBuffer(tensor));
+  inline void SetUsrMemDataHandle(const Tensor* tensor,
+                                  std::shared_ptr<stream> t_stream = nullptr) {
+    SetUsrMemDataHandle(GetTensorBuffer(tensor), t_stream);
   }
 
   /// allocate function for data buffer
   inline void AllocateBuffer(size_t size) {
-    const int64 kMemoryAlginment = 64;  // For AVX512 memory alignment.
-    allocated_buffer_ = cpu_allocator()->AllocateRaw(kMemoryAlginment, size);
+    const int64 kMemoryAlignment = 64;  // For AVX512 memory alignment.
+    allocated_buffer_ = cpu_allocator()->AllocateRaw(kMemoryAlignment, size);
   }
 
   inline void* GetAllocatedBuffer() { return allocated_buffer_; }
@@ -1475,7 +1541,7 @@ class MklDnnData {
   /// for reorder. Otherwise, it will return memory primitive for user memory.
   ///
   /// E.g., Conv2D(I, F) is a primitive with I and F being inputs. Then to
-  /// execute Conv2D, we need memory primitive for I and F. Buf if reorder is
+  /// execute Conv2D, we need memory primitive for I and F. But if reorder is
   /// required for I and F (say I_r is reorder primitive for I; F_r is reorder
   /// primitive for F), then we need I_r and F_r to perform Conv2D.
   inline const memory& GetOpMem() const {
@@ -1484,10 +1550,10 @@ class MklDnnData {
 
   /// Set memory descriptor of an operation in terms of dimensions and memory
   /// format. E.g., For Conv2D, the dimensions would be same as user dimensions
-  /// but memory::format_tag would be mkldnn::any because we want MKL-DNN to
+  /// but memory::format_tag would be dnnl::any because we want oneDNN to
   /// choose the best layout/format for given input dimensions.
-  inline void SetOpMemDesc(const memory::dims& dim, MEMORY_FORMAT fm) {
-    // TODO(nhasabni): can we remove dynamic memory allocation?
+  inline void SetOpMemDesc(const memory::dims& dim, memory::format_tag fm) {
+    // TODO(intel-tf): can we remove dynamic memory allocation?
     op_md_ = new memory::desc(dim, MklDnnType<T>(), fm);
   }
 
@@ -1499,28 +1565,10 @@ class MklDnnData {
   ///
   /// @input: op_md - memory descriptor of the given input of an operation.
   /// @return: true in case reorder of input is needed; false, otherwise.
-  inline bool IsReorderNeeded(const MEMORY_PRIMITIVE_DESC& op_pd) const {
+  inline bool IsReorderNeeded(const memory::desc& op_pd) const {
     DCHECK(user_memory_);
-    return op_pd != GET_MEMORY_PRIMITIVE_DESC_FROM_MEM_PTR(user_memory_);
+    return op_pd != user_memory_->get_desc();
   }
-
-#ifndef ENABLE_MKLDNN_V1
-  /// In MKL-DNN v1.x, it it is not possible to directly compare two memory
-  /// format tags since they only provide a partial description of the memory
-  /// layout. Hence, this function is disabled for MKL-DNN v1.x.
-  ///
-  /// Predicate that checks if we need to reorder user's memory into memory
-  /// based on the provided format.
-  ///
-  /// @input: target_format - memory format of the given input of an
-  ///               operation
-  /// @return: true in case reorder of input is needed; false, otherwise.
-  inline bool IsReorderNeeded(const memory::format& target_format) const {
-    CHECK_NOTNULL(user_memory_);
-    return target_format !=
-           user_memory_->get_primitive_desc().desc().data.format;
-  }
-#endif  // !ENABLE_MKLDNN_V1
 
   /// Function to create a reorder from memory pointed by from to memory pointed
   /// by to. Returns created primitive.
@@ -1530,24 +1578,23 @@ class MklDnnData {
     return reorder(*from, *to);
   }
 
-/// Function to handle input reordering
-///
-/// Check if we need to reorder this input of an operation.
-/// Return true and allocate reorder memory primitive if reorder is needed.
-/// Otherwise, return false and do not allocate reorder memory primitive.
-///
-/// To check if reorder is needed, this function compares memory primitive
-/// descriptor (memory descriptor for v1.x) of an operation (op_pd) for
-/// the given input with the user-specified memory descriptor.
-///
-/// @input: op_pd - memory primitive descriptor of the given input of an
-///                 operation
-/// @input: net - net to which to add reorder primitive in case it is needed.
-/// @input: net_args - net to which user and reorder memories are added if
-///                    needed. Each entry is a key-value pair of the form
-///                    <argument-type, mkldnn::memory>.
-/// @return: true in case reorder of input is needed; false, otherwise.
-#ifdef ENABLE_MKLDNN_V1
+  /// Function to handle input reordering
+  ///
+  /// Check if we need to reorder this input of an operation.
+  /// Return true and allocate reorder memory primitive if reorder is needed.
+  /// Otherwise, return false and do not allocate reorder memory primitive.
+  ///
+  /// To check if reorder is needed, this function compares memory primitive
+  /// descriptor (memory descriptor for v1.x) of an operation (op_pd) for
+  /// the given input with the user-specified memory descriptor.
+  ///
+  /// @input: op_pd - memory primitive descriptor of the given input of an
+  ///                 operation
+  /// @input: net - net to which to add reorder primitive in case it is needed.
+  /// @input: net_args - net to which user and reorder memories are added if
+  ///                    needed. Each entry is a key-value pair of the form
+  ///                    <argument-type, dnnl::memory>.
+  /// @return: true in case reorder of input is needed; false, otherwise.
   inline bool CheckReorderToOpMem(const memory::desc& op_md,
                                   std::vector<primitive>& net,
                                   std::vector<MemoryArgsMap>& net_args,
@@ -1555,70 +1602,62 @@ class MklDnnData {
     DCHECK(user_memory_);
     DCHECK_EQ(net.size(), net_args.size());
     if (IsReorderNeeded(op_md)) {
-      // TODO(nhasabni): can we remove dynamic memory allocation?
+      // TODO(intel-tf): can we remove dynamic memory allocation?
       reorder_memory_ = new memory(op_md, engine);
       net.push_back(CreateReorder(user_memory_, reorder_memory_));
-      net_args.push_back(MemoryArgsMap{{MKLDNN_ARG_FROM, *user_memory_},
-                                       {MKLDNN_ARG_TO, *reorder_memory_}});
-#else
-  inline bool CheckReorderToOpMem(const memory::primitive_desc& op_pd,
-                                  std::vector<primitive>* net) {
-    DCHECK(net);
-    DCHECK(user_memory_);
-    if (IsReorderNeeded(op_pd)) {
-      reorder_memory_ = new memory(op_pd);
-      net->push_back(CreateReorder(user_memory_, reorder_memory_));
-#endif  // ENABLE_MKLDNN_V1
+      net_args.push_back(MemoryArgsMap{{DNNL_ARG_FROM, *user_memory_},
+                                       {DNNL_ARG_TO, *reorder_memory_}});
       return true;
     }
     return false;
   }
 
-/// TODO: this is a faster path with reorder primitive cache compared with
-/// CheckReorderToOpMem(..., std::vector<primitive>* net).
-/// TODO(gzmkl): Remove the slower path.
-#ifdef ENABLE_MKLDNN_V1
-  /// TODO(bhavanis): Need to use reorder cache here for better performance.
   inline bool CheckReorderToOpMem(const memory::desc& op_md,
-                                  const engine& engine) {
+                                  const engine& engine,
+                                  OpKernelContext* context = nullptr) {
     DCHECK(user_memory_);
     if (IsReorderNeeded(op_md)) {
-      // TODO(nhasabni): can we remove dynamic memory allocation?
+      // TODO(intel-tf): can we remove dynamic memory allocation?
       // primitive reuse don't allow two same reorder prim in
       // one stream, so submit it immediately
       reorder_memory_ = new memory(op_md, engine);
-      stream cpu_stream(engine);
-      reorder(*user_memory_, *reorder_memory_)
-          .execute(cpu_stream, *user_memory_, *reorder_memory_);
-#else
-  inline bool CheckReorderToOpMem(const memory::primitive_desc& op_pd) {
-    CHECK_NOTNULL(user_memory_);
-    if (IsReorderNeeded(op_pd)) {
-      reorder_memory_ = new memory(op_pd);
+      auto* prim = FindOrCreateReorder<T>(user_memory_, reorder_memory_);
+      std::shared_ptr<stream> cpu_stream;
+      tsl::OneDnnThreadPool eigen_tp;
+      if (context != nullptr) {
+        Eigen::ThreadPoolInterface* eigen_interface =
+            EigenThreadPoolFromTfContext(context);
+        eigen_tp =
+            tsl::OneDnnThreadPool(eigen_interface, ThreadPoolUseCallerThread());
+        cpu_stream.reset(CreateStream(&eigen_tp, prim->GetEngine()));
+      } else {
+        cpu_stream.reset(CreateStream(nullptr, prim->GetEngine()));
+      }
       std::vector<primitive> net;
-      net.push_back(FindOrCreateReorder<T>(user_memory_, reorder_memory_));
-      stream(stream::kind::eager).submit(net).wait();
-#endif  // ENABLE_MKLDNN_V1
+      net.push_back(*(prim->GetPrimitive()));
+      std::vector<MemoryArgsMap> net_args;
+      net_args.push_back(
+          {{DNNL_ARG_FROM, *user_memory_}, {DNNL_ARG_TO, *reorder_memory_}});
+      execute_primitives(net, cpu_stream, net_args);
       return true;
     }
     return false;
   }
 
-/// Overloaded version of above function that accepts memory buffer
-/// where output of reorder needs to be stored.
-///
-/// @input: op_pd - memory primitive descriptor (memory descriptor for v1.x)
-///                 of the given input of an operation
-/// @reorder_data_handle - memory buffer where output of reorder needs to be
-///                        stored. Primitive does not check if buffer has
-///                        enough size to write.
-/// @input: net - net to which to add reorder primitive in case it is needed.
-/// @input: net_args - net to which user and reorder memories are added if
-///                    needed. Each entry is a key-value pair of the form
-///                    <argument-type, mkldnn::memory>.
-/// @input: engine - MKL-DNN's abstraction of a computational device
-/// @return: true in case reorder of input is needed; false, otherwise.
-#ifdef ENABLE_MKLDNN_V1
+  /// Overloaded version of above function that accepts memory buffer
+  /// where output of reorder needs to be stored.
+  ///
+  /// @input: op_pd - memory primitive descriptor (memory descriptor for v1.x)
+  ///                 of the given input of an operation
+  /// @reorder_data_handle - memory buffer where output of reorder needs to be
+  ///                        stored. Primitive does not check if buffer has
+  ///                        enough size to write.
+  /// @input: net - net to which to add reorder primitive in case it is needed.
+  /// @input: net_args - net to which user and reorder memories are added if
+  ///                    needed. Each entry is a key-value pair of the form
+  ///                    <argument-type, dnnl::memory>.
+  /// @input: engine - oneDNN's abstraction of a computational device
+  /// @return: true in case reorder of input is needed; false, otherwise.
   inline bool CheckReorderToOpMem(const memory::desc& op_md,
                                   void* reorder_data_handle,
                                   std::vector<primitive>& net,
@@ -1627,76 +1666,68 @@ class MklDnnData {
     DCHECK(reorder_data_handle);
     DCHECK(user_memory_);
     if (IsReorderNeeded(op_md)) {
-      // TODO(nhasabni): can we remove dynamic memory allocation?
+      // TODO(intel-tf): can we remove dynamic memory allocation?
       reorder_memory_ = new memory(op_md, engine, reorder_data_handle);
       net.push_back(CreateReorder(user_memory_, reorder_memory_));
-      net_args.push_back(MemoryArgsMap{{MKLDNN_ARG_FROM, *user_memory_},
-                                       {MKLDNN_ARG_TO, *reorder_memory_}});
-#else
-  inline bool CheckReorderToOpMem(const memory::primitive_desc& op_pd,
-                                  void* reorder_data_handle,
-                                  std::vector<primitive>* net) {
-    CHECK_NOTNULL(net);
-    CHECK_NOTNULL(reorder_data_handle);
-    CHECK_NOTNULL(user_memory_);
-    if (IsReorderNeeded(op_pd)) {
-      reorder_memory_ = new memory(op_pd, reorder_data_handle);
-      net->push_back(CreateReorder(user_memory_, reorder_memory_));
-#endif  // ENABLE_MKLDNN_V1
+      net_args.push_back(MemoryArgsMap{{DNNL_ARG_FROM, *user_memory_},
+                                       {DNNL_ARG_TO, *reorder_memory_}});
       return true;
     }
     return false;
   }
 
-/// This is a faster path with reorder primitive cache compared with
-/// CheckReorderToOpMem(..., std::vector<primitive>* net).
-/// The slower path will be removed in the future
-#ifdef ENABLE_MKLDNN_V1
-  /// TODO(bhavanis): Need to use reorder cache here for better performance.
+  /// This is a faster path with reorder primitive cache compared with
+  /// CheckReorderToOpMem(..., std::vector<primitive>* net).
+  /// The slower path will be removed in the future
+  /// TODO(intel-tf): Need to use reorder cache here for better performance.
   inline bool CheckReorderToOpMem(const memory::desc& op_md,
                                   void* reorder_data_handle,
-                                  const engine& engine) {
+                                  const engine& engine,
+                                  OpKernelContext* context = nullptr) {
     DCHECK(reorder_data_handle);
     DCHECK(user_memory_);
     if (IsReorderNeeded(op_md)) {
-      // TODO(nhasabni): can we remove dynamic memory allocation?
+      // TODO(intel-tf): can we remove dynamic memory allocation?
       // primitive reuse don't allow two same reorder prim in
       // one stream, so submit it immediately
       reorder_memory_ = new memory(op_md, engine, reorder_data_handle);
-      stream cpu_stream(engine);
-      reorder(*user_memory_, *reorder_memory_)
-          .execute(cpu_stream, *user_memory_, *reorder_memory_);
-#else
-  inline bool CheckReorderToOpMem(const memory::primitive_desc& op_pd,
-                                  void* reorder_data_handle) {
-    CHECK_NOTNULL(reorder_data_handle);
-    CHECK_NOTNULL(user_memory_);
-    if (IsReorderNeeded(op_pd)) {
+      auto* prim = FindOrCreateReorder<T>(user_memory_, reorder_memory_);
+      std::shared_ptr<stream> cpu_stream;
+      tsl::OneDnnThreadPool eigen_tp;
+      if (context != nullptr) {
+        Eigen::ThreadPoolInterface* eigen_interface =
+            EigenThreadPoolFromTfContext(context);
+        eigen_tp =
+            tsl::OneDnnThreadPool(eigen_interface, ThreadPoolUseCallerThread());
+        cpu_stream.reset(CreateStream(&eigen_tp, prim->GetEngine()));
+      } else {
+        cpu_stream.reset(CreateStream(nullptr, prim->GetEngine()));
+      }
       std::vector<primitive> net;
-      reorder_memory_ = new memory(op_pd, reorder_data_handle);
-      net.push_back(FindOrCreateReorder<T>(user_memory_, reorder_memory_));
-      stream(stream::kind::eager).submit(net).wait();
-#endif  // ENABLE_MKLDNN_V1
+      net.push_back(*(prim->GetPrimitive()));
+      std::vector<MemoryArgsMap> net_args;
+      net_args.push_back(
+          {{DNNL_ARG_FROM, *user_memory_}, {DNNL_ARG_TO, *reorder_memory_}});
+      execute_primitives(net, cpu_stream, net_args);
       return true;
     }
     return false;
   }
 
-/// Another overloaded version of CheckReorderToOpMem that accepts Tensor
-/// where output of reorder needs to be stored.
-///
-/// @input: op_md - memory primitive descriptor (memory descriptor for v1.x)
-///                 of the given input of an operation
-/// @reorder_tensor - Tensor whose buffer is to be used to store output of
-///                   reorder. Primitive does not check if buffer is
-///                   enough size to write.
-/// @input: net - net to which to add reorder primitive in case it is needed.
-/// @input: net_args - net to which user and reorder memories are added if
-///                    needed. Each entry is a key-value pair of the form
-///                    <argument-type, mkldnn::memory>.
-/// @input: engine - MKL-DNN's abstraction of a computational device
-/// @return: true in case reorder of input is needed; false, otherwise.
-#ifdef ENABLE_MKLDNN_V1
+  /// Another overloaded version of CheckReorderToOpMem that accepts Tensor
+  /// where output of reorder needs to be stored.
+  ///
+  /// @input: op_md - memory primitive descriptor (memory descriptor for v1.x)
+  ///                 of the given input of an operation
+  /// @reorder_tensor - Tensor whose buffer is to be used to store output of
+  ///                   reorder. Primitive does not check if buffer is
+  ///                   enough size to write.
+  /// @input: net - net to which to add reorder primitive in case it is needed.
+  /// @input: net_args - net to which user and reorder memories are added if
+  ///                    needed. Each entry is a key-value pair of the form
+  ///                    <argument-type, dnnl::memory>.
+  /// @input: engine - MKL-DNN's abstraction of a computational device
+  /// @return: true in case reorder of input is needed; false, otherwise.
   inline bool CheckReorderToOpMem(const memory::desc& op_md,
                                   Tensor* reorder_tensor,
                                   std::vector<primitive>& net,
@@ -1706,29 +1737,16 @@ class MklDnnData {
     return CheckReorderToOpMem(op_md, GetTensorBuffer(reorder_tensor), net,
                                net_args, engine);
   }
-#else
-  inline bool CheckReorderToOpMem(const memory::primitive_desc& op_pd,
-                                  Tensor* reorder_tensor,
-                                  std::vector<primitive>* net) {
-    CHECK_NOTNULL(net);
-    CHECK_NOTNULL(reorder_tensor);
-    return CheckReorderToOpMem(op_pd, GetTensorBuffer(reorder_tensor), net);
-  }
-#endif  // ENABLE_MKLDNN_V1
 
-  /// TODO: this is a faster path with reorder primitive cache compared with
-  /// CheckReorderToOpMem(op_md, reorder_tensor, net, net_args, engine), will
-  /// remove
-  /// slow path in the future
-  inline bool CheckReorderToOpMem(const MEMORY_PRIMITIVE_DESC& op_pd,
-                                  Tensor* reorder_tensor) {
+  /// TODO(intel-tf): this is a faster path with reorder primitive cache
+  /// compared with CheckReorderToOpMem(op_md, reorder_tensor, net, net_args,
+  /// engine), will remove slow path in the future.
+  inline bool CheckReorderToOpMem(const memory::desc& op_pd,
+                                  Tensor* reorder_tensor,
+                                  OpKernelContext* ctx = nullptr) {
     DCHECK(reorder_tensor);
-#ifdef ENABLE_MKLDNN_V1
     return CheckReorderToOpMem(op_pd, GetTensorBuffer(reorder_tensor),
-                               *cpu_engine_);
-#else
-    return CheckReorderToOpMem(op_pd, GetTensorBuffer(reorder_tensor));
-#endif  // ENABLE_MKLDNN_V1
+                               *cpu_engine_, ctx);
   }
 
   /// Function to handle output reorder
@@ -1744,64 +1762,62 @@ class MklDnnData {
   /// @input - memory primitive descriptor (memory descriptor for v1.x) for the
   ///          given output of an operation
   /// @return: true in case reorder of output is needed; false, otherwise.
-  inline bool PrepareReorderToUserMemIfReq(const MEMORY_PRIMITIVE_DESC& op_pd) {
+  inline bool PrepareReorderToUserMemIfReq(const memory::desc& op_pd) {
     DCHECK(user_memory_);
     if (IsReorderNeeded(op_pd)) {
-      // TODO(nhasabni): can we remove dynamic memory allocation?
-      reorder_memory_ =
-          new MEMORY_CONSTRUCTOR_WITHOUT_DATA(op_pd, *cpu_engine_);
+      // TODO(intel-tf): can we remove dynamic memory allocation?
+      reorder_memory_ = new memory(op_pd, *cpu_engine_);
       return true;
     }
     return false;
   }
 
-/// Function to actually insert reorder primitive in the net
-///
-/// This function completes remaining part of output reordering. It inserts
-/// a reordering primitive from the temporary buffer that holds the output
-/// to the user-specified output buffer.
-///
-/// @input: net - net to which to add reorder primitive
-/// @input: net_args - net to which user and reorder memories are added if
-///                    needed. Each entry is a key-value pair of the form
-///                    <argument-type, mkldnn::memory>.
-#ifdef ENABLE_MKLDNN_V1
+  /// Function to actually insert reorder primitive in the net
+  ///
+  /// This function completes remaining part of output reordering. It inserts
+  /// a reordering primitive from the temporary buffer that holds the output
+  /// to the user-specified output buffer.
+  ///
+  /// @input: net - net to which to add reorder primitive
+  /// @input: net_args - net to which user and reorder memories are added if
+  ///                    needed. Each entry is a key-value pair of the form
+  ///                    <argument-type, dnnl::memory>.
   inline void InsertReorderToUserMem(std::vector<primitive>& net,
                                      std::vector<MemoryArgsMap>& net_args) {
     DCHECK(user_memory_);
     DCHECK(reorder_memory_);
     net.push_back(CreateReorder(reorder_memory_, user_memory_));
-    net_args.push_back(MemoryArgsMap{{MKLDNN_ARG_FROM, *reorder_memory_},
-                                     {MKLDNN_ARG_TO, *user_memory_}});
+    net_args.push_back(MemoryArgsMap{{DNNL_ARG_FROM, *reorder_memory_},
+                                     {DNNL_ARG_TO, *user_memory_}});
   }
-#else
-  inline void InsertReorderToUserMem(std::vector<primitive>* net) {
-    CHECK_NOTNULL(net);
-    CHECK_NOTNULL(user_memory_);
-    CHECK_NOTNULL(reorder_memory_);
-    net->push_back(CreateReorder(reorder_memory_, user_memory_));
-  }
-#endif  // ENABLE_MKLDNN_V1
 
-  /// TODO: this is a faster path with reorder primitive cache compared with
-  ///       InsertReorderToUserMem(net, net_args), will remove
-  ///       slow path in the future
-  inline void InsertReorderToUserMem() {
+  /// TODO(intel-tf): this is a faster path with reorder primitive cache
+  ///     compared with InsertReorderToUserMem(net, net_args), will remove
+  ///     slow path in the future
+  inline void InsertReorderToUserMem(OpKernelContext* ctx = nullptr) {
     DCHECK(user_memory_);
     DCHECK(reorder_memory_);
     DCHECK(cpu_engine_);
     // primitive reuse don't allow two same reorder prim in
     // one stream, so submit it immediately
     std::vector<primitive> net;
-#ifdef ENABLE_MKLDNN_V1
+    auto* prim = FindOrCreateReorder<T>(reorder_memory_, user_memory_);
+    net.push_back(*(prim->GetPrimitive()));
     std::vector<MemoryArgsMap> net_args;
-    net.push_back(FindOrCreateReorder<T>(reorder_memory_, user_memory_));
-    net_args.push_back(MemoryArgsMap{{MKLDNN_ARG_FROM, *reorder_memory_},
-                                     {MKLDNN_ARG_TO, *user_memory_}});
-#else
-    net.push_back(FindOrCreateReorder<T>(reorder_memory_, user_memory_));
-#endif  // ENABLE_MKLDNN_V1
-    ExecutePrimitive(net, NET_ARGS_PTR, *cpu_engine_);
+    net_args.push_back(
+        {{DNNL_ARG_FROM, *reorder_memory_}, {DNNL_ARG_TO, *user_memory_}});
+    std::shared_ptr<stream> cpu_stream;
+    tsl::OneDnnThreadPool eigen_tp;
+    if (ctx != nullptr) {
+      Eigen::ThreadPoolInterface* eigen_interface =
+          EigenThreadPoolFromTfContext(ctx);
+      eigen_tp =
+          tsl::OneDnnThreadPool(eigen_interface, ThreadPoolUseCallerThread());
+      cpu_stream.reset(CreateStream(&eigen_tp, prim->GetEngine()));
+    } else {
+      cpu_stream.reset(CreateStream(nullptr, prim->GetEngine()));
+    }
+    execute_primitives(net, cpu_stream, net_args);
   }
 };
 
@@ -1809,12 +1825,15 @@ class MklDnnData {
 class MklPrimitive {
  public:
   virtual ~MklPrimitive() {}
-
+  MklPrimitive() {}
+  MklPrimitive(const engine& cpu_engine) { cpu_engine_ = cpu_engine; }
   // Dummy data which MKL DNN never operates on
   unsigned char* DummyData = nullptr;
+  engine cpu_engine_ = engine(engine::kind::cpu, 0);
+  const engine& GetEngine() { return cpu_engine_; }
 };
 
-const mkldnn::memory::dims NONE_DIMS = {};
+const dnnl::memory::dims NONE_DIMS = {};
 
 //
 // LRUCache is a class which implements LRU (Least Recently Used) cache.
@@ -1841,6 +1860,9 @@ class LRUCache {
   }
 
   T* GetOp(const string& key) {
+#if defined(DNNL_AARCH64_USE_ACL) && defined(ENABLE_ONEDNN_OPENMP)
+    mutex_lock lock(lru_mu_);
+#endif
     auto it = cache_.find(key);
     if (it == cache_.end()) {
       return nullptr;
@@ -1854,6 +1876,9 @@ class LRUCache {
   }
 
   void SetOp(const string& key, T* op) {
+#if defined(DNNL_AARCH64_USE_ACL) && defined(ENABLE_ONEDNN_OPENMP)
+    mutex_lock lock(lru_mu_);
+#endif
     if (lru_list_.size() >= capacity_) {
       Delete();
     }
@@ -1862,6 +1887,9 @@ class LRUCache {
     lru_list_.push_front(key);
     Entry entry(op, lru_list_.begin());
     cache_.emplace(std::make_pair(key, std::move(entry)));
+#if defined(DNNL_AARCH64_USE_ACL) && defined(ENABLE_ONEDNN_OPENMP)
+    FinishedAllocation(key);
+#endif
   }
 
   void Clear() {
@@ -1871,6 +1899,23 @@ class LRUCache {
     cache_.clear();
     lru_list_.clear();
   }
+
+#if defined(DNNL_AARCH64_USE_ACL) && defined(ENABLE_ONEDNN_OPENMP)
+  bool IsAllocating(const string& key) {
+    mutex_lock lock(in_flight_mu_);
+    return in_flight_.find(key) != in_flight_.end();
+  }
+
+  void Allocate(const string& key) {
+    mutex_lock lock(in_flight_mu_);
+    in_flight_.insert(key);
+  }
+
+  void FinishedAllocation(const string& key) {
+    mutex_lock lock(in_flight_mu_);
+    in_flight_.erase(key);
+  }
+#endif
 
  private:
   struct Entry {
@@ -1886,7 +1931,7 @@ class LRUCache {
       this->lru_iterator = it;
     }
 
-    // Move construcctor
+    // Move constructor
     Entry(Entry&& source) noexcept
         : lru_iterator(std::move(source.lru_iterator)) {
       op = std::move(source.op);
@@ -1919,6 +1964,16 @@ class LRUCache {
   // The front of the list contains the key of the most recently accessed
   // entry, while the back of the list is the least recently accessed entry.
   std::list<string> lru_list_;
+
+#if defined(DNNL_AARCH64_USE_ACL) && defined(ENABLE_ONEDNN_OPENMP)
+  // Guards access to the cache and LRU list
+  mutex lru_mu_;
+
+  // The keys that are currently under creation
+  std::set<string> in_flight_;
+  TF_GUARDED_BY(in_flight_mu_)
+  mutex in_flight_mu_;
+#endif
 };
 
 template <typename T>
@@ -1929,37 +1984,104 @@ class MklPrimitiveFactory {
   ~MklPrimitiveFactory() {}
 
   MklPrimitive* GetOp(const string& key) {
+#if !defined(DNNL_AARCH64_USE_ACL) || !defined(ENABLE_ONEDNN_OPENMP)
     auto& lru_cache = MklPrimitiveFactory<T>::GetLRUCache();
     return lru_cache.GetOp(key);
+#else
+    while (true) {
+      // TODO(milpuz01): Consider if it is possible to narrow scope to be
+      // only around checks for allocations and conditional wait.
+      mutex_lock lock(primitive_creation_mu_);
+      auto& lru_cache = MklPrimitiveFactory<T>::GetLRUCache();
+
+      // Check to see whether primitive already exists.
+      MklPrimitive* primitive = lru_cache.GetOp(key);
+      if (primitive != nullptr) {
+        return primitive;
+      }
+
+      // Now check whether some other thread is creating this primitive.
+      if (!lru_cache.IsAllocating(key)) {
+        // This thread is going to pick it up and create the primitive.
+        lru_cache.Allocate(key);
+        return nullptr;
+        // Now we release lock as primitive creation might take long time.
+      }
+
+      // At this point we cannot create primitive as other thread is creating
+      // it. We should wait for primitive to get created.
+      primitive_creation_cv_.wait(lock);
+
+      // The primitive is created and is in the cache so we are going to try
+      // retrieve it again after getting a lock on it as multiple threads might
+      // be waiting for the primitive.
+    }
+#endif
   }
 
   void SetOp(const string& key, MklPrimitive* op) {
+#if !defined(DNNL_AARCH64_USE_ACL) || !defined(ENABLE_ONEDNN_OPENMP)
     auto& lru_cache = MklPrimitiveFactory<T>::GetLRUCache();
     lru_cache.SetOp(key, op);
+#else
+    {
+      mutex_lock lock(primitive_creation_mu_);
+      auto& lru_cache = MklPrimitiveFactory<T>::GetLRUCache();
+      lru_cache.SetOp(key, op);
+    }
+
+    // Now we can inform all waiting threads that primitive is created.
+    primitive_creation_cv_.notify_all();
+#endif
   }
 
   /// Function to decide whether HW has AVX512 or AVX2
   /// For those legacy device(w/o AVX512 and AVX2),
   /// MKL-DNN GEMM will be used.
   static inline bool IsLegacyPlatform() {
-    return (!port::TestCPUFeature(port::CPUFeature::AVX512F) &&
-            !port::TestCPUFeature(port::CPUFeature::AVX2));
+#ifdef DNNL_AARCH64_USE_ACL
+    return false;
+#else
+    static const bool is_legacy_platform =
+        (!port::TestCPUFeature(port::CPUFeature::AVX512F) &&
+         !port::TestCPUFeature(port::CPUFeature::AVX2));
+    return is_legacy_platform;
+#endif  // DNNL_AARCH64_USE_ACL
   }
 
-  /// Fuction to check whether primitive memory optimization is enabled
+  /// Function to check whether primitive memory optimization is enabled
   static inline bool IsPrimitiveMemOptEnabled() {
-    bool is_primitive_mem_opt_enabled = true;
-    TF_CHECK_OK(ReadBoolFromEnvVar("TF_MKL_OPTIMIZE_PRIMITIVE_MEMUSE", true,
-                                   &is_primitive_mem_opt_enabled));
+    static const bool is_primitive_mem_opt_enabled = [] {
+      bool value = true;
+      TF_CHECK_OK(
+          ReadBoolFromEnvVar("TF_MKL_OPTIMIZE_PRIMITIVE_MEMUSE", true, &value));
+      return value;
+    }();
     return is_primitive_mem_opt_enabled;
   }
+
+#ifdef DNNL_AARCH64_USE_ACL
+  static int IncrementCounter() {
+    static std::atomic_int counter{1};
+    return counter.fetch_add(1);
+  }
+#endif
 
  private:
   static inline LRUCache<MklPrimitive>& GetLRUCache() {
     static const int kCapacity = 1024;  // cache capacity
+#if !defined(DNNL_AARCH64_USE_ACL) || !defined(ENABLE_ONEDNN_OPENMP)
     static thread_local LRUCache<MklPrimitive> lru_cache_(kCapacity);
+#else
+    static LRUCache<MklPrimitive> lru_cache_(kCapacity);
+#endif
     return lru_cache_;
   }
+
+#if defined(DNNL_AARCH64_USE_ACL) && defined(ENABLE_ONEDNN_OPENMP)
+  mutex primitive_creation_mu_;
+  condition_variable primitive_creation_cv_;
+#endif
 };
 
 // utility class for creating keys of MKL primitive pool.
@@ -1971,7 +2093,7 @@ class FactoryKeyCreator {
 
   void AddAsKey(const string& str) { Append(str); }
 
-  void AddAsKey(const mkldnn::memory::dims& dims) {
+  void AddAsKey(const dnnl::memory::dims& dims) {
     for (unsigned int i = 0; i < dims.size(); i++) {
       AddAsKey<int>(dims[i]);
     }
@@ -1981,6 +2103,12 @@ class FactoryKeyCreator {
   void AddAsKey(const T data) {
     auto buffer = reinterpret_cast<const char*>(&data);
     Append(StringPiece(buffer, sizeof(T)));
+  }
+
+  // generalisation to handle pointers
+  void AddAsKey(const void* data) {
+    auto buffer = reinterpret_cast<const char*>(&data);
+    Append(StringPiece(buffer, sizeof(data)));
   }
 
   string GetKey() { return key_; }
@@ -1995,24 +2123,10 @@ class FactoryKeyCreator {
   }
 };
 
-static inline MEMORY_FORMAT get_desired_format(int channel, bool is_2d = true) {
-  MEMORY_FORMAT fmt_desired = MEMORY_FORMAT::any;
-
-  if (port::TestCPUFeature(port::CPUFeature::AVX512F)) {
-    fmt_desired = is_2d ? MEMORY_FORMAT::nChw16c : MEMORY_FORMAT::nCdhw16c;
-  } else if (port::TestCPUFeature(port::CPUFeature::AVX2) &&
-             (channel % 8) == 0) {
-    fmt_desired = is_2d ? MEMORY_FORMAT::nChw8c
-                        : MEMORY_FORMAT::ncdhw;  // no avx2 support for 3d yet.
-  } else {
-    fmt_desired = is_2d ? MEMORY_FORMAT::nchw : MEMORY_FORMAT::ncdhw;
-  }
-  return fmt_desired;
-}
-
 class MklReorderPrimitive : public MklPrimitive {
  public:
-  explicit MklReorderPrimitive(const memory* from, const memory* to) {
+  explicit MklReorderPrimitive(const memory* from, const memory* to)
+      : MklPrimitive(engine(engine::kind::cpu, 0)) {
     Setup(from, to);
   }
   ~MklReorderPrimitive() {}
@@ -2024,24 +2138,26 @@ class MklReorderPrimitive : public MklPrimitive {
     context_.dst_mem->set_data_handle(to->get_data_handle());
   }
 
+  std::shared_ptr<dnnl::stream> GetStream() { return stream_; }
+
  private:
   struct ReorderContext {
-    std::shared_ptr<mkldnn::memory> src_mem;
-    std::shared_ptr<mkldnn::memory> dst_mem;
+    std::shared_ptr<dnnl::memory> src_mem;
+    std::shared_ptr<dnnl::memory> dst_mem;
     std::shared_ptr<primitive> reorder_prim;
     ReorderContext()
         : src_mem(nullptr), dst_mem(nullptr), reorder_prim(nullptr) {}
   } context_;
 
-  engine cpu_engine_ = engine(ENGINE_CPU, 0);
+  std::shared_ptr<dnnl::stream> stream_;
 
   void Setup(const memory* from, const memory* to) {
     context_.src_mem.reset(
-        new MEMORY_CONSTRUCTOR_WITH_MEM_PD(from, cpu_engine_, DummyData));
-    context_.dst_mem.reset(
-        new MEMORY_CONSTRUCTOR_WITH_MEM_PD(to, cpu_engine_, DummyData));
-    context_.reorder_prim = std::make_shared<mkldnn::reorder>(
+        new memory(from->get_desc(), cpu_engine_, DummyData));
+    context_.dst_mem.reset(new memory(to->get_desc(), cpu_engine_, DummyData));
+    context_.reorder_prim = std::make_shared<dnnl::reorder>(
         reorder(*context_.src_mem, *context_.dst_mem));
+    stream_.reset(new stream(cpu_engine_));
   }
 };
 
@@ -2065,52 +2181,69 @@ class MklReorderPrimitiveFactory : public MklPrimitiveFactory<T> {
     return instance_;
   }
 
- private:
-  MklReorderPrimitiveFactory() {}
-  ~MklReorderPrimitiveFactory() {}
-
   static string CreateKey(const memory* from, const memory* to) {
     string prefix = "reorder";
     FactoryKeyCreator key_creator;
-    auto const& from_desc = GET_MEMORY_DESC_FROM_MEM_PTR(from).data;
-    auto const& to_desc = GET_MEMORY_DESC_FROM_MEM_PTR(to).data;
-    const int KIdxFirstStride = 0;
-    memory::dims from_dims(from_desc.dims, &from_desc.dims[from_desc.ndims]);
-    memory::dims to_dims(to_desc.dims, &to_desc.dims[to_desc.ndims]);
-    memory::dims from_strides(
-#ifdef ENABLE_MKLDNN_V1
-        from_desc.format_desc.blocking.strides,
-        &from_desc.format_desc.blocking.strides[from_desc.ndims]);
-#else
-        from_desc.layout_desc.blocking.strides[KIdxFirstStride],
-        &from_desc.layout_desc.blocking
-             .strides[KIdxFirstStride][from_desc.ndims]);
-#endif  // ENABLE_MKLDNN_V1
-    memory::dims to_strides(
-#ifdef ENABLE_MKLDNN_V1
-        to_desc.format_desc.blocking.strides,
-        &to_desc.format_desc.blocking.strides[to_desc.ndims]);
-#else
-        to_desc.layout_desc.blocking.strides[KIdxFirstStride],
-        &to_desc.layout_desc.blocking.strides[KIdxFirstStride][to_desc.ndims]);
-#endif  // ENABLE_MKLDNN_V1
+    auto const& from_desc = from->GET_MEMORY_DESC;
+    auto const& to_desc = to->GET_MEMORY_DESC;
+    memory::dims INIT_DIMS_FROM_DESC(from_dims, from_desc);
+    memory::dims INIT_DIMS_FROM_DESC(to_dims, to_desc);
+    auto from_strides = from_desc.GET_STRIDES;
+    auto from_inner_nblks = from_desc.GET_INNER_NBLKS;
+    auto from_inner_blks = from_desc.GET_INNER_BLKS;
+    auto from_inner_idxs = from_desc.GET_INNER_IDXS;
+    auto to_inner_nblks = to_desc.GET_INNER_NBLKS;
+    auto to_inner_blks = to_desc.GET_INNER_BLKS;
+    auto to_inner_idxs = to_desc.GET_INNER_IDXS;
+    auto to_strides = to_desc.GET_STRIDES;
+#ifndef ENABLE_ONEDNN_V3
+    memory::dims from_inner_blks_1(from_inner_blks,
+                                   &from_inner_blks[from_inner_nblks]);
+    memory::dims from_inner_idxs_1(from_inner_idxs,
+                                   &from_inner_idxs[from_inner_nblks]);
+    memory::dims to_inner_blks_1(to_inner_blks, &to_inner_blks[to_inner_nblks]);
+    memory::dims to_inner_idxs_1(to_inner_idxs, &to_inner_idxs[to_inner_nblks]);
+    memory::dims from_strides_outer_blocks(from_strides,
+                                           &from_strides[from_desc.ndims]);
+    memory::dims to_strides_outer_blocks(to_strides,
+                                         &to_strides[to_desc.ndims]);
+#endif  // !ENABLE_ONEDNN_V3
+
     key_creator.AddAsKey(prefix);
-#ifndef ENABLE_MKLDNN_V1
-    // `format_kind` is not added in v1.x since it will always set to
-    // `mkldnn_blocked`
-    key_creator.AddAsKey(static_cast<int>(from_desc.format));
-#endif  // !ENABLE_MKLDNN_V1
-    key_creator.AddAsKey(static_cast<int>(from_desc.data_type));
+#ifdef DNNL_AARCH64_USE_ACL
+    // The reorder primitives have local memory (calls to SetMemory) so we
+    // need to make sure that memory for those primitives is cached per thread.
+    key_creator.AddAsKey(std::this_thread::get_id());
+#endif
+    // TODO(intel-tf): dnnl_memory_extra_desc_t (from/to_desc.extra) can no
+    // longer be queried in oneDNN v3.x. In oneDNN v2.x, this was used to
+    // create a unique key for int8 reorder primitive cache. To overcome this
+    // limitation in oneDNN v3.x, we are using md.get_size() instead. Note that
+    // get_size() has the limitation that it can return the same value for both
+    // s8s8 and zero point compensation. Since we currently support only s8s8
+    // compensation, this needs to be refactored once we support zero point
+    // compensation.
+    key_creator.AddAsKey(static_cast<int>(from_desc.GET_MEMORY_DESC_FLAGS));
+    key_creator.AddAsKey(static_cast<int>(from_inner_nblks));
+    key_creator.AddAsKey(GET_INNER_DIMS(from_inner_blks, from_inner_blks_1));
+    key_creator.AddAsKey(GET_INNER_DIMS(from_inner_idxs, from_inner_idxs_1));
+    key_creator.AddAsKey(static_cast<int>(from_desc.GET_DATA_TYPE));
     key_creator.AddAsKey(from_dims);
-    key_creator.AddAsKey(from_strides);
-#ifndef ENABLE_MKLDNN_V1
-    key_creator.AddAsKey(static_cast<int>(to_desc.format));
-#endif  // !ENABLE_MKLDNN_V1
-    key_creator.AddAsKey(static_cast<int>(to_desc.data_type));
+    key_creator.AddAsKey(
+        GET_STRIDES_DIMS(from_strides, from_strides_outer_blocks));
+    key_creator.AddAsKey(static_cast<int>(to_desc.GET_MEMORY_DESC_FLAGS));
+    key_creator.AddAsKey(static_cast<int>(to_inner_nblks));
+    key_creator.AddAsKey(GET_INNER_DIMS(to_inner_blks, to_inner_blks_1));
+    key_creator.AddAsKey(GET_INNER_DIMS(to_inner_idxs, to_inner_idxs_1));
+    key_creator.AddAsKey(static_cast<int>(to_desc.GET_DATA_TYPE));
     key_creator.AddAsKey(to_dims);
-    key_creator.AddAsKey(to_strides);
+    key_creator.AddAsKey(GET_STRIDES_DIMS(to_strides, to_strides_outer_blocks));
     return key_creator.GetKey();
   }
+
+ private:
+  MklReorderPrimitiveFactory() {}
+  ~MklReorderPrimitiveFactory() {}
 
   MklPrimitive* GetReorder(const memory* from, const memory* to) {
     string key = CreateKey(from, to);
@@ -2123,17 +2256,18 @@ class MklReorderPrimitiveFactory : public MklPrimitiveFactory<T> {
   }
 };
 
-/// Fuction to find(or create) a reorder from memory pointed by
+/// Function to find(or create) a reorder from memory pointed by
 /// from to memory pointed by to, it will created primitive or
 /// get primitive from pool if it is cached.
 /// Returns the primitive.
 template <typename T>
-inline primitive FindOrCreateReorder(const memory* from, const memory* to) {
+inline MklReorderPrimitive* FindOrCreateReorder(const memory* from,
+                                                const memory* to) {
   CHECK_NOTNULL(from);
   CHECK_NOTNULL(to);
   MklReorderPrimitive* reorder_prim =
       MklReorderPrimitiveFactory<T>::Get(from, to);
-  return *reorder_prim->GetPrimitive();
+  return reorder_prim;
 }
 
 // utility function to determine if it is conv 1x1 and stride != 1
@@ -2146,29 +2280,39 @@ inline bool IsConv1x1StrideNot1(memory::dims filter_dims,
           ((strides[0] != 1) || (strides[1] != 1)));
 }
 
-#undef ENGINE_CPU
-#undef GET_CHECK_REORDER_TO_OP_MEM_ARGS
-#undef GET_MEMORY_DESC_FROM_MEM_PTR
-#undef GET_MEMORY_PRIMITIVE_DESC_FROM_MEM_PTR
-#undef MEMORY_CONSTRUCTOR
-#undef MEMORY_CONSTRUCTOR_WITH_MEM_PD
-#undef MEMORY_CONSTRUCTOR_WITHOUT_DATA
-#undef MEMORY_FORMAT
-#undef MKL_TENSOR_FORMAT
-#undef MKL_TENSOR_FORMAT_BLOCKED
-#undef MKL_TENSOR_FORMAT_INVALID
-#undef MKL_TENSOR_FORMAT_NCDHW
-#undef MKL_TENSOR_FORMAT_NDHWC
-#undef MKL_TENSOR_FORMAT_NHWC
-#undef MKL_TENSOR_FORMAT_NCHW
-#undef MKL_TENSOR_FORMAT_UNDEF
-#undef MEMORY_DATA_TYPE_UNDEF
-#undef MEMORY_PRIMITIVE_DESC
-#undef NET_ARGS_PTR
-#undef OUTPUT_TF_MD
-#undef TENSOR_FORMAT
-#undef TENSOR_FORMAT_NHWC
+#undef ARE_MEMORY_DESCS_EQUAL
+#undef CREATE_MEMORY_DESC_USING_STRIDES
+#undef GET_DATA_TYPE
+#undef GET_DIMS
+#undef GET_INNER_BLKS
+#undef GET_INNER_DIMS
+#undef GET_INNER_IDXS
+#undef GET_INNER_NBLKS
+#undef GET_MEMORY_DESC
+#undef GET_MEMORY_DESC_FLAGS
+#undef GET_MEMORY_DESC_USING_MKLDNN_SHAPE_PTR
+#undef GET_NDIMS
+#undef GET_STRIDES
+#undef GET_STRIDES_DIMS
+#undef INIT_DIMS_FROM_DESC
+#undef MEMORY_DESC
 
 }  // namespace tensorflow
+
+/////////////////////////////////////////////////////////////////////
+// Macros for handling registration for various types
+/////////////////////////////////////////////////////////////////////
+
+#define REGISTER_TEST_FLOAT32(TEST) REGISTER_TEST(TEST, DT_FLOAT, Float32Input);
+
+#define REGISTER_TEST_BFLOAT16(TEST) \
+  REGISTER_TEST(TEST, DT_BFLOAT16, BFloat16Input);
+
+#define REGISTER_TEST_ALL_TYPES(TEST) \
+  REGISTER_TEST_FLOAT32(TEST);        \
+  REGISTER_TEST_BFLOAT16(TEST);
+#else
+#define REGISTER_TEST_ALL_TYPES(TEST) REGISTER_TEST_FLOAT32(TEST);
+
 #endif  // INTEL_MKL
 #endif  // TENSORFLOW_CORE_UTIL_MKL_UTIL_H_

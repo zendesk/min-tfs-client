@@ -15,6 +15,8 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_TOCO_TFLITE_IMPORT_H_
 #define TENSORFLOW_LITE_TOCO_TFLITE_IMPORT_H_
 
+#include <string>
+
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/toco/model.h"
 
@@ -24,17 +26,17 @@ namespace tflite {
 
 // Parse the given string as TF Lite flatbuffer and return a new tf.mini model.
 std::unique_ptr<Model> Import(const ModelFlags &model_flags,
-                              const string &input_file_contents);
+                              const std::string &input_file_contents);
 
 namespace details {
 
 // The names of all tensors found in a TF Lite model.
-using TensorsTable = std::vector<string>;
+using TensorsTable = std::vector<std::string>;
 
 // The names of all operators found in TF Lite model. If the operator is
 // builtin, the string representation of the corresponding enum value is used
 // as name.
-using OperatorsTable = std::vector<string>;
+using OperatorsTable = std::vector<std::string>;
 
 void LoadTensorsTable(const ::tflite::Model &input_model,
                       TensorsTable *tensors_table);

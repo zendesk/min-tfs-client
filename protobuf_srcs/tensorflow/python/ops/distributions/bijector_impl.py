@@ -14,17 +14,12 @@
 # ==============================================================================
 """Bijector base."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import abc
 import collections
 import contextlib
 import re
 
 import numpy as np
-import six
 
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -109,7 +104,7 @@ class _Mapping(collections.namedtuple(
     """Helper to merge two dictionaries."""
     old = {} if old is None else old
     new = {} if new is None else new
-    for k, v in six.iteritems(new):
+    for k, v in new.items():
       val = old.get(k, None)
       if val is not None and val is not v:
         raise ValueError("Found different value for existing key "
@@ -132,8 +127,7 @@ class _Mapping(collections.namedtuple(
             if isinstance(x, (list, tuple)) else x)
 
 
-@six.add_metaclass(abc.ABCMeta)
-class Bijector(object):
+class Bijector(metaclass=abc.ABCMeta):
   r"""Interface for transformations of a `Distribution` sample.
 
   Bijectors can be used to represent any differentiable and injective
@@ -442,7 +436,7 @@ class Bijector(object):
   Non injective maps `g` are supported, provided their domain `D` can be
   partitioned into `k` disjoint subsets, `Union{D1, ..., Dk}`, such that,
   ignoring sets of measure zero, the restriction of `g` to each subset is a
-  differentiable bijection onto `g(D)`.  In particular, this imples that for
+  differentiable bijection onto `g(D)`.  In particular, this implies that for
   `y in g(D)`, the set inverse, i.e. `g^{-1}(y) = {x in D : g(x) = y}`, always
   contains exactly `k` distinct points.
 
@@ -584,7 +578,7 @@ class Bijector(object):
       self._name = camel_to_snake(type(self).__name__.lstrip("_"))
 
     for i, t in enumerate(self._graph_parents):
-      if t is None or not tensor_util.is_tensor(t):
+      if t is None or not tensor_util.is_tf_type(t):
         raise ValueError("Graph parent item %d is not a Tensor; %s." % (i, t))
 
   @property
@@ -1071,7 +1065,7 @@ class Bijector(object):
       return math_ops.range(-reduce_ndims, 0)
 
   def _check_valid_event_ndims(self, min_event_ndims, event_ndims):
-    """Check whether event_ndims is atleast min_event_ndims."""
+    """Check whether event_ndims is at least min_event_ndims."""
     event_ndims = ops.convert_to_tensor(event_ndims, name="event_ndims")
     event_ndims_ = tensor_util.constant_value(event_ndims)
     assertions = []

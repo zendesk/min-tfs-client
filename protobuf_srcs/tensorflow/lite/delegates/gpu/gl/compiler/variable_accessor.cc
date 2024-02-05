@@ -15,6 +15,10 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/compiler/variable_accessor.h"
 
+#include <string>
+#include <utility>
+#include <variant>
+
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -70,7 +74,22 @@ struct VariableTypeGetter {
 
 // Returns GLSL uniform type of the given variable.
 std::string GetVariableType(const Variable::ValueType& value) {
-  return absl::visit(VariableTypeGetter(), value);
+  return std::visit(VariableTypeGetter(), value);
+}
+
+struct LengthGetter {
+  template <typename T>
+  int operator()(const T& param) const {
+    return 1;
+  }
+  template <typename T>
+  int operator()(const std::vector<T>& param) const {
+    return param.size();
+  }
+};
+
+int GetLength(const Variable::ValueType& value) {
+  return std::visit(LengthGetter(), value);
 }
 
 template <typename T>
@@ -140,7 +159,7 @@ struct ConstGenerator {
 
 // Appends string representation of a variable value.
 void GetValue(const Variable::ValueType& value, std::string* result) {
-  absl::visit(ConstGenerator{result}, value);
+  std::visit(ConstGenerator{result}, value);
 }
 
 struct SharedVariableDeclarationGenerator {
@@ -171,8 +190,8 @@ struct SharedVariableDeclarationGenerator {
 
 void GenerateSharedVariableDeclaration(const Variable& variable,
                                        std::string* result) {
-  absl::visit(SharedVariableDeclarationGenerator{variable, result},
-              variable.value);
+  std::visit(SharedVariableDeclarationGenerator{variable, result},
+             variable.value);
 }
 
 struct UniformParameterDeclarationGenerator {
@@ -194,8 +213,8 @@ struct UniformParameterDeclarationGenerator {
 
 void GenerateUniformParameterDeclaration(const Variable& variable,
                                          std::string* result) {
-  absl::visit(UniformParameterDeclarationGenerator{variable, result},
-              variable.value);
+  std::visit(UniformParameterDeclarationGenerator{variable, result},
+             variable.value);
 }
 
 struct VulkanPushConstantGenerator {
@@ -216,7 +235,7 @@ struct VulkanPushConstantGenerator {
 };
 
 void GenerateVulkanPushConstant(const Variable& variable, std::string* result) {
-  absl::visit(VulkanPushConstantGenerator{variable, result}, variable.value);
+  std::visit(VulkanPushConstantGenerator{variable, result}, variable.value);
 }
 
 struct VariableLengthGetter {
@@ -264,9 +283,9 @@ struct VulkanConstantGenerator {
 void GenerateVulkanConstant(const Variable& variable, int* constant_id,
                             std::vector<Variable>* non_scalar_variables,
                             std::string* result) {
-  absl::visit(VulkanConstantGenerator{variable, constant_id,
-                                      non_scalar_variables, result},
-              variable.value);
+  std::visit(VulkanConstantGenerator{variable, constant_id,
+                                     non_scalar_variables, result},
+             variable.value);
 }
 
 class VulkanConstantsProcessor {
@@ -295,7 +314,7 @@ class VulkanConstantsProcessor {
 
 // Returns true if value is a vector
 bool IsVariableLength(const Variable::ValueType& value) {
-  return absl::visit(VariableLengthGetter(), value);
+  return std::visit(VariableLengthGetter(), value);
 }
 
 enum Field : uint8_t { UNKNOWN = 4, X = 0, Y = 1, Z = 2, W = 3 };
@@ -342,7 +361,7 @@ struct FieldAccessor {
 // Appends formatted value of the given field.
 void GetValue(const Variable::ValueType& value, Field field,
               std::string* result) {
-  absl::visit(FieldAccessor{field, result}, value);
+  std::visit(FieldAccessor{field, result}, value);
 }
 
 struct FieldChecker {
@@ -381,7 +400,7 @@ struct FieldChecker {
 
 // Returns true if field has field access and field is not out of bounds.
 bool HasField(const Variable::ValueType& value, Field field) {
-  return absl::visit(FieldChecker{field}, value);
+  return std::visit(FieldChecker{field}, value);
 }
 
 void AssembleAccessor(absl::string_view name, absl::string_view index,
@@ -457,6 +476,11 @@ bool VariableAccessor::AddUniformParameter(Variable&& variable) {
   }
   uniform_parameters_.insert(name);
   return true;
+}
+
+bool VariableAccessor::IsEmptyVariableLength(const Variable& variable) const {
+  const auto& value = variable.value;
+  return IsVariableLength(value) && GetLength(value) == 0;
 }
 
 std::string VariableAccessor::GetConstDeclarations() const {

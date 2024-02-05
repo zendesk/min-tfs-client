@@ -14,10 +14,6 @@
 # ==============================================================================
 
 """ProximalAdagrad for TensorFlow."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import math_ops
@@ -31,7 +27,13 @@ class ProximalAdagradOptimizer(optimizer.Optimizer):
   # pylint: disable=line-too-long
   """Optimizer that implements the Proximal Adagrad algorithm.
 
-  See this [paper](http://papers.nips.cc/paper/3793-efficient-learning-using-forward-backward-splitting.pdf).
+  References:
+    Adaptive Subgradient Methods for Online Learning and Stochastic Optimization:
+      [Duchi et al., 2011](http://jmlr.org/papers/v12/duchi11a.html)
+      ([pdf](http://www.jmlr.org/papers/volume12/duchi11a/duchi11a.pdf))
+    Efficient Learning using Forward-Backward Splitting:
+      [Duchi et al., 2009](http://papers.nips.cc/paper/3793-efficient-learning-using-forward-backward-splitting)
+      ([pdf](http://papers.nips.cc/paper/3793-efficient-learning-using-forward-backward-splitting.pdf))
   """
 
   def __init__(self, learning_rate, initial_accumulator_value=0.1,

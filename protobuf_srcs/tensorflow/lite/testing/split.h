@@ -23,6 +23,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "Eigen/Core"  // from @eigen_archive
 #include "tensorflow/lite/string_type.h"
 
 namespace tflite {
@@ -52,6 +53,17 @@ template <>
 inline std::vector<int> Split(const string& s, const string& delimiter) {
   std::vector<int> fields;
   for (const auto& p : SplitToPos(s, delimiter)) {
+    // NOLINTNEXTLINE(runtime/deprecated_fn)
+    fields.push_back(strtol(s.data() + p.first, nullptr, 10));
+  }
+  return fields;
+}
+
+template <>
+inline std::vector<uint32_t> Split(const string& s, const string& delimiter) {
+  std::vector<uint32_t> fields;
+  for (const auto& p : SplitToPos(s, delimiter)) {
+    // NOLINTNEXTLINE(runtime/deprecated_fn)
     fields.push_back(strtol(s.data() + p.first, nullptr, 10));
   }
   return fields;
@@ -61,7 +73,18 @@ template <>
 inline std::vector<int64_t> Split(const string& s, const string& delimiter) {
   std::vector<int64_t> fields;
   for (const auto& p : SplitToPos(s, delimiter)) {
+    // NOLINTNEXTLINE(runtime/deprecated_fn)
     fields.push_back(strtoll(s.data() + p.first, nullptr, 10));
+  }
+  return fields;
+}
+
+template <>
+inline std::vector<uint64_t> Split(const string& s, const string& delimiter) {
+  std::vector<uint64_t> fields;
+  for (const auto& p : SplitToPos(s, delimiter)) {
+    // NOLINTNEXTLINE(runtime/deprecated_fn)
+    fields.push_back(strtoull(s.data() + p.first, nullptr, 10));
   }
   return fields;
 }
@@ -76,9 +99,19 @@ inline std::vector<float> Split(const string& s, const string& delimiter) {
 }
 
 template <>
+inline std::vector<double> Split(const string& s, const string& delimiter) {
+  std::vector<double> fields;
+  for (const auto& p : SplitToPos(s, delimiter)) {
+    fields.push_back(strtod(s.data() + p.first, nullptr));
+  }
+  return fields;
+}
+
+template <>
 inline std::vector<uint8_t> Split(const string& s, const string& delimiter) {
   std::vector<uint8_t> fields;
   for (const auto& p : SplitToPos(s, delimiter)) {
+    // NOLINTNEXTLINE(runtime/deprecated_fn)
     fields.push_back(strtol(s.data() + p.first, nullptr, 10));
   }
   return fields;
@@ -88,6 +121,27 @@ template <>
 inline std::vector<int8_t> Split(const string& s, const string& delimiter) {
   std::vector<int8_t> fields;
   for (const auto& p : SplitToPos(s, delimiter)) {
+    // NOLINTNEXTLINE(runtime/deprecated_fn)
+    fields.push_back(strtol(s.data() + p.first, nullptr, 10));
+  }
+  return fields;
+}
+
+template <>
+inline std::vector<int16_t> Split(const string& s, const string& delimiter) {
+  std::vector<int16_t> fields;
+  for (const auto& p : SplitToPos(s, delimiter)) {
+    // NOLINTNEXTLINE(runtime/deprecated_fn)
+    fields.push_back(strtol(s.data() + p.first, nullptr, 10));
+  }
+  return fields;
+}
+
+template <>
+inline std::vector<uint16_t> Split(const string& s, const string& delimiter) {
+  std::vector<uint16_t> fields;
+  for (const auto& p : SplitToPos(s, delimiter)) {
+    // NOLINTNEXTLINE(runtime/deprecated_fn)
     fields.push_back(strtol(s.data() + p.first, nullptr, 10));
   }
   return fields;
@@ -97,8 +151,9 @@ template <>
 inline std::vector<bool> Split(const string& s, const string& delimiter) {
   std::vector<bool> fields;
   for (const auto& p : SplitToPos(s, delimiter)) {
-    fields.push_back(
-        static_cast<bool>(strtol(s.data() + p.first, nullptr, 10)));
+    // NOLINTNEXTLINE(runtime/deprecated_fn)
+    bool val = static_cast<bool>(strtol(s.data() + p.first, nullptr, 10));
+    fields.push_back(val);
   }
   return fields;
 }
@@ -119,6 +174,37 @@ inline std::vector<std::complex<float>> Split(const string& s,
     }
     std::complex<float> c(real, img);
     fields.push_back(c);
+  }
+  return fields;
+}
+
+template <>
+inline std::vector<std::complex<double>> Split(const string& s,
+                                               const string& delimiter) {
+  std::vector<std::complex<double>> fields;
+  for (const auto& p : SplitToPos(s, delimiter)) {
+    std::string sc = s.substr(p.first, p.second - p.first);
+    std::string::size_type sz_real, sz_img;
+    double real = std::stod(sc, &sz_real);
+    double img = std::stod(sc.substr(sz_real), &sz_img);
+    if (sz_real + sz_img + 1 != sc.length()) {
+      std::cerr << "There were errors in parsing string, " << sc
+                << ", to complex value." << std::endl;
+      return fields;
+    }
+    std::complex<double> c(real, img);
+    fields.push_back(c);
+  }
+  return fields;
+}
+
+template <>
+inline std::vector<Eigen::half> Split(const string& s,
+                                      const string& delimiter) {
+  std::vector<Eigen::half> fields;
+  for (const auto& p : SplitToPos(s, delimiter)) {
+    fields.push_back(Eigen::half_impl::float_to_half_rtne(
+        strtof(s.data() + p.first, nullptr)));
   }
   return fields;
 }

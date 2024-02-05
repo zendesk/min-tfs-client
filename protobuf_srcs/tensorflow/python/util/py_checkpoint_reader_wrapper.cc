@@ -18,12 +18,13 @@ limitations under the License.
 
 #include "numpy/arrayobject.h"
 #include "numpy/ufuncobject.h"
-#include "include/pybind11/chrono.h"
-#include "include/pybind11/complex.h"
-#include "include/pybind11/functional.h"
-#include "include/pybind11/pybind11.h"
-#include "include/pybind11/stl.h"
+#include "pybind11/chrono.h"  // from @pybind11
+#include "pybind11/complex.h"  // from @pybind11
+#include "pybind11/functional.h"  // from @pybind11
+#include "pybind11/pybind11.h"  // from @pybind11
+#include "pybind11/stl.h"  // from @pybind11
 #include "tensorflow/c/checkpoint_reader.h"
+#include "tensorflow/c/safe_ptr.h"
 #include "tensorflow/c/tf_status.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -31,7 +32,7 @@ limitations under the License.
 #include "tensorflow/python/lib/core/py_exception_registry.h"
 #include "tensorflow/python/lib/core/pybind11_lib.h"
 #include "tensorflow/python/lib/core/pybind11_status.h"
-#include "tensorflow/python/lib/core/safe_ptr.h"
+#include "tensorflow/python/lib/core/safe_pyobject_ptr.h"
 
 namespace py = pybind11;
 
@@ -112,7 +113,7 @@ static py::object CheckpointReader_GetTensor(
   tensorflow::MaybeRaiseFromStatus(
       tensorflow::TensorToNdarray(*tensor, &py_obj));
 
-  return tensorflow::pyo_or_throw(
+  return tensorflow::PyoOrThrow(
       PyArray_Return(reinterpret_cast<PyArrayObject*>(py_obj)));
 }
 

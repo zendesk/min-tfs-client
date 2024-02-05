@@ -15,8 +15,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_DATA_PARALLEL_MAP_DATASET_OP_H_
 #define TENSORFLOW_CORE_KERNELS_DATA_PARALLEL_MAP_DATASET_OP_H_
 
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/framework/dataset.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
 
 namespace tensorflow {
 namespace data {
@@ -33,6 +34,7 @@ class ParallelMapDatasetOp : public UnaryDatasetOpKernel {
   static constexpr const char* const kOutputShapes = "output_shapes";
   static constexpr const char* const kUseInterOpParallelism =
       "use_inter_op_parallelism";
+  static constexpr const char* const kDeterministic = "deterministic";
   static constexpr const char* const kSloppy = "sloppy";
   static constexpr const char* const kPreserveCardinality =
       "preserve_cardinality";
@@ -45,40 +47,25 @@ class ParallelMapDatasetOp : public UnaryDatasetOpKernel {
 
  private:
   class Dataset;
+  const int op_version_;
   std::shared_ptr<FunctionMetadata> func_metadata_ = nullptr;
   DataTypeVector output_types_;
   std::vector<PartialTensorShape> output_shapes_;
   bool sloppy_;
   bool preserve_cardinality_;
+  DeterminismPolicy deterministic_;
+
+  friend std::unique_ptr<DatasetBase> MakeDataServiceUncompressDataset(
+      DatasetBase* input, std::unique_ptr<CapturedFunction> captured_function,
+      const DataTypeVector& output_types,
+      const std::vector<PartialTensorShape>& output_shapes);
 };
 
-class ParallelMapFunctor {
- public:
-  virtual ~ParallelMapFunctor() {}
-
-  // A function that runs when the Iterator is initialized. It enables the user
-  // to specify error checking logic that can fail early.
-  virtual Status InitFunc(IteratorContext* ctx) { return Status::OK(); }
-
-  // A function that transforms elements of one dataset into another
-  // asynchronously. The arguments are:
-  // 1. An `IteratorContext*` for the context in which the function should
-  // execute.
-  // 2. A `std::vector<Tensor>` containing the input element.
-  // 3. A `std::vector<Tensor>*` to which the function will write the result.
-  // 4. A `StatusCallback` that should be invoked when the function is complete.
-  virtual void MapFunc(IteratorContext* ctx, const string& prefix,
-                       std::vector<Tensor> input, std::vector<Tensor>* output,
-                       StatusCallback callback) = 0;
-};
-
-// Returns a new iterator that uses `parallel_map_functor` to apply `MapFunc`
-// to the elements of `input_dataset` using the given degree of parallelism.
-std::unique_ptr<IteratorBase> NewParallelMapIterator(
-    const DatasetBaseIterator::BaseParams& params,
-    const DatasetBase* input_dataset,
-    std::unique_ptr<ParallelMapFunctor> parallel_map_functor,
-    int32 num_parallel_calls, bool sloppy, bool preserve_cardinality);
+// Used by tf.data service to create a map dataset for uncompression.
+std::unique_ptr<DatasetBase> MakeDataServiceUncompressDataset(
+    DatasetBase* input, std::unique_ptr<CapturedFunction> captured_function,
+    const DataTypeVector& output_types,
+    const std::vector<PartialTensorShape>& output_shapes);
 
 }  // namespace data
 }  // namespace tensorflow

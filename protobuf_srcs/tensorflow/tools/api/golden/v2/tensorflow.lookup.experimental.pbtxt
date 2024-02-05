@@ -2,6 +2,10 @@ path: "tensorflow.lookup.experimental"
 tf_module {
   member {
     name: "DenseHashTable"
-    mtype: "<type \'type\'>"
+    mtype: "<class \'tensorflow.python.trackable.resource._ResourceMetaclass\'>"
+  }
+  member {
+    name: "MutableHashTable"
+    mtype: "<class \'tensorflow.python.trackable.resource._ResourceMetaclass\'>"
   }
 }

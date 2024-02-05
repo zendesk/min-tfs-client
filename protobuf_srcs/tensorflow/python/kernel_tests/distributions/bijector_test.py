@@ -14,14 +14,9 @@
 # ==============================================================================
 """Tests for Bijector."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import abc
 
 import numpy as np
-import six
 
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import test_util
@@ -36,9 +31,10 @@ class BaseBijectorTest(test.TestCase):
   """Tests properties of the Bijector base-class."""
 
   def testIsAbstract(self):
-    with self.assertRaisesRegexp(TypeError,
-                                 ("Can't instantiate abstract class Bijector "
-                                  "with abstract methods __init__")):
+    # In Python 3.9, "abstract methods" become "abstract method"
+    with self.assertRaisesRegex(TypeError,
+                                ("Can't instantiate abstract class Bijector "
+                                 "with abstract methods? __init__")):
       bijector.Bijector()  # pylint: disable=abstract-class-instantiated
 
   def testDefaults(self):
@@ -46,7 +42,7 @@ class BaseBijectorTest(test.TestCase):
       """Minimal specification of a `Bijector`."""
 
       def __init__(self):
-        super(_BareBonesBijector, self).__init__(forward_min_event_ndims=0)
+        super().__init__(forward_min_event_ndims=0)
 
     bij = _BareBonesBijector()
     self.assertEqual([], bij.graph_parents)
@@ -65,20 +61,18 @@ class BaseBijectorTest(test.TestCase):
       self.assertAllEqual(shape, inverse_event_shape_)
       self.assertAllEqual(shape, bij.inverse_event_shape(shape))
 
-    with self.assertRaisesRegexp(
-        NotImplementedError, "inverse not implemented"):
+    with self.assertRaisesRegex(NotImplementedError, "inverse not implemented"):
       bij.inverse(0)
 
-    with self.assertRaisesRegexp(
-        NotImplementedError, "forward not implemented"):
+    with self.assertRaisesRegex(NotImplementedError, "forward not implemented"):
       bij.forward(0)
 
-    with self.assertRaisesRegexp(
-        NotImplementedError, "inverse_log_det_jacobian not implemented"):
+    with self.assertRaisesRegex(NotImplementedError,
+                                "inverse_log_det_jacobian not implemented"):
       bij.inverse_log_det_jacobian(0, event_ndims=0)
 
-    with self.assertRaisesRegexp(
-        NotImplementedError, "forward_log_det_jacobian not implemented"):
+    with self.assertRaisesRegex(NotImplementedError,
+                                "forward_log_det_jacobian not implemented"):
       bij.forward_log_det_jacobian(0, event_ndims=0)
 
 
@@ -91,7 +85,7 @@ class BrokenBijector(bijector.Bijector):
 
   def __init__(
       self, forward_missing=False, inverse_missing=False, validate_args=False):
-    super(BrokenBijector, self).__init__(
+    super().__init__(
         validate_args=validate_args, forward_min_event_ndims=0, name="broken")
     self._forward_missing = forward_missing
     self._inverse_missing = inverse_missing
@@ -121,16 +115,16 @@ class BijectorTestEventNdims(test.TestCase):
 
   def testBijectorNonIntegerEventNdims(self):
     bij = BrokenBijector()
-    with self.assertRaisesRegexp(ValueError, "Expected integer"):
+    with self.assertRaisesRegex(ValueError, "Expected integer"):
       bij.forward_log_det_jacobian(1., event_ndims=1.5)
-    with self.assertRaisesRegexp(ValueError, "Expected integer"):
+    with self.assertRaisesRegex(ValueError, "Expected integer"):
       bij.inverse_log_det_jacobian(1., event_ndims=1.5)
 
   def testBijectorArrayEventNdims(self):
     bij = BrokenBijector()
-    with self.assertRaisesRegexp(ValueError, "Expected scalar"):
+    with self.assertRaisesRegex(ValueError, "Expected scalar"):
       bij.forward_log_det_jacobian(1., event_ndims=(1, 2))
-    with self.assertRaisesRegexp(ValueError, "Expected scalar"):
+    with self.assertRaisesRegex(ValueError, "Expected scalar"):
       bij.inverse_log_det_jacobian(1., event_ndims=(1, 2))
 
   @test_util.run_deprecated_v1
@@ -146,8 +140,7 @@ class BijectorTestEventNdims(test.TestCase):
             event_ndims: (1, 2)})
 
 
-@six.add_metaclass(abc.ABCMeta)
-class BijectorCachingTestBase(object):
+class BijectorCachingTestBase(metaclass=abc.ABCMeta):
 
   @abc.abstractproperty
   def broken_bijector_cls(self):
@@ -199,7 +192,7 @@ class ExpOnlyJacobian(bijector.Bijector):
   """Only used for jacobian calculations."""
 
   def __init__(self, forward_min_event_ndims=0):
-    super(ExpOnlyJacobian, self).__init__(
+    super().__init__(
         validate_args=False,
         is_constant_jacobian=False,
         forward_min_event_ndims=forward_min_event_ndims,
@@ -216,7 +209,7 @@ class ConstantJacobian(bijector.Bijector):
   """Only used for jacobian calculations."""
 
   def __init__(self, forward_min_event_ndims=0):
-    super(ConstantJacobian, self).__init__(
+    super().__init__(
         validate_args=False,
         is_constant_jacobian=True,
         forward_min_event_ndims=forward_min_event_ndims,
@@ -248,7 +241,7 @@ class BijectorReduceEventDimsTest(test.TestCase):
   def testReduceEventNdimsForwardRaiseError(self):
     x = [[[1., 2.], [3., 4.]]]
     bij = ExpOnlyJacobian(forward_min_event_ndims=1)
-    with self.assertRaisesRegexp(ValueError, "must be larger than"):
+    with self.assertRaisesRegex(ValueError, "must be larger than"):
       bij.forward_log_det_jacobian(x, event_ndims=0)
 
   def testReduceEventNdimsInverse(self):
@@ -267,7 +260,7 @@ class BijectorReduceEventDimsTest(test.TestCase):
   def testReduceEventNdimsInverseRaiseError(self):
     x = [[[1., 2.], [3., 4.]]]
     bij = ExpOnlyJacobian(forward_min_event_ndims=1)
-    with self.assertRaisesRegexp(ValueError, "must be larger than"):
+    with self.assertRaisesRegex(ValueError, "must be larger than"):
       bij.inverse_log_det_jacobian(x, event_ndims=0)
 
   def testReduceEventNdimsForwardConstJacobian(self):

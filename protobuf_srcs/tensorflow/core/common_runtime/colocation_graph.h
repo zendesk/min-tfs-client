@@ -51,6 +51,10 @@ class Member {
 
   Status FillPossibleDevices(PossibleDevices* possible_device) const;
 
+  // Returns whether `src_root` is assigned to a CompositeDevice and `this` is
+  // assigned to a physical device.
+  bool IsEdgeFromCompositeDeviceToPhysicalDevice(const Member& src_root) const;
+
   Status EnsureCompatibilityAcrossResourceEdge(
       const Node& src, const Member& src_root,
       const Node& dst, /*dst_root is this*/
@@ -108,6 +112,8 @@ class Member {
   DeviceNameUtils::ParsedName GetPreferredSoftDeviceName() const;
 
   string DebugString() const;
+
+  bool has_assigned_device_name() const { return assigned_device_name_.has_id; }
 
  private:
   // Updates this to contain the intersection of the device types in
@@ -274,14 +280,27 @@ class ColocationGraph {
 
   Status ColocateResourceOrRefEdge(const Node* src, const Node* dst);
 
+  // Adds colocation constraints to data types known not to support copying.
+  Status ColocateUncopiableTypeEdges(
+      std::unordered_set<Node*>* inspection_required);
+
   // Updates this ColocationGraph by making sure that all nodes
   // touching resource and/or ref tensors are colocated.
   // As it iterates over the edges, fills the `inspection_required` set with
   // the nodes that
   // PlacerInspectionRequiredOpChecker::IsPlacerInspectionRequired
   // deems as requiring deep inspection by placer. This is an optimization.
+  // TODO(mdan): Deprecate in favor of ColocateUncopiableTypeEdges.
   Status ColocateResourceAndRefEdges(
       std::unordered_set<Node*>* inspection_required);
+
+  // Updates this ColocationGraph by making sure that all nodes having inputs of
+  // a DT_VARIANT data type with a host-only underlying types (e.g. strings) can
+  // be placed only on CPU device. We do that by reverse-DFS traversal from all
+  // nodes that take variant inputs to the node that produces that variant.
+  // TODO(ezhulenev): This function does not yet support "deep op" inspection,
+  // that we have for DT_RESOURCE edges.
+  Status AddHostOnlyDataTypesConstraints();
 
   Status AddInspectionConstraints(
       const std::unordered_set<Node*>& inspection_required);
@@ -355,7 +374,6 @@ class ColocationGraph {
 
   const Graph& graph_;
   const FunctionStack stack_;
-  const FunctionLibraryDefinition& flib_def_;
   std::vector<Member> members_;
   InspectingPlacer inspecting_placer_;
   PlacerInspectionRequiredOpChecker inspection_required_checker_;
@@ -366,7 +384,8 @@ class ColocationGraph {
   const bool allow_soft_placement_;
   const bool log_device_placement_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(ColocationGraph);
+  ColocationGraph(const ColocationGraph&) = delete;
+  void operator=(const ColocationGraph&) = delete;
 };
 
 }  // namespace tensorflow

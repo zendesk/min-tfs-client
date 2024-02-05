@@ -22,29 +22,14 @@ limitations under the License.
 
 #include <sstream>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-#if GOOGLE_CUDA
-#include "third_party/cub/device/device_reduce.cuh"
-#include "third_party/cub/device/device_segmented_reduce.cuh"
-#include "third_party/cub/iterator/counting_input_iterator.cuh"
-#include "third_party/cub/iterator/transform_input_iterator.cuh"
-#include "third_party/cub/warp/warp_reduce.cuh"
-#include "third_party/gpus/cuda/include/cuComplex.h"
-#elif TENSORFLOW_USE_ROCM
-#include "rocm/include/hipcub/hipcub.hpp"
-#endif
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "tensorflow/core/kernels/gpu_prim.h"
 #include "tensorflow/core/kernels/reduction_ops.h"
 #include "tensorflow/core/lib/core/bits.h"
 #include "tensorflow/core/util/gpu_device_functions.h"
 #include "tensorflow/core/util/gpu_kernel_helper.h"
 #include "tensorflow/core/util/permutation_input_iterator.h"
 #include "tensorflow/core/util/transform_output_iterator.h"
-
-#if GOOGLE_CUDA
-namespace gpuprim = ::cub;
-#elif TENSORFLOW_USE_ROCM
-namespace gpuprim = ::hipcub;
-#endif
 
 namespace tensorflow {
 namespace functor {
@@ -88,6 +73,20 @@ struct DividesBy {
   __host__ __device__ OUT_T operator()(const T& x) const { return x / divisor; }
 };
 
+struct MaxPropagateNaN {
+  template <typename T>
+  __host__ __device__ inline T operator()(const T& a, const T& b) const {
+    return (a != a ? a : (a > b ? a : b));
+  }
+};
+
+struct MinPropagateNaN {
+  template <typename T>
+  __host__ __device__ inline T operator()(const T& a, const T& b) const {
+    return (a != a ? a : (a < b ? a : b));
+  }
+};
+
 #if GOOGLE_CUDA
 // TODO(rocm) : enable this once ROCm platform has support for complex datatypes
 //
@@ -124,26 +123,28 @@ struct DividesBy<std::complex<double>> {
 };
 #endif  // GOOGLE_CUDA
 
-template <>
-struct DividesBy<float, Eigen::half> {
+template <typename T>
+struct DividesBy<float, T> {
   float divisor;
 
   __host__ __device__ explicit DividesBy(float divisor) : divisor(divisor) {}
 
-  __host__ __device__ Eigen::half operator()(const float& x) const {
-    return Eigen::half(x / divisor);
+  __host__ __device__ T operator()(const float& x) const {
+    return T(x / divisor);
   }
 };
 
+template <typename T>
 struct HalfToFloat {
-  __host__ __device__ float operator()(const Eigen::half& x) const {
-    return Eigen::half_impl::half_to_float(x);
+  __host__ __device__ float operator()(const T& x) const {
+    return static_cast<float>(x);
   }
 };
 
+template <typename T>
 struct FloatToHalf {
-  __host__ __device__ Eigen::half operator()(const float& x) const {
-    return Eigen::half_impl::float_to_half_rtne(x);
+  __host__ __device__ T operator()(const float& x) const {
+    return static_cast<T>(x);
   }
 };
 
@@ -162,7 +163,7 @@ struct Or {
 // each block does a grid strided loop and reduces its values locally
 // the case of one block is used for low latency small reductions to scalars
 template <typename T, typename OUT_T, int num_threads, typename Op>
-__global__ void BlockReduceKernel(
+__global__ __launch_bounds__(1024) void BlockReduceKernel(
     T in, OUT_T out, int num_elems, Op op,
     typename std::iterator_traits<T>::value_type initVal) {
   const int bid = blockIdx.x;
@@ -190,7 +191,7 @@ __global__ void BlockReduceKernel(
   // elements: -----------------
   // grid:     |====|====|====|====|====|
   const int num_elements_to_reduce =
-      max(min(num_elems - bid * blockDim.x, num_threads), 0);
+      max(min(static_cast<int>(num_elems - bid * blockDim.x), num_threads), 0);
 
   sum = BlockReduce(temp_storage).Reduce(sum, op, num_elements_to_reduce);
 
@@ -199,7 +200,7 @@ __global__ void BlockReduceKernel(
 
 // maps a warp to each row
 template <typename T, typename OUT_T, typename Op>
-__global__ void RowReduceKernel(
+__global__ __launch_bounds__(1024) void RowReduceKernel(
     T in, OUT_T out, int num_rows, int num_cols, Op op,
     typename std::iterator_traits<T>::value_type initVal) {
   typedef typename std::iterator_traits<T>::value_type value_type;
@@ -267,7 +268,7 @@ struct storage_type<std::complex<T2>> {
 // Works only if there are <= 16 columns
 // each warps sums over multiple rows at once
 template <typename T, typename OUT_T, typename Op>
-__global__ void ColumnReduceMax16ColumnsKernel(
+__global__ __launch_bounds__(1024) void ColumnReduceMax16ColumnsKernel(
     T in, OUT_T out, int num_rows, int num_cols, Op op,
     typename std::iterator_traits<T>::value_type initVal) {
   typedef typename std::iterator_traits<T>::value_type value_type;
@@ -291,7 +292,7 @@ __global__ void ColumnReduceMax16ColumnsKernel(
     // This is to mimic the following, but without any constructors:
     //   __shared__ storage_type<value_type> partial_sums[TF_RED_WARPSIZE *
     //   (TF_RED_WARPSIZE+1)];
-#if GOOGLE_CUDA || TENSORFLOW_COMPILER_IS_HIP_CLANG
+#if GOOGLE_CUDA
   __shared__ __align__(alignof(value_type)) char
       partial_sums_raw[TF_RED_WARPSIZE * (TF_RED_WARPSIZE + 1) *
                        sizeof(value_type)];
@@ -337,7 +338,7 @@ __global__ void ColumnReduceMax16ColumnsKernel(
 
 // Maps each block to a column range TF_RED_WARPSIZE wide
 template <typename T, typename OUT_T, typename Op>
-__global__ void ColumnReduceKernel(
+__global__ __launch_bounds__(1024) void ColumnReduceKernel(
     T in, OUT_T out, int num_rows, int num_cols, Op op,
     typename std::iterator_traits<T>::value_type initVal) {
   typedef typename std::iterator_traits<T>::value_type value_type;
@@ -352,7 +353,7 @@ __global__ void ColumnReduceKernel(
     // This is to mimic the following, but without constructors:
     //     __shared__ storage_type<value_type> partial_sums[TF_RED_WARPSIZE *
     //     (TF_RED_WARPSIZE + 1)];
-#if GOOGLE_CUDA || TENSORFLOW_COMPILER_IS_HIP_CLANG
+#if GOOGLE_CUDA
   __shared__ __align__(alignof(value_type)) char
       partial_sums_raw[TF_RED_WARPSIZE * (TF_RED_WARPSIZE + 1) *
                        sizeof(value_type)];
@@ -388,7 +389,7 @@ __global__ void ColumnReduceKernel(
     //  -         =
     //            =
     const int numRowsThisBlock =
-        min(blockDim.y, num_rows - blockIdx.y * blockDim.y);
+        min(static_cast<int>(blockDim.y), num_rows - blockIdx.y * blockDim.y);
 
     for (int row = 1; row < numRowsThisBlock; ++row) {
       value_type t = partial_sums[threadIdx.x * (TF_RED_WARPSIZE + 1) + row];
@@ -403,7 +404,7 @@ __global__ void ColumnReduceKernel(
 // segments cannot cross warp boundaries (mainly used for reducing the segments
 // that come from the Max16Columns column reduction kernel)
 template <typename T, typename OUT_T, typename Op>
-__global__ void CleanupSegments(
+__global__ __launch_bounds__(1024) void CleanupSegments(
     T partial_sums, OUT_T out, int num_rows, int num_cols, int segment_size,
     Op op, typename std::iterator_traits<T>::value_type initVal) {
   typedef typename std::iterator_traits<T>::value_type value_type;
@@ -427,8 +428,8 @@ __global__ void CleanupSegments(
 
 // assigns one thread to a column
 template <typename T, typename OUT_T, typename Op>
-__global__ void ColumnReduceSimpleKernel(T in, OUT_T out, int num_planes,
-                                         int num_rows, int num_cols, Op op) {
+__global__ __launch_bounds__(1024) void ColumnReduceSimpleKernel(
+    T in, OUT_T out, int num_planes, int num_rows, int num_cols, Op op) {
   typedef typename std::iterator_traits<T>::value_type value_type;
   const int gid = threadIdx.x + blockIdx.x * blockDim.x;
   const int elems_per_plane = num_rows * num_cols;
@@ -494,11 +495,9 @@ __device__ __inline__ T ComputeSum(IN_T in_, const int plane,
 }
 
 template <typename IN_T, typename Op>
-__global__ void ColumnReduceInToTempKernel(void* __restrict__ temp,
-                                           int temp_in_offset,
-                                           int temp_out_offset, IN_T in,
-                                           int num_planes, int num_rows,
-                                           int num_cols, Op op) {
+__global__ __launch_bounds__(1024) void ColumnReduceInToTempKernel(
+    void* __restrict__ temp, int temp_in_offset, int temp_out_offset, IN_T in,
+    int num_planes, int num_rows, int num_cols, Op op) {
   typedef typename std::iterator_traits<IN_T>::value_type value_type;
 
   value_type* t = (value_type*)temp;
@@ -525,10 +524,9 @@ __global__ void ColumnReduceInToTempKernel(void* __restrict__ temp,
 }
 
 template <typename T, typename OUT_T, typename Op>
-__global__ void ColumnReduceTempToOutKernel(void* __restrict__ temp,
-                                            int temp_in_offset, T in, OUT_T out,
-                                            int num_planes, int num_rows,
-                                            int num_cols, Op op) {
+__global__ __launch_bounds__(1024) void ColumnReduceTempToOutKernel(
+    void* __restrict__ temp, int temp_in_offset, T in, OUT_T out,
+    int num_planes, int num_rows, int num_cols, Op op) {
   typedef typename std::iterator_traits<T>::value_type value_type;
   value_type* t = (value_type*)temp;
   const int tid = threadIdx.x;
@@ -674,10 +672,10 @@ void LaunchScalarReduction(OpKernelContext* ctx, OUT_T out, IN_T in,
 
     Tensor temp_storage;
     OP_REQUIRES_OK(
-        ctx,
-        ctx->allocate_temp(
-            DT_INT8, TensorShape({static_cast<int64>(num_blocks * sizeof(T))}),
-            &temp_storage));
+        ctx, ctx->allocate_temp(
+                 DT_INT8,
+                 TensorShape({static_cast<int64_t>(num_blocks * sizeof(T))}),
+                 &temp_storage));
 
     TF_CHECK_OK(GpuLaunchKernel(BlockReduceKernel<IN_T, T*, num_threads, Op>,
                                 num_blocks, num_threads, 0, cu_stream, in,
@@ -711,7 +709,7 @@ void LaunchScalarReduction(OpKernelContext* ctx, OUT_T out, IN_T in,
   Tensor temp_storage;
   OP_REQUIRES_OK(
       ctx, ctx->allocate_temp(
-               DT_INT8, TensorShape({static_cast<int64>(temp_storage_bytes)}),
+               DT_INT8, TensorShape({static_cast<int64_t>(temp_storage_bytes)}),
                &temp_storage));
 
   reduce(temp_storage.flat<int8_t>().data());  // Do reduction.
@@ -755,7 +753,7 @@ void LaunchRowReduction(OpKernelContext* ctx, OUT_T out, IN_T in, int num_rows,
   Tensor temp_storage;
   OP_REQUIRES_OK(
       ctx, ctx->allocate_temp(
-               DT_INT8, TensorShape({static_cast<int64>(temp_storage_bytes)}),
+               DT_INT8, TensorShape({static_cast<int64_t>(temp_storage_bytes)}),
                &temp_storage));
 
   reduce(temp_storage.flat<int8_t>().data());  // Do reduction.
@@ -790,7 +788,7 @@ void LaunchColumnReduction_LTE16Cols(OpKernelContext* ctx, OUT_T out, IN_T in,
     Tensor temp_storage;
     OP_REQUIRES_OK(ctx,
                    ctx->allocate_temp(DT_INT8,
-                                      TensorShape({static_cast<int64>(
+                                      TensorShape({static_cast<int64_t>(
                                           sizeof(T) * extent_y * grid_dim.y)}),
                                       &temp_storage));
     TF_CHECK_OK(GpuLaunchKernel(ColumnReduceMax16ColumnsKernel<IN_T, T*, Op>,
@@ -834,7 +832,7 @@ void LaunchColumnReduction_LTE4096Cols(OpKernelContext* ctx, OUT_T out, IN_T in,
     Tensor temp_storage;
     OP_REQUIRES_OK(ctx,
                    ctx->allocate_temp(DT_INT8,
-                                      TensorShape({static_cast<int64>(
+                                      TensorShape({static_cast<int64_t>(
                                           sizeof(T) * extent_y * grid_dim.y)}),
                                       &temp_storage));
 
@@ -913,7 +911,7 @@ void Launch3DYReduction(OpKernelContext* ctx, OUT_T out, IN_T in, int extent_x,
   Tensor temp_storage;
   OP_REQUIRES_OK(
       ctx, ctx->allocate_temp(
-               DT_INT8, TensorShape({static_cast<int64>(temp_storage_bytes)}),
+               DT_INT8, TensorShape({static_cast<int64_t>(temp_storage_bytes)}),
                &temp_storage));
 
   // Reduction
@@ -985,7 +983,7 @@ void Launch3DXZReduction(OpKernelContext* ctx, OUT_T out, IN_T in, int extent_x,
   Tensor temp_storage;
   OP_REQUIRES_OK(
       ctx, ctx->allocate_temp(
-               DT_INT8, TensorShape({static_cast<int64>(temp_storage_bytes)}),
+               DT_INT8, TensorShape({static_cast<int64_t>(temp_storage_bytes)}),
                &temp_storage));
 
   reduce(temp_storage.flat<int8_t>().data());  // Do reduction.
@@ -1004,15 +1002,19 @@ struct IsSum {
 template <typename T, typename Op>
 struct IsMax {
   constexpr static bool value =
-      (std::is_same<Op, gpuprim::Max>::value ||
-       std::is_same<Op, Eigen::internal::MaxReducer<T>>::value);
+      (std::is_same<Op, MaxPropagateNaN>::value ||
+       std::is_same<Op, gpuprim::Max>::value ||
+       std::is_same<
+           Op, Eigen::internal::MaxReducer<T, Eigen::PropagateNaN>>::value);
 };
 
 template <typename T, typename Op>
 struct IsMin {
   constexpr static bool value =
-      (std::is_same<Op, gpuprim::Min>::value ||
-       std::is_same<Op, Eigen::internal::MinReducer<T>>::value);
+      (std::is_same<Op, MinPropagateNaN>::value ||
+       std::is_same<Op, gpuprim::Min>::value ||
+       std::is_same<
+           Op, Eigen::internal::MinReducer<T, Eigen::PropagateNaN>>::value);
 };
 
 template <typename T, typename Op>
@@ -1131,7 +1133,42 @@ struct ReduceFunctor<GPUDevice, Eigen::internal::SumReducer<T>> {
   template <typename OUT_T>
   static void FillIdentity(const GPUDevice& d, OUT_T out,
                            const Eigen::internal::SumReducer<T>& reducer) {
-    FillIdentityEigenImpl(d, To32Bit(out), reducer);
+    FillIdentityEigenImpl(d, out, reducer);
+  }
+};
+
+// Specialization for bfloat16 with fp32 accumulation.
+template <>
+struct ReduceFunctor<GPUDevice, Eigen::internal::SumReducer<Eigen::bfloat16>> {
+  template <typename OUT_T, typename IN_T, typename ReductionAxes>
+  static void Reduce(
+      OpKernelContext* ctx, OUT_T out, IN_T in,
+      const ReductionAxes& reduction_axes,
+      const Eigen::internal::SumReducer<Eigen::bfloat16>& reducer) {
+    typedef gpuprim::TransformInputIterator<float, HalfToFloat<Eigen::bfloat16>,
+                                            Eigen::bfloat16*>
+        inputIterType;
+    inputIterType input_itr((Eigen::bfloat16*)in.data(),
+                            HalfToFloat<Eigen::bfloat16>());
+
+    typedef TransformOutputIterator<Eigen::bfloat16, float,
+                                    FloatToHalf<Eigen::bfloat16>>
+        outputIterType;
+    outputIterType itr((Eigen::bfloat16*)out.data(),
+                       FloatToHalf<Eigen::bfloat16>());
+
+    ReduceImpl<float, gpuprim::Sum, outputIterType, inputIterType,
+               ReductionAxes>(ctx, itr, input_itr, in.rank(), in.dimension(0),
+                              in.rank() >= 2 ? in.dimension(1) : 1,
+                              in.rank() >= 3 ? in.dimension(2) : 1, out.rank(),
+                              reduction_axes, gpuprim::Sum());
+  }
+
+  template <typename OUT_T>
+  static void FillIdentity(
+      const GPUDevice& d, OUT_T out,
+      const Eigen::internal::SumReducer<Eigen::bfloat16>& reducer) {
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
 
@@ -1156,7 +1193,7 @@ struct ReduceFunctor<GPUDevice, functor::EuclideanNormReducer<T>> {
   template <typename OUT_T>
   static void FillIdentity(const GPUDevice& d, OUT_T out,
                            const functor::EuclideanNormReducer<T>& reducer) {
-    FillIdentityEigenImpl(d, To32Bit(out), reducer);
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
 
@@ -1192,9 +1229,42 @@ struct ReduceFunctor<GPUDevice, functor::MeanReducer<T>> {
   template <typename OUT_T>
   static void FillIdentity(const GPUDevice& d, OUT_T out,
                            const functor::MeanReducer<T>& reducer) {
-    FillIdentityEigenImpl(d, To32Bit(out), reducer);
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
+
+template <typename T, typename OUT_T, typename IN_T, typename ReductionAxes>
+void ReduceMeanWithFloatAccumulationImpl(
+    OpKernelContext* ctx, OUT_T out, IN_T in,
+    const ReductionAxes& reduction_axes,
+    const functor::MeanReducer<T>& reducer) {
+  float divisor = 1.f;
+  if (out.rank() == 0)
+    divisor = in.size();
+  else if (out.rank() == 1 && in.rank() == 2 && reduction_axes[0] == 0)
+    divisor = in.dimension(0);
+  else if (out.rank() == 1 && in.rank() == 2 && reduction_axes[0] == 1)
+    divisor = in.dimension(1);
+  else if (out.rank() == 1 && in.rank() == 3 && reduction_axes[0] == 0 &&
+           reduction_axes[1] == 2)
+    divisor = in.dimension(0) * in.dimension(2);
+  else if (out.rank() == 2 && in.rank() == 3 && reduction_axes[0] == 1)
+    divisor = in.dimension(1);
+  DividesBy<float, T> div_op(divisor);
+
+  typedef gpuprim::TransformInputIterator<float, HalfToFloat<T>, T*>
+      inputIterType;
+  inputIterType input_itr((T*)in.data(), HalfToFloat<T>());
+
+  typedef TransformOutputIterator<T, float, DividesBy<float, T>> outputIterType;
+  outputIterType itr((T*)out.data(), div_op);
+
+  ReduceImpl<float, gpuprim::Sum, outputIterType, inputIterType, ReductionAxes>(
+      ctx, itr, input_itr, in.rank(), in.dimension(0),
+      in.rank() >= 2 ? in.dimension(1) : 1,
+      in.rank() >= 3 ? in.dimension(2) : 1, out.rank(), reduction_axes,
+      gpuprim::Sum());
+}
 
 template <>
 struct ReduceFunctor<GPUDevice, functor::MeanReducer<Eigen::half>> {
@@ -1202,80 +1272,76 @@ struct ReduceFunctor<GPUDevice, functor::MeanReducer<Eigen::half>> {
   static void Reduce(OpKernelContext* ctx, OUT_T out, IN_T in,
                      const ReductionAxes& reduction_axes,
                      const functor::MeanReducer<Eigen::half>& reducer) {
-    float divisor = 1.f;
-    if (out.rank() == 0)
-      divisor = in.size();
-    else if (out.rank() == 1 && in.rank() == 2 && reduction_axes[0] == 0)
-      divisor = in.dimension(0);
-    else if (out.rank() == 1 && in.rank() == 2 && reduction_axes[0] == 1)
-      divisor = in.dimension(1);
-    else if (out.rank() == 1 && in.rank() == 3 && reduction_axes[0] == 0 &&
-             reduction_axes[1] == 2)
-      divisor = in.dimension(0) * in.dimension(2);
-    else if (out.rank() == 2 && in.rank() == 3 && reduction_axes[0] == 1)
-      divisor = in.dimension(1);
-    DividesBy<float, Eigen::half> div_op(divisor);
-
-    typedef gpuprim::TransformInputIterator<float, HalfToFloat, Eigen::half*>
-        inputIterType;
-    inputIterType input_itr((Eigen::half*)in.data(), HalfToFloat());
-
-    typedef TransformOutputIterator<Eigen::half, float,
-                                    DividesBy<float, Eigen::half>>
-        outputIterType;
-    outputIterType itr((Eigen::half*)out.data(), div_op);
-
-    ReduceImpl<float, gpuprim::Sum, outputIterType, inputIterType,
-               ReductionAxes>(ctx, itr, input_itr, in.rank(), in.dimension(0),
-                              in.rank() >= 2 ? in.dimension(1) : 1,
-                              in.rank() >= 3 ? in.dimension(2) : 1, out.rank(),
-                              reduction_axes, gpuprim::Sum());
+    ReduceMeanWithFloatAccumulationImpl(ctx, out, in, reduction_axes, reducer);
   }
 
   template <typename OUT_T>
   static void FillIdentity(const GPUDevice& d, OUT_T out,
                            const functor::MeanReducer<Eigen::half>& reducer) {
-    FillIdentityEigenImpl(d, To32Bit(out), reducer);
+    FillIdentityEigenImpl(d, out, reducer);
+  }
+};
+
+template <>
+struct ReduceFunctor<GPUDevice, functor::MeanReducer<Eigen::bfloat16>> {
+  template <typename OUT_T, typename IN_T, typename ReductionAxes>
+  static void Reduce(OpKernelContext* ctx, OUT_T out, IN_T in,
+                     const ReductionAxes& reduction_axes,
+                     const functor::MeanReducer<Eigen::bfloat16>& reducer) {
+    ReduceMeanWithFloatAccumulationImpl(ctx, out, in, reduction_axes, reducer);
+  }
+
+  template <typename OUT_T>
+  static void FillIdentity(
+      const GPUDevice& d, OUT_T out,
+      const functor::MeanReducer<Eigen::bfloat16>& reducer) {
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
 
 template <typename T>
-struct ReduceFunctor<GPUDevice, Eigen::internal::MaxReducer<T>> {
+struct ReduceFunctor<GPUDevice,
+                     Eigen::internal::MaxReducer<T, Eigen::PropagateNaN>> {
   template <typename OUT_T, typename IN_T, typename ReductionAxes>
-  static void Reduce(OpKernelContext* ctx, OUT_T out, IN_T in,
-                     const ReductionAxes& reduction_axes,
-                     const Eigen::internal::MaxReducer<T>& reducer) {
-    ReduceImpl<T, gpuprim::Max, T*, T*, ReductionAxes>(
+  static void Reduce(
+      OpKernelContext* ctx, OUT_T out, IN_T in,
+      const ReductionAxes& reduction_axes,
+      const Eigen::internal::MaxReducer<T, Eigen::PropagateNaN>& reducer) {
+    ReduceImpl<T, MaxPropagateNaN, T*, T*, ReductionAxes>(
         ctx, (T*)out.data(), (T*)in.data(), in.rank(), in.dimension(0),
         in.rank() >= 2 ? in.dimension(1) : 1,
         in.rank() >= 3 ? in.dimension(2) : 1, out.rank(), reduction_axes,
-        gpuprim::Max());
+        MaxPropagateNaN());
   }
 
   template <typename OUT_T>
-  static void FillIdentity(const GPUDevice& d, OUT_T out,
-                           const Eigen::internal::MaxReducer<T>& reducer) {
-    FillIdentityEigenImpl(d, To32Bit(out), reducer);
+  static void FillIdentity(
+      const GPUDevice& d, OUT_T out,
+      const Eigen::internal::MaxReducer<T, Eigen::PropagateNaN>& reducer) {
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
 
 template <typename T>
-struct ReduceFunctor<GPUDevice, Eigen::internal::MinReducer<T>> {
+struct ReduceFunctor<GPUDevice,
+                     Eigen::internal::MinReducer<T, Eigen::PropagateNaN>> {
   template <typename OUT_T, typename IN_T, typename ReductionAxes>
-  static void Reduce(OpKernelContext* ctx, OUT_T out, IN_T in,
-                     const ReductionAxes& reduction_axes,
-                     const Eigen::internal::MinReducer<T>& reducer) {
-    ReduceImpl<T, gpuprim::Min, T*, T*, ReductionAxes>(
+  static void Reduce(
+      OpKernelContext* ctx, OUT_T out, IN_T in,
+      const ReductionAxes& reduction_axes,
+      const Eigen::internal::MinReducer<T, Eigen::PropagateNaN>& reducer) {
+    ReduceImpl<T, MinPropagateNaN, T*, T*, ReductionAxes>(
         ctx, (T*)out.data(), (T*)in.data(), in.rank(), in.dimension(0),
         in.rank() >= 2 ? in.dimension(1) : 1,
         in.rank() >= 3 ? in.dimension(2) : 1, out.rank(), reduction_axes,
-        gpuprim::Min());
+        MinPropagateNaN());
   }
 
   template <typename OUT_T>
-  static void FillIdentity(const GPUDevice& d, OUT_T out,
-                           const Eigen::internal::MinReducer<T>& reducer) {
-    FillIdentityEigenImpl(d, To32Bit(out), reducer);
+  static void FillIdentity(
+      const GPUDevice& d, OUT_T out,
+      const Eigen::internal::MinReducer<T, Eigen::PropagateNaN>& reducer) {
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
 
@@ -1295,7 +1361,7 @@ struct ReduceFunctor<GPUDevice, Eigen::internal::ProdReducer<T>> {
   template <typename OUT_T>
   static void FillIdentity(const GPUDevice& d, OUT_T out,
                            const Eigen::internal::ProdReducer<T>& reducer) {
-    FillIdentityEigenImpl(d, To32Bit(out), reducer);
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
 
@@ -1315,7 +1381,7 @@ struct ReduceFunctor<GPUDevice, Eigen::internal::AndReducer> {
   template <typename OUT_T>
   static void FillIdentity(const GPUDevice& d, OUT_T out,
                            const Eigen::internal::AndReducer& reducer) {
-    FillIdentityEigenImpl(d, To32Bit(out), reducer);
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
 
@@ -1334,7 +1400,7 @@ struct ReduceFunctor<GPUDevice, Eigen::internal::OrReducer> {
   template <typename OUT_T>
   static void FillIdentity(const GPUDevice& d, OUT_T out,
                            const Eigen::internal::OrReducer& reducer) {
-    FillIdentityEigenImpl(d, To32Bit(out), reducer);
+    FillIdentityEigenImpl(d, out, reducer);
   }
 };
 

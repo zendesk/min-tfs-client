@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Library for arbitrary expression evaluation based on a debugger data dump."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import re
 
 import numpy as np  # pylint: disable=unused-import
@@ -55,7 +51,7 @@ def _parse_debug_tensor_name(debug_tensor_name):
       `None`.
     node_name: Name of the node.
     output_slot: Output slot index as an `int`.
-    debug_op: If the debug op suffix exists, the debug op name; otheriwse,
+    debug_op: If the debug op suffix exists, the debug op name; otherwise,
       `None`.
     exec_index: Execution index (applicable to cases in which a debug tensor
       is computed multiple times in a `tf.Session.run` call, e.g., due to

@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_FRAMEWORK_TENSOR_REFERENCE_H_
-#define TENSORFLOW_FRAMEWORK_TENSOR_REFERENCE_H_
+#ifndef TENSORFLOW_CORE_FRAMEWORK_TENSOR_REFERENCE_H_
+#define TENSORFLOW_CORE_FRAMEWORK_TENSOR_REFERENCE_H_
 
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
@@ -30,7 +30,10 @@ namespace tensorflow {
 class TensorReference {
  public:
   // Take the reference of the root buffer so the size will be more accurate
-  explicit TensorReference(const Tensor& tensor);
+  explicit TensorReference(const Tensor& tensor)
+      : buf_(tensor.buf_ ? tensor.buf_->root_buffer() : nullptr) {
+    if (buf_) buf_->Ref();
+  }
 
   ~TensorReference() {}
 
@@ -38,40 +41,14 @@ class TensorReference {
     if (buf_) buf_->Unref();
   }
 
-  // Return an estimate of the total bytes being kept alive by this reference.
-  size_t TotalBytes() const {
-    // We add 128 as a baseline to account for per-Tensor metadata
-    return 128 + (buf_ ? buf_->size() : 0);
-  }
-
   void FillDescription(AllocationDescription* description) const {
     if (buf_) buf_->FillAllocationDescription(description);
-  }
-
-  // Convenience function for de-duplicating tensor references.
-  bool SharesBufferWith(const TensorReference& t) const {
-    return buf_ == t.buf_;
-  }
-
-  // Convenience function for de-duplicating tensor references.
-  bool SharesBufferWith(const Tensor& t) const {
-    return buf_ == (t.buf_ ? t.buf_->root_buffer() : nullptr);
-  }
-
-  // Convenience function for de-duplicating tensor references.
-  size_t BufferHash() const { return std::hash<TensorBuffer*>()(buf_); }
-
-  // A constructor used only for tests
-  explicit TensorReference(TensorBuffer* test_buffer) : buf_(test_buffer) {
-    if (buf_) buf_->Ref();
   }
 
  private:
   TensorBuffer* buf_;
 };
 
-typedef gtl::InlinedVector<TensorReference, 4> TensorReferenceVector;
-
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_FRAMEWORK_TENSOR_REFERENCE_H_
+#endif  // TENSORFLOW_CORE_FRAMEWORK_TENSOR_REFERENCE_H_

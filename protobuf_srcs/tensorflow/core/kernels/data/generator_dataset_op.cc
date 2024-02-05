@@ -17,11 +17,12 @@ limitations under the License.
 #include <iterator>
 #include <vector>
 
+#include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
-#include "tensorflow/core/kernels/data/name_utils.h"
 #include "tensorflow/core/lib/random/random.h"
 
 namespace tensorflow {
@@ -60,7 +61,7 @@ class GeneratorDatasetOp::Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, name_utils::IteratorPrefix(kDatasetType, prefix)});
   }
 
@@ -72,6 +73,10 @@ class GeneratorDatasetOp::Dataset : public DatasetBase {
 
   string DebugString() const override {
     return name_utils::DatasetDebugString(kDatasetType);
+  }
+
+  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+    return OkStatus();
   }
 
   Status CheckExternalState() const override {
@@ -114,7 +119,7 @@ class GeneratorDatasetOp::Dataset : public DatasetBase {
           dataset()->next_func_->Instantiate(ctx, &instantiated_next_func_));
       TF_RETURN_IF_ERROR(dataset()->finalize_func_->Instantiate(
           ctx, &instantiated_finalize_func_));
-      return Status::OK();
+      return OkStatus();
     }
 
     Status GetNextInternal(IteratorContext* ctx,
@@ -123,31 +128,30 @@ class GeneratorDatasetOp::Dataset : public DatasetBase {
       mutex_lock l(mu_);
 
       if (!initialized_) {
-        TF_RETURN_IF_ERROR(
-            instantiated_init_func_->RunWithBorrowedArgs(ctx, {}, &state_));
+        TF_RETURN_IF_ERROR(instantiated_init_func_->RunWithBorrowedArgs(
+            ctx, {}, &state_, model_node()));
         initialized_ = true;
       }
 
       if (finalized_) {
         *end_of_sequence = true;
-        return Status::OK();
+        return OkStatus();
       }
 
-      Status s = instantiated_next_func_->RunWithBorrowedArgs(ctx, state_,
-                                                              out_tensors);
+      Status s = instantiated_next_func_->RunWithBorrowedArgs(
+          ctx, state_, out_tensors, model_node());
       if (s.ok()) {
         *end_of_sequence = false;
       } else if (errors::IsOutOfRange(s)) {
         // `next_func` may deliberately raise `errors::OutOfRange`
         // to indicate that we should terminate the iteration.
-        s = Status::OK();
+        s = OkStatus();
         *end_of_sequence = true;
 
-        // NOTE(mrry): We ignore any tensors returned by the
-        // finalize function.
+        // NOTE(mrry): We ignore any tensors returned by the finalize function.
         std::vector<Tensor> ignored;
-        TF_RETURN_IF_ERROR(
-            instantiated_finalize_func_->RunInstantiated(state_, &ignored));
+        TF_RETURN_IF_ERROR(instantiated_finalize_func_->RunWithBorrowedArgs(
+            ctx, state_, &ignored, model_node()));
         finalized_ = true;
       }
       return s;
@@ -159,11 +163,23 @@ class GeneratorDatasetOp::Dataset : public DatasetBase {
       return model::MakeSourceNode(std::move(args));
     }
 
+    Status SaveInternal(SerializationContext* ctx,
+                        IteratorStateWriter* writer) override {
+      return errors::Unimplemented(
+          "GeneratorDataset does not support checkpointing.");
+    }
+
+    Status RestoreInternal(IteratorContext* ctx,
+                           IteratorStateReader* reader) override {
+      return errors::Unimplemented(
+          "GeneratorDataset does not support checkpointing.");
+    }
+
    private:
     mutex mu_;
-    bool initialized_ GUARDED_BY(mu_) = false;
-    bool finalized_ GUARDED_BY(mu_) = false;
-    std::vector<Tensor> state_ GUARDED_BY(mu_);
+    bool initialized_ TF_GUARDED_BY(mu_) = false;
+    bool finalized_ TF_GUARDED_BY(mu_) = false;
+    std::vector<Tensor> state_ TF_GUARDED_BY(mu_);
     std::unique_ptr<InstantiatedCapturedFunction> instantiated_init_func_;
     std::unique_ptr<InstantiatedCapturedFunction> instantiated_next_func_;
     std::unique_ptr<InstantiatedCapturedFunction> instantiated_finalize_func_;
@@ -217,6 +233,7 @@ REGISTER_KERNEL_BUILDER(Name("GeneratorDataset")
                             .HostMemory("handle")
                             .Priority(1),
                         GeneratorDatasetOp);
+REGISTER_INPUT_COLOCATION_EXEMPTION("GeneratorDataset");
 }  // namespace
 
 }  // namespace data

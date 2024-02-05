@@ -13,14 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
-
 #include "tensorflow/core/common_runtime/constant_folding.h"
-#include "tensorflow/core/graph/graph_constructor.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/subgraph.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/public/session.h"
+#include "tensorflow/tools/graph_transforms/fold_constants_lib.h"
 #include "tensorflow/tools/graph_transforms/transform_utils.h"
 
 namespace tensorflow {
@@ -41,10 +40,10 @@ Status ObfuscateNames(const GraphDef& input_graph_def,
 
   const string valid_chars =
       "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  const int64 chars_size = valid_chars.size();
+  const int64_t chars_size = valid_chars.size();
 
   std::map<string, string> new_names;
-  int64 name_index = 0;
+  int64_t name_index = 0;
   for (const NodeDef& input_node : input_graph_def.node()) {
     const string& old_name = input_node.name();
     string new_name;
@@ -52,10 +51,10 @@ Status ObfuscateNames(const GraphDef& input_graph_def,
       new_name = old_name;
     } else {
       do {
-        int64 remaining = name_index;
+        int64_t remaining = name_index;
         new_name = "";
         while (true) {
-          const int64 remainder = (remaining % chars_size);
+          const int64_t remainder = (remaining % chars_size);
           const char current_char = valid_chars[remainder];
           new_name = current_char + new_name;
           remaining /= chars_size;
@@ -90,7 +89,7 @@ Status ObfuscateNames(const GraphDef& input_graph_def,
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("obfuscate_names", ObfuscateNames);

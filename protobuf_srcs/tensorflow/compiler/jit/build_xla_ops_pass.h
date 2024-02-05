@@ -22,21 +22,22 @@ limitations under the License.
 
 namespace tensorflow {
 
-// Adds _XlaCompile and _XlaRun operations to the TF graph that compiles and
-// executes (using XLA) TF function calls marked with "_XlaCompiledKernel".
+// Replaces TF function calls marked with `_XlaCompiledKernel` with _XlaCompile
+// and _XlaRun nodes (which compile and launch, respectively, the corresponding
+// HLO module).
 class BuildXlaOpsPass : public GraphOptimizationPass {
  public:
   // If enable_lazy_compilation is not nullopt then *enable_lazy_compilation
   // overrides --tf_xla_enable_lazy_compilation flag in deciding whether lazy
   // compilation is enabled.
   explicit BuildXlaOpsPass(
-      absl::optional<bool> enable_lazy_compilation = absl::nullopt)
+      std::optional<bool> enable_lazy_compilation = std::nullopt)
       : enable_lazy_compilation_(enable_lazy_compilation) {}
 
   Status Run(const GraphOptimizationPassOptions& options) override;
 
  private:
-  absl::optional<bool> enable_lazy_compilation_;
+  std::optional<bool> enable_lazy_compilation_;
 };
 
 }  // namespace tensorflow

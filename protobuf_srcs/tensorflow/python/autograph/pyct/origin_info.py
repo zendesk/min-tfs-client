@@ -13,23 +13,18 @@
 # limitations under the License.
 # ==============================================================================
 """Container for origin source code information before AutoGraph compilation."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import difflib
+import io
 import os
 import tokenize
 
 import gast
-import six
 
 from tensorflow.python.autograph.pyct import anno
 from tensorflow.python.autograph.pyct import ast_util
 from tensorflow.python.autograph.pyct import parser
 from tensorflow.python.autograph.pyct import pretty_printer
-from tensorflow.python.autograph.utils import ag_logging as logging
 from tensorflow.python.util import tf_inspect
 
 
@@ -102,7 +97,7 @@ def create_source_map(nodes, code, filepath):
     Dict[LineLocation, OriginInfo], mapping locations in code to locations
     indicated by origin annotations in node.
   """
-  reparsed_nodes = parser.parse_str(code, preamble_len=0, single_node=False)
+  reparsed_nodes = parser.parse(code, preamble_len=0, single_node=False)
   for node in reparsed_nodes:
     resolve(node, code, filepath, node.lineno, node.col_offset)
 
@@ -137,25 +132,28 @@ def create_source_map(nodes, code, filepath):
 
       source_map[line_loc] = origin_info
 
-  except ValueError:
-    if logging.has_verbosity(3):
-      for n, rn in zip(nodes, reparsed_nodes):
-        nodes_str = pretty_printer.fmt(n, color=False, noanno=True)
-        reparsed_nodes_str = pretty_printer.fmt(rn, color=False, noanno=True)
-        diff = difflib.context_diff(
-            nodes_str.split('\n'),
-            reparsed_nodes_str.split('\n'),
-            fromfile='Original nodes',
-            tofile='Reparsed nodes',
-            n=7)
-        diff = '\n'.join(diff)
-        logging.log(3, 'AST seems to lack integrity. Diff:\n%s', diff)
-    raise
+  except ValueError as err:
+    new_msg = 'Inconsistent ASTs detected. This is a bug. Cause: \n'
+    new_msg += str(err)
+    new_msg += 'Diff:\n'
+
+    for n, rn in zip(nodes, reparsed_nodes):
+      nodes_str = pretty_printer.fmt(n, color=False, noanno=True)
+      reparsed_nodes_str = pretty_printer.fmt(rn, color=False, noanno=True)
+      diff = difflib.context_diff(
+          nodes_str.split('\n'),
+          reparsed_nodes_str.split('\n'),
+          fromfile='Original nodes',
+          tofile='Reparsed nodes',
+          n=7)
+      diff = '\n'.join(diff)
+      new_msg += diff + '\n'
+    raise ValueError(new_msg)
 
   return source_map
 
 
-class _Function(object):
+class _Function:
 
   def __init__(self, name):
     self.name = name
@@ -170,32 +168,49 @@ class OriginResolver(gast.NodeVisitor):
     self._source_lines = source_lines
     self._comments_map = comments_map
 
-    self._lineno_offset = context_lineno - root_node.lineno
+    if (hasattr(root_node, 'decorator_list') and root_node.decorator_list and
+        hasattr(root_node.decorator_list[0], 'lineno')):
+      # Typical case: functions. The line number of the first decorator
+      # is more accurate than the line number of the function itself in
+      # 3.8+. In earier versions they coincide.
+      self._lineno_offset = context_lineno - root_node.decorator_list[0].lineno
+    else:
+      # Fall back to the line number of the root node.
+      self._lineno_offset = context_lineno - root_node.lineno
+
     self._col_offset = context_col_offset - root_node.col_offset
 
     self._filepath = filepath
 
     self._function_stack = []
 
-  def _absolute_lineno(self, node):
-    return node.lineno + self._lineno_offset
+  def _absolute_lineno(self, lineno):
+    return lineno + self._lineno_offset
 
-  def _absolute_col_offset(self, node):
-    return node.col_offset + self._col_offset
+  def _absolute_col_offset(self, col_offset):
+    if col_offset is None:
+      return 0
+    return col_offset + self._col_offset
 
   def _attach_origin_info(self, node):
+    lineno = getattr(node, 'lineno', None)
+    col_offset = getattr(node, 'col_offset', None)
+
+    if lineno is None:
+      return
+
     if self._function_stack:
       function_name = self._function_stack[-1].name
     else:
       function_name = None
 
-    source_code_line = self._source_lines[node.lineno - 1]
-    comment = self._comments_map.get(node.lineno)
+    source_code_line = self._source_lines[lineno - 1]
+    comment = self._comments_map.get(lineno)
 
-    loc = Location(self._filepath, self._absolute_lineno(node),
-                   self._absolute_col_offset(node))
+    loc = Location(self._filepath, self._absolute_lineno(lineno),
+                   self._absolute_col_offset(col_offset))
     origin = OriginInfo(loc, function_name, source_code_line, comment)
-    anno.setanno(node, 'lineno', node.lineno)
+    anno.setanno(node, 'lineno', lineno)
     anno.setanno(node, anno.Basic.ORIGIN, origin)
 
   def visit(self, node):
@@ -204,8 +219,7 @@ class OriginResolver(gast.NodeVisitor):
       entered_function = True
       self._function_stack.append(_Function(node.name))
 
-    if hasattr(node, 'lineno'):
-      self._attach_origin_info(node)
+    self._attach_origin_info(node)
     self.generic_visit(node)
 
     if entered_function:
@@ -234,13 +248,21 @@ def resolve(node, source, context_filepath, context_lineno, context_col_offset):
     context_col_offset: int
   """
   # TODO(mdan): Pull this to a separate utility.
-  code_reader = six.StringIO(source)
+  code_reader = io.StringIO(source)
   comments_map = {}
-  for token in tokenize.generate_tokens(code_reader.readline):
-    tok_type, tok_string, loc, _, _ = token
-    srow, _ = loc
-    if tok_type == tokenize.COMMENT:
-      comments_map[srow] = tok_string.strip()[1:].strip()
+  try:
+    for token in tokenize.generate_tokens(code_reader.readline):
+      tok_type, tok_string, loc, _, _ = token
+      srow, _ = loc
+      if tok_type == tokenize.COMMENT:
+        comments_map[srow] = tok_string.strip()[1:].strip()
+  except tokenize.TokenError:
+    if isinstance(node, gast.Lambda):
+      # Source code resolution in older Python versions is brittle for
+      # lambda functions, and may contain garbage.
+      pass
+    else:
+      raise
 
   source_lines = source.split('\n')
   visitor = OriginResolver(node, source_lines, comments_map,
@@ -250,7 +272,7 @@ def resolve(node, source, context_filepath, context_lineno, context_col_offset):
 
 
 def resolve_entity(node, source, entity):
-  """Like resolve, but extracts the context informartion from an entity."""
+  """Like resolve, but extracts the context information from an entity."""
   lines, lineno = tf_inspect.getsourcelines(entity)
   filepath = tf_inspect.getsourcefile(entity)
 
@@ -260,3 +282,15 @@ def resolve_entity(node, source, entity):
   col_offset = len(definition_line) - len(definition_line.lstrip())
 
   resolve(node, source, filepath, lineno, col_offset)
+
+
+def copy_origin(from_node, to_node):
+  """Copies the origin info from a node to another, recursively."""
+  origin = anno.Basic.ORIGIN.of(from_node, default=None)
+  if origin is None:
+    return
+  if not isinstance(to_node, (list, tuple)):
+    to_node = (to_node,)
+  for node in to_node:
+    for n in gast.walk(node):
+      anno.setanno(n, anno.Basic.ORIGIN, origin)

@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
+
 #include "absl/memory/memory.h"
 #include "absl/strings/str_split.h"
 #include "llvm/ADT/APFloat.h"
@@ -23,21 +25,22 @@ limitations under the License.
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Regex.h"
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/Dialect/QuantOps/FakeQuantSupport.h"  // TF:local_config_mlir
-#include "mlir/Dialect/QuantOps/QuantOps.h"  // TF:local_config_mlir
-#include "mlir/Dialect/StandardOps/Ops.h"  // TF:local_config_mlir
-#include "mlir/IR/AffineExpr.h"  // TF:local_config_mlir
-#include "mlir/IR/AffineMap.h"  // TF:local_config_mlir
-#include "mlir/IR/Attributes.h"  // TF:local_config_mlir
-#include "mlir/IR/Location.h"  // TF:local_config_mlir
-#include "mlir/IR/PatternMatch.h"  // TF:local_config_mlir
-#include "mlir/IR/StandardTypes.h"  // TF:local_config_mlir
-#include "mlir/Pass/Pass.h"  // TF:local_config_mlir
-#include "mlir/Support/Functional.h"  // TF:local_config_mlir
-#include "mlir/Support/LLVM.h"  // TF:local_config_mlir
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/Dialect/Quant/QuantOps.h"  // from @llvm-project
+#include "mlir/IR/AffineExpr.h"  // from @llvm-project
+#include "mlir/IR/AffineMap.h"  // from @llvm-project
+#include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/Location.h"  // from @llvm-project
+#include "mlir/IR/PatternMatch.h"  // from @llvm-project
+#include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/quantization/ir/FakeQuantSupport.h"
+#include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
 #include "tensorflow/compiler/mlir/lite/quantization/quantization_info.pb.h"
 #include "tensorflow/compiler/mlir/lite/quantization/quantization_passes.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/import_utils.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/location_utils.h"
 
 // NOLINTNEXTLINE
 static llvm::cl::opt<std::string> quantize_stats(
@@ -55,12 +58,30 @@ namespace quant {
 using QuantParamsEntry = QuantizationInfo::QuantParams;
 
 namespace {
-class ImportQuantStatsPass : public FunctionPass<ImportQuantStatsPass> {
+class ImportQuantStatsPass
+    : public PassWrapper<ImportQuantStatsPass, OperationPass<func::FuncOp>> {
  public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ImportQuantStatsPass)
+
   explicit ImportQuantStatsPass(OperationToName op_to_name)
       : op_to_name_(op_to_name) {}
 
-  void runOnFunction() override;
+  StringRef getArgument() const final {
+    // This is the argument used to refer to the pass in
+    // the textual format (on the commandline for example).
+    return "quant-import-stats";
+  }
+  StringRef getDescription() const final {
+    // This is a brief description of the pass.
+    return "Import quantization stats to the model";
+  }
+
+  void runOnOperation() override;
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<quant::QuantizationDialect,
+                    quantfork::QuantizationForkDialect>();
+  }
 
   // Parses the serialized quant stats protobuf and initialize the internal
   // data structure. This method must be called after the pass is created.
@@ -70,19 +91,20 @@ class ImportQuantStatsPass : public FunctionPass<ImportQuantStatsPass> {
   void ImportAsStatsOps(OpBuilder b, Operation *op, int index,
                         const QuantParamsEntry &info);
 
-  void InsertStatsOpAtResult(OpBuilder b, Value *res, ElementsAttr layer_stats,
+  void InsertStatsOpAtResult(OpBuilder b, Value res, ElementsAttr layer_stats,
                              ElementsAttr axis_stats, IntegerAttr axis);
 
   // If the index is out of range, this method returns false. Otherwise it
   // returns true if the value is a float tensor.
   bool IsQuantizableResult(Operation *op, int index) {
-    if (index < 0 || index >= op->getNumResults()) return false;
-    Value *res = op->getResult(index);
-    return res->getType().isa<ShapedType>() &&
-           res->getType().cast<ShapedType>().getElementType().isa<FloatType>();
+    if (index < 0 || index >= static_cast<int>(op->getNumResults()))
+      return false;
+    Value res = op->getResult(index);
+    return res.getType().isa<ShapedType>() &&
+           res.getType().cast<ShapedType>().getElementType().isa<FloatType>();
   }
 
-  // A method to retrive the name for the given op.
+  // A method to retrieve the name for the given op.
   OperationToName op_to_name_;
 
   // We split the normal names and regex names, since the former can use hash
@@ -117,13 +139,13 @@ bool ImportQuantStatsPass::ParseQuantStats(const std::string &stats_str) {
   return false;
 }
 
-void ImportQuantStatsPass::InsertStatsOpAtResult(OpBuilder b, Value *res,
+void ImportQuantStatsPass::InsertStatsOpAtResult(OpBuilder b, Value res,
                                                  ElementsAttr layer_stats,
                                                  ElementsAttr axis_stats,
                                                  IntegerAttr axis) {
-  auto stats_op = b.create<quant::StatisticsOp>(b.getUnknownLoc(), res,
-                                                layer_stats, axis_stats, axis);
-  res->replaceAllUsesWith(stats_op);
+  auto stats_op = b.create<quantfork::StatisticsOp>(
+      b.getUnknownLoc(), res, layer_stats, axis_stats, axis);
+  res.replaceAllUsesWith(stats_op);
   stats_op.getOperation()->replaceUsesOfWith(stats_op, res);
 }
 
@@ -158,7 +180,7 @@ void ImportQuantStatsPass::ImportAsStatsOps(OpBuilder b, Operation *op,
     InsertStatsOpAtResult(b, op->getResult(index), layer_stats, axis_stats,
                           axis);
   } else {
-    for (int i = 0; i < op->getNumResults(); ++i) {
+    for (int i = 0, e = op->getNumResults(); i < e; ++i) {
       if (IsQuantizableResult(op, i)) {
         InsertStatsOpAtResult(b, op->getResult(i), layer_stats, axis_stats,
                               axis);
@@ -167,12 +189,12 @@ void ImportQuantStatsPass::ImportAsStatsOps(OpBuilder b, Operation *op,
   }
 }
 
-void ImportQuantStatsPass::runOnFunction() {
-  FuncOp func = getFunction();
+void ImportQuantStatsPass::runOnOperation() {
+  func::FuncOp func = getOperation();
   OpBuilder builder(func);
 
   func.walk([&](Operation *op) {
-    if (op->isKnownTerminator()) return;
+    if (op->hasTrait<OpTrait::IsTerminator>()) return;
     auto op_name = op_to_name_(op);
 
     // Check the named info collection first.
@@ -193,9 +215,9 @@ void ImportQuantStatsPass::runOnFunction() {
 }
 
 // Creates an instance of the default quant parameters pass.
-std::unique_ptr<OpPassBase<FuncOp>> CreateImportQuantStatsPass(
+std::unique_ptr<OperationPass<func::FuncOp>> CreateImportQuantStatsPass(
     OperationToName op_to_name, const std::string &stats_str) {
-  auto pass = absl::make_unique<ImportQuantStatsPass>(op_to_name);
+  auto pass = std::make_unique<ImportQuantStatsPass>(op_to_name);
   if (pass->ParseQuantStats(stats_str)) return nullptr;
   return pass;
 }
@@ -203,23 +225,29 @@ std::unique_ptr<OpPassBase<FuncOp>> CreateImportQuantStatsPass(
 // Creates an instance pass to import quantization stats to the operations in
 // the function. A custom method to get the name from the op is used because
 // different dialect ops might have different ways to assign the name.
-std::unique_ptr<OpPassBase<FuncOp>>
+std::unique_ptr<OperationPass<func::FuncOp>>
 CreateImportQuantStatsPassForTFControlDialect(const std::string &stats_str) {
   auto get_name_func = [](Operation *op) {
-    if (auto name = op->getAttrOfType<StringAttr>("name"))
-      return name.getValue();
-    else
-      return llvm::StringRef("");
+    Location loc = tensorflow::GetLocationWithoutOpType(op->getLoc());
+    if (auto name = loc.dyn_cast<NameLoc>()) {
+      return name.getName().strref();
+    } else if (auto fused_name = loc.dyn_cast<FusedLoc>()) {
+      for (auto sub_loc : fused_name.getLocations()) {
+        if (auto named_sub_loc = sub_loc.dyn_cast<NameLoc>()) {
+          return named_sub_loc.getName().strref();
+        }
+      }
+    }
+    return llvm::StringRef("");
   };
 
   return CreateImportQuantStatsPass(get_name_func, stats_str);
 }
 
 // Registers this pass with default values, only for test
-static PassRegistration<ImportQuantStatsPass> pass(
-    "quant-import-stats", "Import quantization stats to the model", [] {
-      return CreateImportQuantStatsPassForTFControlDialect(quantize_stats);
-    });
+static PassRegistration<ImportQuantStatsPass> pass([] {
+  return CreateImportQuantStatsPassForTFControlDialect(quantize_stats);
+});
 
 }  // namespace quant
 }  // namespace mlir

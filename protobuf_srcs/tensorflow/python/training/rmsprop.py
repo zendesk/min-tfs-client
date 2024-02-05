@@ -30,16 +30,12 @@ This implementation of RMSProp uses plain momentum, not Nesterov momentum.
 The centered version additionally maintains a moving (discounted) average of the
 gradients, and uses that average to estimate the variance:
 
-mean_grad = decay * mean_square{t-1} + (1-decay) * gradient
+mean_grad = decay * mean_grad{t-1} + (1-decay) * gradient
 mean_square = decay * mean_square{t-1} + (1-decay) * gradient ** 2
 mom = momentum * mom{t-1} + learning_rate * g_t /
     sqrt(mean_square - mean_grad**2 + epsilon)
 delta = - mom
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
@@ -52,10 +48,89 @@ from tensorflow.python.util.tf_export import tf_export
 
 @tf_export(v1=["train.RMSPropOptimizer"])
 class RMSPropOptimizer(optimizer.Optimizer):
-  """Optimizer that implements the RMSProp algorithm.
+  """Optimizer that implements the RMSProp algorithm (Tielemans et al.
 
-  See the
-  [paper](http://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf).
+  2012).
+
+  References:
+    Coursera slide 29:
+    Hinton, 2012
+    ([pdf](http://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf))
+
+  @compatibility(TF2)
+  tf.compat.v1.train.RMSPropOptimizer is compatible with eager mode and
+  `tf.function`.
+  When eager execution is enabled, `learning_rate`, `decay`, `momentum`,
+  and `epsilon` can each be a callable that
+  takes no arguments and returns the actual value to use. This can be useful
+  for changing these values across different invocations of optimizer
+  functions.
+
+  To switch to native TF2 style, use [`tf.keras.optimizers.RMSprop`]
+  (https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/RMSprop)
+  instead. Please notice that due to the implementation differences,
+  `tf.keras.optimizers.RMSprop` and
+  `tf.compat.v1.train.RMSPropOptimizer` may have slight differences in
+  floating point numerics even though the formula used for the variable
+  updates still matches.
+
+  #### Structural mapping to native TF2
+
+  Before:
+
+  ```python
+  optimizer = tf.compat.v1.train.RMSPropOptimizer(
+    learning_rate=learning_rate,
+    decay=decay,
+    momentum=momentum,
+    epsilon=epsilon)
+  ```
+
+  After:
+
+  ```python
+  optimizer = tf.keras.optimizers.RMSprop(
+    learning_rate=learning_rate,
+    rho=decay,
+    momentum=momentum,
+    epsilon=epsilon)
+  ```
+
+  #### How to map arguments
+  | TF1 Arg Name       | TF2 Arg Name   | Note                             |
+  | ------------------ | -------------  | -------------------------------  |
+  | `learning_rate`    | `learning_rate`| Be careful of setting           |
+  : : : learning_rate tensor value computed from the global step.          :
+  : : : In TF1 this was usually meant to imply a dynamic learning rate and :
+  : : : would recompute in each step. In TF2 (eager + function) it will    :
+  : : : treat it as a scalar value that only gets computed once instead of :
+  : : : a symbolic placeholder to be computed each time.                   :
+  | `decay`            | `rho`          | -                                |
+  | `momentum`         | `momentum`     | -                                |
+  | `epsilon`          | `epsilon`      | Default value is 1e-10 in TF1,   |
+  :                    :                : but 1e-07 in TF2.                :
+  | `use_locking`      | -              | Not applicable in TF2.           |
+
+  #### Before & after usage example
+  Before:
+
+  ```python
+  x = tf.Variable([1,2,3], dtype=tf.float32)
+  grad = tf.constant([0.1, 0.2, 0.3])
+  optimizer = tf.compat.v1.train.RMSPropOptimizer(learning_rate=0.001)
+  optimizer.apply_gradients(zip([grad], [x]))
+  ```
+
+  After:
+
+  ```python
+  x = tf.Variable([1,2,3], dtype=tf.float32)
+  grad = tf.constant([0.1, 0.2, 0.3])
+  optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.001)
+  optimizer.apply_gradients(zip([grad], [x]))
+  ```
+
+  @end_compatibility
   """
 
   def __init__(self,
@@ -93,12 +168,6 @@ class RMSPropOptimizer(optimizer.Optimizer):
       name: Optional name prefix for the operations created when applying
         gradients. Defaults to "RMSProp".
 
-    @compatibility(eager)
-    When eager execution is enabled, `learning_rate`, `decay`, `momentum`, and
-    `epsilon` can each be a callable that takes no arguments and returns the
-    actual value to use. This can be useful for changing these values across
-    different invocations of optimizer functions.
-    @end_compatibility
     """
     super(RMSPropOptimizer, self).__init__(use_locking, name)
     self._learning_rate = learning_rate

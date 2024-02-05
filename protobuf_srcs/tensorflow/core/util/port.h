@@ -24,6 +24,9 @@ bool IsGoogleCudaEnabled();
 // Returns true if TENSORFLOW_USE_ROCM is defined. (i.e. TF is built with ROCm)
 bool IsBuiltWithROCm();
 
+// Returns true if TENSORFLOW_USE_XLA is defined. (i.e. TF is built with XLA)
+bool IsBuiltWithXLA();
+
 // Returns true if TENSORFLOW_USE_NVCC is defined. (i.e. TF is built with nvcc)
 bool IsBuiltWithNvcc();
 
@@ -40,6 +43,9 @@ bool GpuSupportsHalfMatMulAndConv();
 
 // Returns true if INTEL_MKL is defined
 bool IsMklEnabled();
+
+// Returns true if TF_ENABLE_ZENDNN_OPTS is set to 1
+bool IsZenDnnEnabled();
 
 }  // end namespace tensorflow
 

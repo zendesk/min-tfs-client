@@ -13,21 +13,21 @@
 # limitations under the License.
 # ==============================================================================
 """Contains LossScale classes."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from tensorflow.python.distribute import distribution_strategy_context
-from tensorflow.python.framework import ops
+from tensorflow.python.distribute import distribute_lib
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import smart_cond
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.training import optimizer
 from tensorflow.python.training.experimental import loss_scale as loss_scale_module
+from tensorflow.python.util import deprecation
 from tensorflow.python.util.tf_export import tf_export
 
 
-@tf_export(v1=['train.experimental.MixedPrecisionLossScaleOptimizer'])
+@deprecation.deprecated_endpoints(
+    'train.experimental.MixedPrecisionLossScaleOptimizer')
+@tf_export(v1=['mixed_precision.MixedPrecisionLossScaleOptimizer',
+               'train.experimental.MixedPrecisionLossScaleOptimizer'])
 class MixedPrecisionLossScaleOptimizer(optimizer.Optimizer):
   """An optimizer that applies loss scaling.
 
@@ -68,6 +68,8 @@ class MixedPrecisionLossScaleOptimizer(optimizer.Optimizer):
     super(MixedPrecisionLossScaleOptimizer, self).__init__(use_locking, name)
 
     self._loss_scale = loss_scale_module.get(loss_scale)
+    if self._loss_scale is None:
+      raise ValueError('loss_scale cannot be None')
     self._track_trackable(self._optimizer, 'base_optimizer')
     self._track_trackable(self._loss_scale, 'loss_scale')
 
@@ -86,7 +88,7 @@ class MixedPrecisionLossScaleOptimizer(optimizer.Optimizer):
 
     This adjusts the dynamic range of the gradient evaluation by scaling up
     the `loss` value. The gradient values are then scaled back down by the
-    recipricol of the loss scale. This is useful in reduced precision training
+    reciprocal of the loss scale. This is useful in reduced precision training
     where small gradient values would otherwise underflow the representable
     range.
 
@@ -135,17 +137,18 @@ class MixedPrecisionLossScaleOptimizer(optimizer.Optimizer):
 
   def _unscale_grads(self, grads):
     loss_scale = self._loss_scale()
-    loss_scale_reciprical = 1 / loss_scale
+    loss_scale_reciprocal = 1 / loss_scale
     return [
-        None if g is None else self._scale_grad(g, loss_scale_reciprical)
+        None if g is None else self._scale_grad(g, loss_scale_reciprocal)
         for g in grads
     ]
 
-  def _scale_grad(self, grad, loss_scale_reciprical):
-    if isinstance(grad, ops.IndexedSlices):
-      grad_vals = grad.values * loss_scale_reciprical
-      return ops.IndexedSlices(grad_vals, grad.indices, grad.dense_shape)
-    return grad * loss_scale_reciprical
+  def _scale_grad(self, grad, loss_scale_reciprocal):
+    if isinstance(grad, indexed_slices.IndexedSlices):
+      grad_vals = grad.values * loss_scale_reciprocal
+      return indexed_slices.IndexedSlices(grad_vals, grad.indices,
+                                          grad.dense_shape)
+    return grad * loss_scale_reciprocal
 
   def apply_gradients(self, grads_and_vars, global_step=None, name=None):
     """Apply gradients to variables.
@@ -169,13 +172,13 @@ class MixedPrecisionLossScaleOptimizer(optimizer.Optimizer):
     Raises:
       RuntimeError: If you should use `_distributed_apply()` instead.
     """
-    if distribution_strategy_context.in_cross_replica_context():
+    if distribute_lib.in_cross_replica_context():
       raise ValueError('apply_gradients() must be called in a replica context.')
 
     if not self._doing_dynamic_loss_scaling():
       return self._optimizer.apply_gradients(grads_and_vars, global_step, name)
 
-    replica_context = distribution_strategy_context.get_replica_context()
+    replica_context = distribute_lib.get_replica_context()
     grads_and_vars = tuple(grads_and_vars)
 
     # TODO(nluehr) cleanup GraphKeys.TRAIN_OP
@@ -241,3 +244,8 @@ class MixedPrecisionLossScaleOptimizer(optimizer.Optimizer):
   def _resource_apply_dense(self, grad, handle):
     """This function should never be called."""
     raise RuntimeError('This function should never be called')
+
+  def variables(self):
+    """Returns the variables of the Optimizer."""
+    return (self._optimizer.variables() +
+            list(self._loss_scale._weights.values()))  # pylint: disable=protected-access

@@ -30,7 +30,7 @@ tf_cuda_library(
     }),
     deps = select({
         "//tensorflow:android": [
-            "//tensorflow/core:android_tensorflow_lib",
+            "//tensorflow/core:portable_tensorflow_lib",
         ],
         "//conditions:default": [
             "//tensorflow/c:c_api",
@@ -68,16 +68,4 @@ genrule(
     }),
     outs = ["jni_md.h"],
     cmd = "cp -f $< $@",
-)
-
-filegroup(
-    name = "all_files",
-    srcs = glob(
-        ["**/*"],
-        exclude = [
-            "**/METADATA",
-            "**/OWNERS",
-        ],
-    ),
-    visibility = ["//tensorflow:__subpackages__"],
 )

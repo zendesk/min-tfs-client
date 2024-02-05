@@ -14,10 +14,6 @@
 # ==============================================================================
 """Script to test TF-TRT INT8 conversion without calibration on Mnist model."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.compiler.tensorrt.test import tf_trt_integration_test_base as trt_test
@@ -80,22 +76,18 @@ class DynamicInputShapesTest(trt_test.TfTrtIntegrationTestBase):
         input_dims=input_dims,
         expected_output_dims=expected_output_dims)
 
-  def GetConversionParams(self, run_params):
-    """Return a ConversionParams for test."""
-    conversion_params = super(DynamicInputShapesTest,
-                              self).GetConversionParams(run_params)
-    return conversion_params._replace(
-        maximum_cached_engines=10,
-        # Disable layout optimizer, since it will convert BiasAdd with NHWC
-        # format to NCHW format under four dimentional input.
-        rewriter_config_template=trt_test.OptimizerDisabledRewriterConfig())
+  def setUp(self):
+    super().setUp()
+    # Disable layout optimizer, since it will convert BiasAdd with NHWC
+    # format to NCHW format under four dimentional input.
+    self.DisableNonTrtOptimizers()
 
   def ExpectedEnginesToBuild(self, run_params):
-    return ["TRTEngineOp_0"]
+    return ["TRTEngineOp_000"]
 
   def ShouldRunTest(self, run_params):
-    return (run_params.dynamic_engine and
-            not trt_test.IsQuantizationMode(run_params.precision_mode))
+    return (run_params.dynamic_engine and not trt_test.IsQuantizationMode(
+        run_params.precision_mode)), "test dynamic engine and non-INT8"
 
   def ExpectedAbsoluteTolerance(self, run_params):
     """The absolute tolerance to compare floating point results."""

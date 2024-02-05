@@ -16,18 +16,18 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/tf2xla.h"
 
 #include "tensorflow/compiler/tf2xla/tf2xla.pb.h"
-#include "tensorflow/compiler/xla/client/client_library.h"
-#include "tensorflow/compiler/xla/client/local_client.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/compiler/xla/literal_util.h"
-#include "tensorflow/compiler/xla/statusor.h"
+#include "xla/client/client_library.h"
+#include "xla/client/local_client.h"
+#include "xla/client/xla_computation.h"
+#include "xla/literal.h"
+#include "xla/literal_util.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -81,22 +81,55 @@ TEST(ConvertGraphDefToXla, Sum) {
   auto y_global_or = client->TransferToServer(y_literal);
   TF_EXPECT_OK(x_global_or.status());
   TF_EXPECT_OK(y_global_or.status());
-  std::unique_ptr<xla::GlobalData> x_global =
-      std::move(x_global_or.ValueOrDie());
-  std::unique_ptr<xla::GlobalData> y_global =
-      std::move(y_global_or.ValueOrDie());
+  std::unique_ptr<xla::GlobalData> x_global = std::move(x_global_or.value());
+  std::unique_ptr<xla::GlobalData> y_global = std::move(y_global_or.value());
 
   // Execute and check result.
   auto result_or =
       client->ExecuteAndTransfer(computation, {x_global.get(), y_global.get()});
   TF_EXPECT_OK(result_or.status());
-  xla::Literal result = std::move(result_or.ValueOrDie());
+  xla::Literal result = std::move(result_or.value());
   EXPECT_EQ("(\ns32[] 42\n)", result.ToString());
 
   config.mutable_feed(0)->mutable_id()->set_output_index(
       123); /* invalid output_index */
   EXPECT_TRUE(errors::IsInvalidArgument(
       ConvertGraphDefToXla(graph_def, config, client, &computation)));
+}
+
+TEST(ConvertGraphDefToXla, SumWithUnusedArgument) {
+  GraphDef graph_def = SumGraph();
+  tf2xla::Config config = SumConfig();
+  NodeDef* unused = graph_def.add_node();
+  unused->set_name("unused");
+  unused->set_op("Placeholder");
+  (*unused->mutable_attr())["dtype"] = TypeAttrValue(DT_INT32);
+  config.add_feed()->mutable_id()->set_node_name("unused");
+
+  xla::LocalClient* client = xla::ClientLibrary::LocalClientOrDie();
+  xla::XlaComputation computation;
+  TF_EXPECT_OK(ConvertGraphDefToXla(graph_def, config, client, &computation));
+
+  // Set up arguments.
+  auto x_literal = xla::LiteralUtil::CreateR0<int32>(10);
+  auto y_literal = xla::LiteralUtil::CreateR0<int32>(32);
+  auto x_global_or = client->TransferToServer(x_literal);
+  auto y_global_or = client->TransferToServer(y_literal);
+  auto unused_global_or = client->TransferToServer(y_literal);
+  TF_EXPECT_OK(x_global_or.status());
+  TF_EXPECT_OK(y_global_or.status());
+  TF_EXPECT_OK(unused_global_or.status());
+  std::unique_ptr<xla::GlobalData> x_global = std::move(x_global_or.value());
+  std::unique_ptr<xla::GlobalData> y_global = std::move(y_global_or.value());
+  std::unique_ptr<xla::GlobalData> unused_global =
+      std::move(unused_global_or.value());
+
+  // Execute and check result.
+  auto result_or = client->ExecuteAndTransfer(
+      computation, {x_global.get(), y_global.get(), unused_global.get()});
+  TF_EXPECT_OK(result_or.status());
+  xla::Literal result = std::move(result_or.value());
+  EXPECT_EQ("(\ns32[] 42\n)", result.ToString());
 }
 
 }  // namespace

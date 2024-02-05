@@ -15,23 +15,29 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_COMMON_RUNTIME_PROCESS_FUNCTION_LIBRARY_RUNTIME_H_
 #define TENSORFLOW_CORE_COMMON_RUNTIME_PROCESS_FUNCTION_LIBRARY_RUNTIME_H_
 
+#include <functional>
+#include <optional>
+#include <string>
 #include <unordered_map>
 
-// clang-format off
-// Required for IS_MOBILE_PLATFORM
-#include "tensorflow/core/platform/platform.h"
-// clang-format on
-
-#include "absl/types/optional.h"
+#include "absl/types/variant.h"
+#include "tensorflow/core/common_runtime/composite_device.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/device_set.h"
+#include "tensorflow/core/common_runtime/optimized_function_graph_info.h"
+#include "tensorflow/core/common_runtime/stats_publisher_interface.h"
 #include "tensorflow/core/framework/function.h"
+#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/platform/platform.h"
 #include "tensorflow/core/protobuf/config.pb.h"
+#include "tsl/platform/notification.h"
+#include "tsl/platform/thread_annotations.h"
+
 #if !defined(IS_MOBILE_PLATFORM)
 #include "tensorflow/core/protobuf/remote_tensor_handle.pb.h"
-#endif  // IS_MOBILE_PLATFORM
+#endif  // !IS_MOBILE_PLATFORM
 
 namespace tensorflow {
 
@@ -39,16 +45,15 @@ class FunctionArgsInterface {
  public:
   virtual ~FunctionArgsInterface() {}
 
-  virtual bool HasRemoteInputs() const = 0;
+  virtual bool HasRemoteOrPackedInputs() const = 0;
 
-  virtual Status GetLocalArg(const int index, Tensor* val) const = 0;
+  virtual Status GetLocalArg(const FunctionArgIndex& index,
+                             Tensor* val) const = 0;
 
   virtual std::vector<Tensor> GetLocalTensors() const = 0;
 
-  virtual const gtl::InlinedVector<TensorValue, 4>* GetTensorValues() const = 0;
-
 #if !defined(IS_MOBILE_PLATFORM)
-  virtual Status GetRemoteArg(const int index,
+  virtual Status GetRemoteArg(const FunctionArgIndex& index,
                               eager::RemoteTensorHandle* val) const {
     return errors::Unimplemented(
         "Serializing a remote argument is not implemented.");
@@ -68,16 +73,22 @@ class ProcessFunctionLibraryRuntime {
       const OptimizerOptions& optimizer_options,
       thread::ThreadPool* thread_pool = nullptr,
       DistributedFunctionLibraryRuntime* parent = nullptr,
-      const CustomKernelCreator* custom_kernel_creator = nullptr,
-      const SessionMetadata* metadata = nullptr);
+      const SessionMetadata* session_metadata = nullptr,
+      Rendezvous::Factory rendezvous_factory = Rendezvous::Factory(),
+      StatsPublisherFactory stats_publisher_factory = CreateNoOpStatsPublisher);
 
-  virtual ~ProcessFunctionLibraryRuntime() {
+  ~ProcessFunctionLibraryRuntime() {
     // Deleting the FunctionLibraryRuntime map will delete the function handles
     // registered in it, which may call ReleaseHandle in this class again to
-    // release their sub-function. These circular calls may casue segfault
-    // since the flr_map_ may has already been deleted. Explicitly releasing
+    // release their sub-function. These circular calls may cause segfault
+    // since the flr_map_ may have already been deleted. Explicitly releasing
     // flr_map_ here and checking flr_map_ in ReleaseHandle to avoid this.
     flr_map_.reset();
+    // Graph and stats publishers might have pending work in async threads that
+    // requires access to PFLR instance. Wait for completion before destructing.
+    for (const auto& n : stats_publisher_completed_) {
+      n->WaitForNotification();
+    }
   }
 
   // Sends `tensors_to_send` from `source_device` to `target_device` using
@@ -88,11 +99,11 @@ class ProcessFunctionLibraryRuntime {
   // takes references on each of the `tensors_to_send`. Method doesn't block.
   static Status SendTensors(const string& source_device,
                             const string& target_device,
-                            const string& key_prefix, int64 src_incarnation,
+                            const string& key_prefix, int64_t src_incarnation,
                             gtl::ArraySlice<Tensor> tensors_to_send,
                             DeviceContext* device_context,
                             const std::vector<AllocatorAttributes>& alloc_attrs,
-                            Rendezvous* rendezvous);
+                            RendezvousInterface* rendezvous);
 
   // Receives `received_tensors` from `target_device` (originally sent from
   // `source_device`) using `rendezvous`. Uses `key_prefix` to construct the
@@ -102,10 +113,10 @@ class ProcessFunctionLibraryRuntime {
   // block and calls `done` when `num_tensors` are fetched.
   static void ReceiveTensorsAsync(
       const string& source_device, const string& target_device,
-      const string& key_prefix, int64 src_incarnation, int64 num_tensors,
+      const string& key_prefix, int64_t src_incarnation, int64_t num_tensors,
       DeviceContext* device_context,
       const std::vector<AllocatorAttributes>& alloc_attrs,
-      Rendezvous* rendezvous, std::vector<Tensor>* received_tensors,
+      RendezvousInterface* rendezvous, std::vector<Tensor>* received_tensors,
       StatusCallback done);
 
   static const char kDefaultFLRDevice[];
@@ -118,7 +129,7 @@ class ProcessFunctionLibraryRuntime {
 
   // Returns the device incarnation for the given device_name.
   Status GetDeviceIncarnation(const string& device_name,
-                              int64* incarnation) const;
+                              int64_t* incarnation) const;
 
   // For a given canonicalized key signature of the function instantiated
   // on device `device_name` and a `local_handle`, creates a handle and returns
@@ -135,8 +146,13 @@ class ProcessFunctionLibraryRuntime {
   // index of instantiation of that function. If the function was not
   // instantiated on `device_name` or the function is multi-device,
   // returns kInvalidLocalHandle.
+  //
+  // If `include_multi_device` is true and `handle` is a multi-device function
+  // with a single component that is placed on `device_name`, then this method
+  // will return the local handle for that component.
   FunctionLibraryRuntime::LocalHandle GetHandleOnDevice(
-      const string& device_name, FunctionLibraryRuntime::Handle handle) const;
+      const string& device_name, FunctionLibraryRuntime::Handle handle,
+      bool include_multi_device = false) const;
 
   // Fills `output_devices` with the devices on which the results will
   // be produced. If some output is produced on CPU, the corresponding Device*
@@ -145,11 +161,6 @@ class ProcessFunctionLibraryRuntime {
   // REQUIRES: `handle` identifies a multi-device function.
   Status GetOutputDevices(FunctionLibraryRuntime::Handle handle,
                           std::vector<Device*>* output_devices) const;
-
-  // Returns true if function with handle `handle` was instantiated on device
-  // `device_name`. Returns false for multi-device functions.
-  bool IsInstantiatedOnDevice(const string& device_name,
-                              FunctionLibraryRuntime::Handle handle) const;
 
   // Instantiates the function. See framework/function.h for more details.
   // Allows for function_name to be instantiated on different devices
@@ -164,7 +175,7 @@ class ProcessFunctionLibraryRuntime {
                         bool* is_cross_process) const;
 
   // Delegates to the local FLR that owns state corresponding to `handle` and
-  // tells it to release it. If the `handle` isnt' needed at all, the local FLR
+  // tells it to release it. If the `handle` isn't needed at all, the local FLR
   // might call RemoveHandle on this to get rid of the state owned by the Proc
   // FLR.
   // For multi-device functions, calls ReleaseHandle on local FLRs for each
@@ -182,14 +193,28 @@ class ProcessFunctionLibraryRuntime {
            FunctionLibraryRuntime::Handle handle, CallFrameInterface* frame,
            FunctionLibraryRuntime::DoneCallback done) const;
 
-  virtual void Run(const FunctionLibraryRuntime::Options& opts,
-                   FunctionLibraryRuntime::Handle handle,
-                   const FunctionArgsInterface& args, std::vector<Tensor>* rets,
-                   FunctionLibraryRuntime::DoneCallback done) const;
+  void Run(const FunctionLibraryRuntime::Options& opts,
+           FunctionLibraryRuntime::Handle handle,
+           const FunctionArgsInterface& args, std::vector<FunctionRet>* rets,
+           FunctionLibraryRuntime::DoneCallback done) const;
+
+  Status RunSync(const FunctionLibraryRuntime::Options& opts,
+                 FunctionLibraryRuntime::Handle handle,
+                 gtl::ArraySlice<Tensor> args, std::vector<Tensor>* rets) const;
+  Status RunSync(const FunctionLibraryRuntime::Options& opts,
+                 FunctionLibraryRuntime::Handle handle,
+                 CallFrameInterface* frame) const;
 
   const DeviceMgr* device_mgr() { return device_mgr_; }
 
-  const DeviceSet* device_set() { return &device_set_; }
+  const std::shared_ptr<DeviceSet> device_set() const {
+    tf_shared_lock l(mu_);
+    return device_set_;
+  }
+
+  // Initialize the set of local and remote devices and corresponding flr for op
+  // device selection.
+  void InitializeDeviceAndFlr();
 
   const ConfigProto* config() const { return config_ ? &(*config_) : nullptr; }
 
@@ -197,53 +222,70 @@ class ProcessFunctionLibraryRuntime {
     return lib_def_;
   }
 
+  // Add a CompositeDevice to `device_set_`
+  void AddCompositeDevice(CompositeDevice* d) TF_LOCKS_EXCLUDED(mu_) {
+    mutex_lock l(mu_);
+    device_set_->AddDevice(d);
+    composite_devices_.push_back(d);
+  }
+
  protected:
   friend class FunctionLibraryRuntimeImpl;
 
   struct InternalArgs {
-    std::vector<Tensor> local_args;
+    std::vector<FunctionArg> args;
 #if !defined(IS_MOBILE_PLATFORM)
-    std::vector<eager::RemoteTensorHandle> remote_args;
+    // Holds the RemoteTensorHandles referred by args.
+    std::vector<std::unique_ptr<eager::RemoteTensorHandle>> remote_args;
 #endif  // IS_MOBILE_PLATFORM
   };
 
-  struct InternalArgsView {
+  // Structure detailing the asynchronous assumptions of a component function,
+  // such as whether it can support synchronous execution and any information
+  // needed to execute in proper order to resolve inter-subgraph dependencies.
+  class AsyncAttributes {
    public:
-    explicit InternalArgsView(gtl::ArraySlice<Tensor> tensors)
-        : local_args(tensors) {}
+    enum Summary { kSafeForSync = 0, kSendOnly, kRecvOnly, kAsyncRequired };
 
-    explicit InternalArgsView(InternalArgs* args)
-        : local_args(args->local_args) {
-#if !defined(IS_MOBILE_PLATFORM)
-      remote_args = &args->remote_args;
-#endif  // IS_MOBILE_PLATFORM
+    AsyncAttributes()
+        : allow_control_flow_sync_execution_(false), summary_(kSafeForSync) {}
+    explicit AsyncAttributes(const Graph* graph,
+                             bool allow_control_flow_sync_execution)
+        : allow_control_flow_sync_execution_(allow_control_flow_sync_execution),
+          summary_(Summarize(graph)) {}
+    Summary summary() const { return summary_; }
+    bool allow_control_flow_sync_execution() const {
+      return allow_control_flow_sync_execution_;
     }
 
-    gtl::ArraySlice<Tensor> local_args;
-#if !defined(IS_MOBILE_PLATFORM)
-    std::vector<eager::RemoteTensorHandle>* remote_args = nullptr;
-#endif  // IS_MOBILE_PLATFORM
+   private:
+    // This data member should be initialized before the summary_.
+    bool allow_control_flow_sync_execution_;
+    Summary summary_;
+    Summary Summarize(const Graph* graph);
   };
 
   // Structure to keep track of how a component function (a single-device
   // piece of a multi-device function) fits into the multi-device function.
   struct ComponentFunctionData {
     // The handle for the instantiated component function.
-    FunctionLibraryRuntime::Handle handle_;
-    // arg_indices_.size() is the number of arguments to the component function.
+    FunctionLibraryRuntime::Handle handle;
+    // arg_indices.size() is the number of arguments to the component function.
     // The i-th argument of the component function comes from the
-    // `arg_indices_[i]`-th argument of the multi-device function.
-    std::vector<int> arg_indices_;
-    // ret_indices_.size() is the number of return values of the component
+    // `arg_indices[i]`-th argument of the multi-device function.
+    std::vector<FunctionArgIndex> arg_indices;
+    // ret_indices.size() is the number of return values of the component
     // function.  The i-th return value of the component function goes to the
-    // `ret_indices_[i]`-th return value of the multi-device function.
-    std::vector<int> ret_indices_;
-    // arg_alloc_attrs_[i] are the allocator attributes of the i-th argument to
+    // `ret_indices[i]`-th return value of the multi-device function.
+    std::vector<int> ret_indices;
+    // arg_alloc_attrs[i] are the allocator attributes of the i-th argument to
     // the component function.
-    std::vector<AllocatorAttributes> arg_alloc_attrs_;
-    // ret_alloc_attrs_[i] are the allocator attributes of the i-th return value
+    std::vector<AllocatorAttributes> arg_alloc_attrs;
+    // ret_alloc_attrs[i] are the allocator attributes of the i-th return value
     // of the component function.
-    std::vector<AllocatorAttributes> ret_alloc_attrs_;
+    std::vector<AllocatorAttributes> ret_alloc_attrs;
+
+    AsyncAttributes async_attributes;
   };
 
   // Data structure holding information for a single instantiated multi-device
@@ -261,7 +303,8 @@ class ProcessFunctionLibraryRuntime {
           lib_def_(std::move(lib_def)),
           num_outputs_(num_outputs),
           ret_types_(std::move(ret_types)),
-          is_cross_process_(false) {}
+          is_cross_process_(false),
+          has_remote_outputs(false) {}
 
     const string function_name_;
     const string function_key_;
@@ -275,6 +318,11 @@ class ProcessFunctionLibraryRuntime {
 
     // Indicates whether this function needs to execute cross process.
     bool is_cross_process_;
+    // Indicates whether this function has remote outputs.
+    bool has_remote_outputs;
+
+    //  Indicates if running this function synchronously is both allowed + safe.
+    bool enable_sync_execution;
 
     // Maps the device name to the information about the component function
     // be run on this device.
@@ -287,29 +335,10 @@ class ProcessFunctionLibraryRuntime {
     FunctionLibraryRuntime::Handle local_handle;
   };
 
-  virtual void RunRemoteDevice(const FunctionLibraryRuntime::Options& opts,
-                               FunctionLibraryRuntime::Handle local_handle,
-                               const InternalArgsView& args,
-                               std::vector<Tensor>* rets,
-                               FunctionLibraryRuntime::DoneCallback done) const;
-
   // If `handle` represents a multi-device function, returns the multi-device
   // data associated with `handle`. Else, nullptr.
   MultiDeviceFunctionData* IsMultiDevice(
       FunctionLibraryRuntime::Handle handle) const;
-
-  void RunMultiDevice(
-      const FunctionLibraryRuntime::Options& opts,
-      FunctionLibraryRuntime::Handle handle, std::vector<Tensor>* rets,
-      std::vector<std::unique_ptr<CleanUpItem>>* cleanup_items,
-      FunctionLibraryRuntime::DoneCallback done,
-      std::function<Status(const ComponentFunctionData& comp_data,
-                           InternalArgs* args)>
-          get_component_args) const;
-
-  FunctionLibraryRuntime::DoneCallback ApplyCleanUpToDoneCallback(
-      std::vector<std::unique_ptr<CleanUpItem>>* items,
-      FunctionLibraryRuntime::DoneCallback done) const;
 
   DistributedFunctionLibraryRuntime* const parent_;
 
@@ -317,7 +346,7 @@ class ProcessFunctionLibraryRuntime {
   FunctionLibraryRuntime::Handle AddHandleLocked(
       const string& function_key, const string& device_name,
       FunctionLibraryRuntime::LocalHandle local_handle)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // For a given device_name, returns a DeviceContext for copying
   // tensors to/from the device.
@@ -345,7 +374,6 @@ class ProcessFunctionLibraryRuntime {
   // runtime w.r.t. to number of functions in the current function library.
   Status Clone(Env* env, int graph_def_version,
                const OptimizerOptions& optimizer_options,
-               const CustomKernelCreator* custom_kernel_creator,
                std::unique_ptr<FunctionLibraryDefinition>* out_lib_def,
                std::unique_ptr<ProcessFunctionLibraryRuntime>* out_pflr,
                bool skip_flib_def = false) const;
@@ -367,25 +395,65 @@ class ProcessFunctionLibraryRuntime {
       const std::unique_ptr<MultiDeviceFunctionData> data,
       const string& function_key);
 
-  // TODO(iga): Reword
-  // Pins each arg that emits a `DT_RESOURCE` tensor to the device on which the
-  // corresponding resource lives. This ensures that the Placer assigns ops that
-  // access these resources to the appropriate devices.
-  Status PinArgsAndRets(const std::vector<string>& input_devices,
-                        const std::vector<string>& output_devices,
-                        const DeviceSet& device_set,
-                        const std::vector<Node*>& arg_nodes,
-                        const std::vector<Node*>& ret_nodes,
-                        Device* default_device) const;
+  bool HasMultiDeviceHandle(FunctionLibraryRuntime::Handle handle) const;
 
   void RunInternal(const FunctionLibraryRuntime::Options& opts,
                    FunctionLibraryRuntime::Handle handle,
-                   const InternalArgsView& args, std::vector<Tensor>* rets,
+                   gtl::ArraySlice<FunctionArg> args,
+                   std::vector<FunctionRet>* rets,
                    std::vector<std::unique_ptr<CleanUpItem>>* cleanup_items,
                    FunctionLibraryRuntime::DoneCallback done) const;
 
+  Status CreateRendezvous(
+      FunctionLibraryRuntime::Options& opts,
+      tsl::core::RefCountPtr<Rendezvous>* created_rendezvous) const;
+
+  FunctionLibraryRuntime::DoneCallback ApplyCleanUpToDoneCallback(
+      std::vector<std::unique_ptr<CleanUpItem>>* items,
+      FunctionLibraryRuntime::DoneCallback done,
+      const FunctionLibraryRuntime::Options& opts,
+      tsl::core::RefCountPtr<Rendezvous> rendezvous) const;
+
   void CleanUp(std::vector<std::unique_ptr<CleanUpItem>>* items,
                FunctionLibraryRuntime::DoneCallback done) const;
+
+  static Status GetComponentArgs(gtl::ArraySlice<Tensor> args,
+                                 const ComponentFunctionData& comp_data,
+                                 InternalArgs* comp_args);
+
+#if !defined(IS_MOBILE_PLATFORM)
+  static Status GetComponentArgs(const FunctionArgsInterface& args,
+                                 const ComponentFunctionData& comp_data,
+                                 InternalArgs* comp_args);
+#endif  // IS_MOBILE_PLATFORM
+
+  std::vector<string> GetOrderedSubgraphs(
+      const MultiDeviceFunctionData* data) const;
+
+  Status PrepareRunMultiDevice(const FunctionLibraryRuntime::Options& opts,
+                               FunctionLibraryRuntime::Handle handle,
+                               const MultiDeviceFunctionData** data) const;
+
+  Status RunMultiDeviceSync(
+      const FunctionLibraryRuntime::Options& opts,
+      FunctionLibraryRuntime::Handle handle, std::vector<FunctionRet>* rets,
+      std::function<Status(const ComponentFunctionData& comp_data,
+                           InternalArgs* args)>
+          get_component_args) const;
+
+  void RunMultiDeviceAsync(
+      const FunctionLibraryRuntime::Options& opts,
+      FunctionLibraryRuntime::Handle handle, std::vector<FunctionRet>* rets,
+      std::vector<std::unique_ptr<CleanUpItem>>* cleanup_items,
+      FunctionLibraryRuntime::DoneCallback done,
+      std::function<Status(const ComponentFunctionData& comp_data,
+                           InternalArgs* args)>
+          get_component_args) const;
+
+  void PublishSubgraphs(
+      const std::string& function_name,
+      std::unique_ptr<std::unordered_map<string, std::unique_ptr<Graph>>>
+          subgraphs);
 
   // Data structure holding information for a single instantiated remote
   // (to be executed on `target_device`) function.
@@ -423,42 +491,62 @@ class ProcessFunctionLibraryRuntime {
     mutex mu_;
 
     const string target_device_;
-    FunctionLibraryRuntime::LocalHandle local_handle_ GUARDED_BY(mu_);
+    FunctionLibraryRuntime::LocalHandle local_handle_ TF_GUARDED_BY(mu_);
     const string function_key_;
-    bool is_cross_process_ GUARDED_BY(mu_) = false;
-    bool init_started_ GUARDED_BY(mu_) = false;
-    Status init_result_ GUARDED_BY(mu_);
+    bool is_cross_process_ TF_GUARDED_BY(mu_) = false;
+    bool init_started_ TF_GUARDED_BY(mu_) = false;
+    Status init_result_ TF_GUARDED_BY(mu_);
     Notification init_done_;
   };
 
   mutable mutex mu_;
 
   Env* const env_;
-  const absl::optional<const ConfigProto> config_;
+  const std::optional<const ConfigProto> config_;
   const DeviceMgr* const device_mgr_;
-  DeviceSet device_set_;
   const FunctionLibraryDefinition* lib_def_;
   thread::ThreadPool* default_thread_pool_;
 
+  // Cluster update can reinitialize the device_set_ due to remote device
+  // changes. At the same time, InstantiateMultiDevice can use the cached
+  // devices to instantiate multi-worker functions. Function instantiation would
+  // fail if it spans the changed remote devices.
+  std::shared_ptr<DeviceSet> device_set_ TF_GUARDED_BY(mu_);
+
+  // Composite devices owned by a EagerContext.
+  std::vector<CompositeDevice*> composite_devices_ TF_GUARDED_BY(mu_);
+
   // Holds all the function instantiations. Maps function_keys to handles.
   std::unordered_map<string, FunctionLibraryRuntime::Handle> table_
-      GUARDED_BY(mu_);
+      TF_GUARDED_BY(mu_);
 
-  // Function data for instantitated remote functions.
+  // Function data for instantiated remote functions.
   std::unordered_map<FunctionLibraryRuntime::Handle,
                      std::unique_ptr<FunctionData>>
-      function_data_ GUARDED_BY(mu_);
+      function_data_ TF_GUARDED_BY(mu_);
 
   // Function data for instantiated multi-device functions.
   std::unordered_map<FunctionLibraryRuntime::Handle,
                      std::unique_ptr<MultiDeviceFunctionData>>
-      mdevice_data_ GUARDED_BY(mu_);
+      mdevice_data_ TF_GUARDED_BY(mu_);
 
   std::unique_ptr<
-      std::unordered_map<Device*, std::unique_ptr<FunctionLibraryRuntime>>>
+      std::unordered_map<Device*, core::RefCountPtr<FunctionLibraryRuntime>>>
       flr_map_;
-  int next_handle_ GUARDED_BY(mu_);
+  int next_handle_ TF_GUARDED_BY(mu_);
   const SessionMetadata* const session_metadata_;
+  const Rendezvous::Factory rendezvous_factory_;
+
+  const OptimizerOptions optimizer_options_;
+  const int graph_def_version_;
+
+  StatsPublisherFactory stats_publisher_factory_;
+  // Holds all stats publishers, one for publishing subgraphs of each
+  // instantiated function.
+  std::vector<std::unique_ptr<StatsPublisherInterface>> stats_publishers_
+      TF_GUARDED_BY(mu_);
+  std::vector<std::unique_ptr<tsl::Notification>> stats_publisher_completed_
+      TF_GUARDED_BY(mu_);
 };
 
 }  // namespace tensorflow

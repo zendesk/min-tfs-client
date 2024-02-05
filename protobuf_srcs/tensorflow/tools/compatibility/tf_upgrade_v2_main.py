@@ -1,4 +1,3 @@
-# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,13 +14,7 @@
 # ==============================================================================
 """Upgrader for Python scripts from 1.x TensorFlow to 2.0 TensorFlow."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import argparse
-
-import six
 
 from tensorflow.tools.compatibility import ast_edits
 from tensorflow.tools.compatibility import ipynb
@@ -35,14 +28,17 @@ _DEFAULT_MODE = "DEFAULT"
 # Convert to use compat.v1.
 _SAFETY_MODE = "SAFETY"
 
+# Whether to rename to compat.v2
+_IMPORT_RENAME_DEFAULT = False
+
 
 def process_file(in_filename, out_filename, upgrader):
   """Process a file of type `.py` or `.ipynb`."""
 
-  if six.ensure_str(in_filename).endswith(".py"):
+  if in_filename.endswith(".py"):
     files_processed, report_text, errors = \
       upgrader.process_file(in_filename, out_filename)
-  elif six.ensure_str(in_filename).endswith(".ipynb"):
+  elif in_filename.endswith(".ipynb"):
     files_processed, report_text, errors = \
       ipynb.process_file(in_filename, out_filename, upgrader)
   else:
@@ -96,9 +92,17 @@ Simple usage:
             "input files."),
       action="store_true")
   parser.add_argument(
-      "--import_rename",
-      dest="import_rename",
-      help=("Whether to rename import to compact.v2 explicitly."),
+      "--no_import_rename",
+      dest="no_import_rename",
+      help=("Not to rename import to compat.v2 explicitly."),
+      action="store_true")
+  parser.add_argument(
+      "--no_upgrade_compat_v1_import",
+      dest="no_upgrade_compat_v1_import",
+      help=("If specified, don't upgrade explicit imports of "
+            "`tensorflow.compat.v1 as tf` to the v2 APIs. Otherwise, "
+            "explicit imports of  the form `tensorflow.compat.v1 as tf` will "
+            "be upgraded."),
       action="store_true")
   parser.add_argument(
       "--reportfile",
@@ -128,7 +132,14 @@ Simple usage:
   if args.mode == _SAFETY_MODE:
     change_spec = tf_upgrade_v2_safety.TFAPIChangeSpec()
   else:
-    change_spec = tf_upgrade_v2.TFAPIChangeSpec(args.import_rename)
+    if args.no_import_rename:
+      change_spec = tf_upgrade_v2.TFAPIChangeSpec(
+          import_rename=False,
+          upgrade_compat_v1_import=not args.no_upgrade_compat_v1_import)
+    else:
+      change_spec = tf_upgrade_v2.TFAPIChangeSpec(
+          import_rename=_IMPORT_RENAME_DEFAULT,
+          upgrade_compat_v1_import=not args.no_upgrade_compat_v1_import)
   upgrade = ast_edits.ASTCodeUpgrader(change_spec)
 
   report_text = None
@@ -140,8 +151,7 @@ Simple usage:
           "--outfile=<output file> argument is required when converting a "
           "single file.")
     if args.in_place and args.output_file:
-      raise ValueError(
-          "--outfile argument is invalid when when converting in place")
+      raise ValueError("--outfile argument is invalid when converting in place")
     output_file = args.input_file if args.in_place else args.output_file
     files_processed, report_text, errors = process_file(
         args.input_file, output_file, upgrade)
@@ -153,8 +163,7 @@ Simple usage:
           "--outtree=<output directory> argument is required when converting a "
           "file tree.")
     if args.in_place and args.output_tree:
-      raise ValueError(
-          "--outtree argument is invalid when when converting in place")
+      raise ValueError("--outtree argument is invalid when converting in place")
     output_tree = args.input_tree if args.in_place else args.output_tree
     files_processed, report_text, errors = upgrade.process_tree(
         args.input_tree, output_tree, args.copy_other_files)
@@ -166,24 +175,24 @@ Simple usage:
     for f in errors:
       if errors[f]:
         num_errors += len(errors[f])
-        report.append(six.ensure_str("-" * 80) + "\n")
+        report.append("-" * 80 + "\n")
         report.append("File: %s\n" % f)
-        report.append(six.ensure_str("-" * 80) + "\n")
+        report.append("-" * 80 + "\n")
         report.append("\n".join(errors[f]) + "\n")
 
     report = ("TensorFlow 2.0 Upgrade Script\n"
               "-----------------------------\n"
               "Converted %d files\n" % files_processed +
               "Detected %d issues that require attention" % num_errors + "\n" +
-              six.ensure_str("-" * 80) + "\n") + "".join(report)
-    detailed_report_header = six.ensure_str("=" * 80) + "\n"
+              "-" * 80 + "\n") + "".join(report)
+    detailed_report_header = "=" * 80 + "\n"
     detailed_report_header += "Detailed log follows:\n\n"
-    detailed_report_header += six.ensure_str("=" * 80) + "\n"
+    detailed_report_header += "=" * 80 + "\n"
 
     with open(report_filename, "w") as report_file:
       report_file.write(report)
       report_file.write(detailed_report_header)
-      report_file.write(six.ensure_str(report_text))
+      report_file.write(report_text)
 
     if args.print_all:
       print(report)

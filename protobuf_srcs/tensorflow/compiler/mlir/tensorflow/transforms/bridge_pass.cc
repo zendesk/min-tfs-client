@@ -13,20 +13,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "mlir/Pass/Pass.h"  // TF:local_config_mlir
-#include "mlir/Pass/PassManager.h"  // TF:local_config_mlir
-#include "mlir/Transforms/Passes.h"  // TF:local_config_mlir
+#include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Pass/PassManager.h"  // from @llvm-project
+#include "mlir/Transforms/Passes.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/transforms/bridge.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 
 namespace {
 
-// Registers an existing pipeline builder function.
-static mlir::PassPipelineRegistration<> pipeline(
+// Registers a pipeline builder function for TF TPU bridge.
+mlir::PassPipelineRegistration<> tpu_pipeline(
     "tf-tpu-bridge",
     "Run all the passes involved in transforming the graph before execution so "
     "that it is suitable for targeting TPUs.",
-    mlir::TFTPU::createTPUBridge);
+    [](mlir::OpPassManager& pm) {
+      return mlir::TFTPU::CreateTPUBridgePipeline(pm);
+    });
 
 }  // anonymous namespace

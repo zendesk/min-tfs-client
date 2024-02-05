@@ -15,8 +15,10 @@ limitations under the License.
 #include "tensorflow/lite/toco/tensorflow_util.h"
 
 #include <string.h>
+
 #include <memory>
 #include <set>
+#include <string>
 
 #ifdef GOOGLE_PLATFORM
 #include "file/logging/log_lines.h"
@@ -37,16 +39,16 @@ namespace toco {
 using tensorflow::AttrValue;
 using tensorflow::GraphDef;
 
-void LogDumpGraphDef(int log_level, const string& message,
+void LogDumpGraphDef(int log_level, const std::string& message,
                      const GraphDef& tf_graph) {
   if (!VLOG_IS_ON(log_level)) {
     return;
   }
-  std::set<string> ops;
+  std::set<std::string> ops;
   for (const auto& node : tf_graph.node()) {
     ops.insert(node.op());
   }
-  string dump;
+  std::string dump;
   toco::port::AppendF(&dump, R"MSG(
 BEGIN DUMP OF TENSORFLOW GRAPHDEF (%s)
 There are %d nodes.

@@ -14,11 +14,8 @@
 # ==============================================================================
 """Tests for stateful random-number generation ops."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import itertools
+import os
 
 from absl.testing import parameterized
 import numpy as np
@@ -26,16 +23,23 @@ import numpy as np
 from tensorflow.compiler.tests import xla_test
 from tensorflow.python.client import device_lib
 from tensorflow.python.eager import def_function
+from tensorflow.python.framework import config
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors_impl
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import test_util
 from tensorflow.python.kernel_tests.random import util as \
 random_test_util
 from tensorflow.python.ops import gen_stateful_random_ops
+from tensorflow.python.ops import random_ops_util
 from tensorflow.python.ops import stateful_random_ops as \
 random
 from tensorflow.python.ops import variables
+from tensorflow.python.platform import flags
 from tensorflow.python.platform import test
+
+
+FLAGS = flags.FLAGS
 
 
 def xla_device():
@@ -56,7 +60,11 @@ def xla_device_name():
   return str(xla_device().name)
 
 
-ALGS = [random.RNG_ALG_PHILOX, random.RNG_ALG_THREEFRY]
+ALGS = [
+    random_ops_util.Algorithm.PHILOX.value,
+    random_ops_util.Algorithm.THREEFRY.value,
+    random_ops_util.Algorithm.AUTO_SELECT.value,
+]
 INTS = [dtypes.int32, dtypes.uint32, dtypes.int64, dtypes.uint64]
 FLOATS = [dtypes.bfloat16, dtypes.float32, dtypes.float64]
 
@@ -153,63 +161,53 @@ class StatefulRandomOpsTest(xla_test.XLATestCase, parameterized.TestCase):
           [0xa4093822, 0x299f31d0],
           [0xd16cfe09, 0x94fdcceb, 0x5001e420, 0x24126ea1])
 
-  def testNewStateThreeFry(self):
-    """Tests that the new state is correct (for ThreeFry).
-    """
-    with ops.device(xla_device_name()):
-      counter = 57
-      key = 0x1234
-      size = 46
-      state = [counter, key]
-      gen = random.Generator(state=state, alg=random.RNG_ALG_THREEFRY)
-      gen.uniform_full_int(shape=(size,), dtype=dtypes.uint32)
-      self.assertAllEqual([counter+(size+1)//2, key], gen.state.read_value())
-      gen.reset(state)
-      gen.uniform_full_int(shape=(size,), dtype=dtypes.uint64)
-      self.assertAllEqual([counter+size, key], gen.state.read_value())
-
-  def testNewStatePhilox(self):
-    """Tests that the new state is correct (for Philox).
-    """
-    with ops.device(xla_device_name()):
-      counter_low = 57
-      counter_high = 283
-      key = 0x1234
-      size = 47
-      state = [counter_low, counter_high, key]
-      gen = random.Generator(state=state, alg=random.RNG_ALG_PHILOX)
-      gen.uniform_full_int(shape=(size,), dtype=dtypes.uint32)
-      self.assertAllEqual([counter_low+(size+3)//4, counter_high, key],
-                          gen.state.read_value())
-      gen.reset(state)
-      gen.uniform_full_int(shape=(size,), dtype=dtypes.uint64)
-      self.assertAllEqual([counter_low+(size+1)//2, counter_high, key],
-                          gen.state.read_value())
-      # Tests that large counter_low will correctly overflows to counter_high
-      counter_low = -1  # same as 0xffffffffffffffff
-      counter_high = 283
-      size = 47
-      state = [counter_low, counter_high, key]
-      gen = random.Generator(state=state, alg=random.RNG_ALG_PHILOX)
-      gen.uniform_full_int(shape=(size,), dtype=dtypes.uint32)
-      self.assertAllEqual([(size+3)//4-1, counter_high+1, key],
-                          gen.state.read_value())
-      gen.reset(state)
-      gen.uniform_full_int(shape=(size,), dtype=dtypes.uint64)
-      self.assertAllEqual([(size+1)//2-1, counter_high+1, key],
-                          gen.state.read_value())
-
   @parameterized.parameters(INTS)
   def testXLAEqualsCPU(self, dtype):
     """Tests that XLA and CPU kernels generate the same integers."""
     seed = 1234
     shape = [315, 49]
     with ops.device("/device:CPU:0"):
-      cpu = (random.Generator.from_seed(seed=seed, alg=random.RNG_ALG_PHILOX)
-             .uniform_full_int(shape=shape, dtype=dtype))
+      cpu_gen = random.Generator.from_seed(seed=seed, alg=random.RNG_ALG_PHILOX)
     with ops.device(xla_device_name()):
-      xla = (random.Generator.from_seed(seed=seed, alg=random.RNG_ALG_PHILOX)
-             .uniform_full_int(shape=shape, dtype=dtype))
+      xla_gen = random.Generator.from_seed(seed=seed, alg=random.RNG_ALG_PHILOX)
+    # Repeat multiple times to make sure that the state after
+    # number-generation are the same between CPU and XLA.
+    for _ in range(5):
+      with ops.device("/device:CPU:0"):
+        # Test both number-generation and skip
+        cpu = cpu_gen.uniform_full_int(shape=shape, dtype=dtype)
+        cpu_gen.skip(100)
+      with ops.device(xla_device_name()):
+        xla = xla_gen.uniform_full_int(shape=shape, dtype=dtype)
+        xla_gen.skip(100)
+      self.assertAllEqual(cpu, xla)
+      self.assertAllEqual(cpu_gen.state, xla_gen.state)
+
+  def testXLAEqualsCPUAroundCounterOverflow(self):
+    """Tests XLA and CPU kernels generate the same integers in overflow case.
+
+       Specifically this tests the case where the counter is incremented past
+       what can fit within 64 bits of the 128 bit Philox counter.
+    """
+    dtype = dtypes.uint64
+    seed = 2**64 - 10
+    shape = [315, 49]
+    with ops.device("/device:CPU:0"):
+      cpu_gen = random.Generator.from_seed(seed=seed, alg=random.RNG_ALG_PHILOX)
+    with ops.device(xla_device_name()):
+      xla_gen = random.Generator.from_seed(seed=seed, alg=random.RNG_ALG_PHILOX)
+    # Repeat multiple times to make sure that the state after
+    # number-generation are the same between CPU and XLA.
+    for _ in range(5):
+      with ops.device("/device:CPU:0"):
+        # Test both number-generation and skip
+        cpu = cpu_gen.uniform_full_int(shape=shape, dtype=dtype)
+        cpu_gen.skip(100)
+      with ops.device(xla_device_name()):
+        xla = xla_gen.uniform_full_int(shape=shape, dtype=dtype)
+        xla_gen.skip(100)
+      self.assertAllEqual(cpu, xla)
+      self.assertAllEqual(cpu_gen.state, xla_gen.state)
     self.assertAllEqual(cpu, xla)
 
   def _testRngIsNotConstant(self, rng, dtype):
@@ -267,13 +265,30 @@ class StatefulRandomOpsTest(xla_test.XLATestCase, parameterized.TestCase):
       x = gen.normal(shape=[10000], dtype=dtype).numpy()
       self.assertTrue(np.all(np.isfinite(x)))
 
-  @parameterized.parameters(list(itertools.product(ALGS, INTS + FLOATS)))
-  def testDistributionOfUniform(self, alg, dtype):
+  @parameterized.parameters(list(itertools.product(
+      ALGS, INTS + FLOATS, (12, 13, 123, 4321))))
+  def testDistributionOfUniform(self, alg, dtype, seed):
     """Use Pearson's Chi-squared test to test for uniformity."""
     self.check_dtype(dtype)
+    three_fry = random_ops_util.Algorithm.THREEFRY.value
+    auto_select = random_ops_util.Algorithm.AUTO_SELECT.value
+    is_tpu = xla_device().device_type == "TPU"
+    is_megacore = "megacore" in os.environ.get("TEST_TARGET", "").lower()
+    # TODO(b/244649364): Investigate why these combinations fail.
+    if ((alg, dtype, seed) in [(three_fry, dtypes.int64, 123),
+                               (three_fry, dtypes.uint64, 123)] or
+        is_tpu and
+        (alg, dtype, seed) in [(auto_select, dtypes.int64, 123),
+                               (auto_select, dtypes.uint64, 123)] or
+        is_megacore and
+        (alg, dtype, seed) in [(auto_select, dtypes.int32, 123),
+                               (auto_select, dtypes.uint32, 123),
+                               (auto_select, dtypes.int32, 12),
+                               (auto_select, dtypes.uint32, 12)]):
+      self.skipTest(
+          "This (device, alg, dtype, seed) combination fails (b/244649364).")
     with ops.device(xla_device_name()):
       n = 1000
-      seed = 12
       gen = random.Generator.from_seed(seed=seed, alg=alg)
       maxval = 1
       if dtype.is_integer:
@@ -316,6 +331,8 @@ class StatefulRandomOpsTest(xla_test.XLATestCase, parameterized.TestCase):
           mean_atol=2e-3, median_atol=4e-3,
           variance_rtol=1e-2 if dtype == dtypes.bfloat16 else 5e-3)
 
+  @test_util.disable_mlir_bridge(
+      "b/180412086: MLIR bridge gives wrong error messages.")
   def testErrors(self):
     """Tests that proper errors are raised.
     """
@@ -324,7 +341,7 @@ class StatefulRandomOpsTest(xla_test.XLATestCase, parameterized.TestCase):
       gen = random.Generator.from_seed(seed=1234, alg=random.RNG_ALG_THREEFRY)
       with self.assertRaisesWithPredicateMatch(
           errors_impl.InvalidArgumentError,
-          r"algorithm must be of shape \[\], not"):
+          r"algorithm.* must be of shape \[\], not"):
         gen_stateful_random_ops.stateful_standard_normal_v2(
             gen.state.handle, [0, 0], shape)
       with self.assertRaisesWithPredicateMatch(
@@ -336,10 +353,14 @@ class StatefulRandomOpsTest(xla_test.XLATestCase, parameterized.TestCase):
           "Unsupported algorithm id"):
         gen_stateful_random_ops.stateful_standard_normal_v2(
             gen.state.handle, 123, shape)
+      with self.assertRaisesWithPredicateMatch(errors_impl.InvalidArgumentError,
+                                               "Unsupported algorithm id"):
+        gen_stateful_random_ops.rng_read_and_skip(
+            gen.state.handle, alg=123, delta=10)
       var = variables.Variable([0, 0], dtype=dtypes.uint32)
       with self.assertRaisesWithPredicateMatch(
           errors_impl.InvalidArgumentError,
-          "Type mismatch for read of variable .* Expected int64; got"):
+          "Trying to read variable .* Expected int64 got"):
         gen_stateful_random_ops.stateful_standard_normal_v2(
             var.handle, random.RNG_ALG_THREEFRY, shape)
       var = variables.Variable([[0]], dtype=dtypes.int64)
@@ -364,4 +385,5 @@ class StatefulRandomOpsTest(xla_test.XLATestCase, parameterized.TestCase):
 
 if __name__ == "__main__":
   ops.enable_eager_execution()
+  config.set_soft_device_placement(False)
   test.main()

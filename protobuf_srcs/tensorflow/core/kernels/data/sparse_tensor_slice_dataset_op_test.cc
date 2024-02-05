@@ -13,7 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/core/kernels/data/dataset_test_base.h"
+#include <string>
+#include <utility>
+
+#include "tensorflow/core/data/dataset_test_base.h"
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/serialization_utils.h"
 
 namespace tensorflow {
 namespace data {
@@ -45,13 +50,13 @@ class SparseTensorSliceDatasetParams : public DatasetParams {
     input_names->emplace_back("indices");
     input_names->emplace_back("values");
     input_names->emplace_back("dense_shape");
-    return Status::OK();
+    return OkStatus();
   }
 
   Status GetAttributes(AttributeVector* attr_vector) const override {
     attr_vector->clear();
     attr_vector->emplace_back("Tvalues", tvalues_);
-    return Status::OK();
+    return OkStatus();
   }
 
   string dataset_type() const override { return kDatasetType; }
@@ -63,40 +68,40 @@ class SparseTensorSliceDatasetParams : public DatasetParams {
   DataType tvalues_;
 };
 
-class SparseTensorSliceDatasetOpTest : public DatasetOpsTestBaseV2 {};
+class SparseTensorSliceDatasetOpTest : public DatasetOpsTestBase {};
 
 SparseTensorSliceDatasetParams TwoDimsSparseTensorSliceDatasetParams() {
   return SparseTensorSliceDatasetParams(
-      /*indices=*/CreateTensor<int64>({2, 2}, {0, 0, 1, 1}),
+      /*indices=*/CreateTensor<int64_t>({2, 2}, {0, 0, 1, 1}),
       /*values=*/CreateTensor<int32>({2}, {888, 999}),
-      /*dense_shape=*/CreateTensor<int64>({2}, {2, 2}),
+      /*dense_shape=*/CreateTensor<int64_t>({2}, {2, 2}),
       /*tvalues=*/DT_INT32,
       /*node_name=*/kNodeName);
 }
 
 SparseTensorSliceDatasetParams ThreeDimsSparseTensorSliceDatasetParams() {
   return SparseTensorSliceDatasetParams(
-      /*indices=*/CreateTensor<int64>({2, 3}, {0, 0, 0, 1, 1, 1}),
+      /*indices=*/CreateTensor<int64_t>({2, 3}, {0, 0, 0, 1, 1, 1}),
       /*values=*/CreateTensor<double>({2}, {888.0, 999.0}),
-      /*dense_shape=*/CreateTensor<int64>({3}, {2, 2, 2}),
+      /*dense_shape=*/CreateTensor<int64_t>({3}, {2, 2, 2}),
       /*tvalues=*/DT_DOUBLE,
       /*node_name=*/kNodeName);
 }
 
 SparseTensorSliceDatasetParams FourDimsSparseTensorSliceDatasetParams() {
   return SparseTensorSliceDatasetParams(
-      /*indices=*/CreateTensor<int64>({2, 4}, {0, 0, 0, 0, 1, 1, 1, 1}),
+      /*indices=*/CreateTensor<int64_t>({2, 4}, {0, 0, 0, 0, 1, 1, 1, 1}),
       /*values=*/CreateTensor<tstring>({2}, {"a", "b"}),
-      /*dense_shape=*/CreateTensor<int64>({4}, {3, 2, 2, 2}),
+      /*dense_shape=*/CreateTensor<int64_t>({4}, {3, 2, 2, 2}),
       /*tvalues=*/DT_STRING,
       /*node_name=*/kNodeName);
 }
 
 SparseTensorSliceDatasetParams FiveDimsSparseTensorSliceDatasetParams() {
   return SparseTensorSliceDatasetParams(
-      /*indices=*/CreateTensor<int64>({2, 5}, {0, 0, 0, 0, 0, 1, 1, 1, 1, 1}),
+      /*indices=*/CreateTensor<int64_t>({2, 5}, {0, 0, 0, 0, 0, 1, 1, 1, 1, 1}),
       /*values=*/CreateTensor<int32>({2}, {888, 999}),
-      /*dense_shape=*/CreateTensor<int64>({5}, {3, 2, 2, 2, 2}),
+      /*dense_shape=*/CreateTensor<int64_t>({5}, {3, 2, 2, 2, 2}),
       /*tvalues=*/DT_INT32,
       /*node_name=*/kNodeName);
 }
@@ -111,48 +116,48 @@ std::vector<GetNextTestCase<SparseTensorSliceDatasetParams>>
 GetNextTestCases() {
   return {{/*dataset_params=*/TwoDimsSparseTensorSliceDatasetParams(),
            /*expected_outputs=*/
-           {{/*indices*/ CreateTensor<int64>({1, 1}, {0}),
+           {{/*indices*/ CreateTensor<int64_t>({1, 1}, {0}),
              /*values*/ CreateTensor<int32>({1}, {888}),
-             /*dense_shape*/ CreateTensor<int64>({1}, {2})},
-            {/*indices*/ CreateTensor<int64>({1, 1}, {1}),
+             /*dense_shape*/ CreateTensor<int64_t>({1}, {2})},
+            {/*indices*/ CreateTensor<int64_t>({1, 1}, {1}),
              /*values*/ CreateTensor<int32>({1}, {999}),
-             /*dense_shape*/ CreateTensor<int64>({1}, {2})}}},
+             /*dense_shape*/ CreateTensor<int64_t>({1}, {2})}}},
           {/*dataset_params=*/ThreeDimsSparseTensorSliceDatasetParams(),
            /*expected_outputs=*/
-           {{/*indices*/ CreateTensor<int64>({1, 2}, {0, 0}),
+           {{/*indices*/ CreateTensor<int64_t>({1, 2}, {0, 0}),
              /*values*/ CreateTensor<double>({1}, {888.0}),
-             /*dense_shape*/ CreateTensor<int64>({2}, {2, 2})},
-            {{/*indices*/ CreateTensor<int64>({1, 2}, {1, 1})},
+             /*dense_shape*/ CreateTensor<int64_t>({2}, {2, 2})},
+            {{/*indices*/ CreateTensor<int64_t>({1, 2}, {1, 1})},
              {/*values*/ CreateTensor<double>({1}, {999.0})},
-             {/*dense_shape*/ CreateTensor<int64>({2}, {2, 2})}}}},
+             {/*dense_shape*/ CreateTensor<int64_t>({2}, {2, 2})}}}},
           {/*dataset_params=*/FourDimsSparseTensorSliceDatasetParams(),
            /*expected_outputs=*/
-           {{/*indices*/ CreateTensor<int64>({1, 3}, {0, 0, 0}),
+           {{/*indices*/ CreateTensor<int64_t>({1, 3}, {0, 0, 0}),
              /*values*/ CreateTensor<tstring>({1}, {"a"}),
              /*dense_shape*/
-             CreateTensor<int64>({3}, {2, 2, 2})},
-            {/*indices*/ CreateTensor<int64>({1, 3}, {1, 1, 1}),
+             CreateTensor<int64_t>({3}, {2, 2, 2})},
+            {/*indices*/ CreateTensor<int64_t>({1, 3}, {1, 1, 1}),
              /*values*/ CreateTensor<tstring>({1}, {"b"}),
              /*dense_shape*/
-             CreateTensor<int64>({3}, {2, 2, 2})},
-            {/*indices*/ CreateTensor<int64>({0, 3}, {}),
+             CreateTensor<int64_t>({3}, {2, 2, 2})},
+            {/*indices*/ CreateTensor<int64_t>({0, 3}, {}),
              /*values*/ CreateTensor<tstring>({0}, {}),
              /*dense_shape*/
-             CreateTensor<int64>({3}, {2, 2, 2})}}},
+             CreateTensor<int64_t>({3}, {2, 2, 2})}}},
           {/*dataset_params=*/FiveDimsSparseTensorSliceDatasetParams(),
            /*expected_outputs=*/{
-               {/*indices*/ CreateTensor<int64>({1, 4}, {0, 0, 0, 0}),
+               {/*indices*/ CreateTensor<int64_t>({1, 4}, {0, 0, 0, 0}),
                 /*values*/ CreateTensor<int32>({1}, {888}),
                 /*dense_shape*/
-                CreateTensor<int64>({4}, {2, 2, 2, 2})},
-               {/*indices*/ CreateTensor<int64>({1, 4}, {1, 1, 1, 1}),
+                CreateTensor<int64_t>({4}, {2, 2, 2, 2})},
+               {/*indices*/ CreateTensor<int64_t>({1, 4}, {1, 1, 1, 1}),
                 /*values*/ CreateTensor<int32>({1}, {999}),
                 /*dense_shape*/
-                CreateTensor<int64>({4}, {2, 2, 2, 2})},
-               {/*indices*/ CreateTensor<int64>({0, 4}, {}),
+                CreateTensor<int64_t>({4}, {2, 2, 2, 2})},
+               {/*indices*/ CreateTensor<int64_t>({0, 4}, {}),
                 /*values*/ CreateTensor<int32>({0}, {}),
                 /*dense_shape*/
-                CreateTensor<int64>({4}, {2, 2, 2, 2})}}}};
+                CreateTensor<int64_t>({4}, {2, 2, 2, 2})}}}};
 }
 
 class ParameterizedGetNextTest
@@ -311,51 +316,51 @@ IteratorSaveAndRestoreTestCases() {
   return {{/*dataset_params=*/TwoDimsSparseTensorSliceDatasetParams(),
            /*breakpoints=*/{0, 1, 2},
            /*expected_outputs=*/
-           {{/*indices*/ CreateTensor<int64>({1, 1}, {0}),
+           {{/*indices*/ CreateTensor<int64_t>({1, 1}, {0}),
              /*values*/ CreateTensor<int32>({1}, {888}),
-             /*dense_shape*/ CreateTensor<int64>({1}, {2})},
-            {/*indices*/ CreateTensor<int64>({1, 1}, {1}),
+             /*dense_shape*/ CreateTensor<int64_t>({1}, {2})},
+            {/*indices*/ CreateTensor<int64_t>({1, 1}, {1}),
              /*values*/ CreateTensor<int32>({1}, {999}),
-             /*dense_shape*/ CreateTensor<int64>({1}, {2})}}},
+             /*dense_shape*/ CreateTensor<int64_t>({1}, {2})}}},
           {/*dataset_params=*/ThreeDimsSparseTensorSliceDatasetParams(),
            /*breakpoints=*/{0, 1, 2},
            /*expected_outputs=*/
-           {{/*indices*/ CreateTensor<int64>({1, 2}, {0, 0}),
+           {{/*indices*/ CreateTensor<int64_t>({1, 2}, {0, 0}),
              /*values*/ CreateTensor<double>({1}, {888.0}),
-             /*dense_shape*/ CreateTensor<int64>({2}, {2, 2})},
-            {{/*indices*/ CreateTensor<int64>({1, 2}, {1, 1})},
+             /*dense_shape*/ CreateTensor<int64_t>({2}, {2, 2})},
+            {{/*indices*/ CreateTensor<int64_t>({1, 2}, {1, 1})},
              {/*values*/ CreateTensor<double>({1}, {999.0})},
-             {/*dense_shape*/ CreateTensor<int64>({2}, {2, 2})}}}},
+             {/*dense_shape*/ CreateTensor<int64_t>({2}, {2, 2})}}}},
           {/*dataset_params=*/FourDimsSparseTensorSliceDatasetParams(),
            /*breakpoints=*/{0, 1, 3},
            /*expected_outputs=*/
-           {{/*indices*/ CreateTensor<int64>({1, 3}, {0, 0, 0}),
+           {{/*indices*/ CreateTensor<int64_t>({1, 3}, {0, 0, 0}),
              /*values*/ CreateTensor<tstring>({1}, {"a"}),
              /*dense_shape*/
-             CreateTensor<int64>({3}, {2, 2, 2})},
-            {/*indices*/ CreateTensor<int64>({1, 3}, {1, 1, 1}),
+             CreateTensor<int64_t>({3}, {2, 2, 2})},
+            {/*indices*/ CreateTensor<int64_t>({1, 3}, {1, 1, 1}),
              /*values*/ CreateTensor<tstring>({1}, {"b"}),
              /*dense_shape*/
-             CreateTensor<int64>({3}, {2, 2, 2})},
-            {/*indices*/ CreateTensor<int64>({0, 3}, {}),
+             CreateTensor<int64_t>({3}, {2, 2, 2})},
+            {/*indices*/ CreateTensor<int64_t>({0, 3}, {}),
              /*values*/ CreateTensor<tstring>({0}, {}),
              /*dense_shape*/
-             CreateTensor<int64>({3}, {2, 2, 2})}}},
+             CreateTensor<int64_t>({3}, {2, 2, 2})}}},
           {/*dataset_params=*/FiveDimsSparseTensorSliceDatasetParams(),
            /*breakpoints=*/{0, 1, 2},
            /*expected_outputs=*/
-           {{/*indices*/ CreateTensor<int64>({1, 4}, {0, 0, 0, 0}),
+           {{/*indices*/ CreateTensor<int64_t>({1, 4}, {0, 0, 0, 0}),
              /*values*/ CreateTensor<int32>({1}, {888}),
              /*dense_shape*/
-             CreateTensor<int64>({4}, {2, 2, 2, 2})},
-            {/*indices*/ CreateTensor<int64>({1, 4}, {1, 1, 1, 1}),
+             CreateTensor<int64_t>({4}, {2, 2, 2, 2})},
+            {/*indices*/ CreateTensor<int64_t>({1, 4}, {1, 1, 1, 1}),
              /*values*/ CreateTensor<int32>({1}, {999}),
              /*dense_shape*/
-             CreateTensor<int64>({4}, {2, 2, 2, 2})},
-            {/*indices*/ CreateTensor<int64>({0, 4}, {}),
+             CreateTensor<int64_t>({4}, {2, 2, 2, 2})},
+            {/*indices*/ CreateTensor<int64_t>({0, 4}, {}),
              /*values*/ CreateTensor<int32>({0}, {}),
              /*dense_shape*/
-             CreateTensor<int64>({4}, {2, 2, 2, 2})}}}};
+             CreateTensor<int64_t>({4}, {2, 2, 2, 2})}}}};
 }
 
 class ParameterizedIteratorSaveAndRestoreTest
@@ -372,7 +377,7 @@ TEST_P(ParameterizedIteratorSaveAndRestoreTest, IteratorSaveAndRestore) {
 
   int cur_iteration = 0;
   bool end_of_sequence = false;
-  int64 num_slices = dataset_->Cardinality();
+  int64_t num_slices = dataset_->Cardinality();
   std::vector<Tensor> out_tensors;
 
   for (int breakpoint : test_case.breakpoints) {
@@ -397,11 +402,11 @@ TEST_P(ParameterizedIteratorSaveAndRestoreTest, IteratorSaveAndRestore) {
       EXPECT_TRUE(end_of_sequence);
     }
 
-    VariantTensorData data;
-    VariantTensorDataWriter writer(&data);
+    VariantTensorDataWriter writer;
     TF_ASSERT_OK(iterator_->Save(serialization_ctx.get(), &writer));
-    TF_ASSERT_OK(writer.Flush());
-    VariantTensorDataReader reader(&data);
+    std::vector<const VariantTensorData*> data;
+    writer.GetData(&data);
+    VariantTensorDataReader reader(data);
     TF_EXPECT_OK(RestoreIterator(iterator_ctx_.get(), &reader,
                                  test_case.dataset_params.iterator_prefix(),
                                  *dataset_, &iterator_));

@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for profile_analyzer_cli."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import re
 
 from tensorflow.core.framework import step_stats_pb2
@@ -29,8 +25,8 @@ from tensorflow.python.debug.cli import profile_analyzer_cli
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
-from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import while_loop
 from tensorflow.python.platform import googletest
 from tensorflow.python.platform import test
 from tensorflow.python.util import tf_inspect
@@ -70,7 +66,7 @@ def _assert_no_lines_match(pattern, lines):
         "%s matched at least one line in %s." % (pattern, str(lines)))
 
 
-@test_util.run_v1_only("b/120545219")
+@test_util.run_v1_only("Requires tf.Session")
 class ProfileAnalyzerListProfileTest(test_util.TensorFlowTestCase):
 
   def testNodeInfoEmpty(self):
@@ -79,7 +75,7 @@ class ProfileAnalyzerListProfileTest(test_util.TensorFlowTestCase):
 
     prof_analyzer = profile_analyzer_cli.ProfileAnalyzer(graph, run_metadata)
     prof_output = prof_analyzer.list_profile([]).lines
-    self.assertEquals([""], prof_output)
+    self.assertEqual([""], prof_output)
 
   def testSingleDevice(self):
     node1 = step_stats_pb2.NodeExecStats(
@@ -211,22 +207,22 @@ class ProfileAnalyzerListProfileTest(test_util.TensorFlowTestCase):
 
     # Default sort by start time (i.e. all_start_micros).
     prof_output = prof_analyzer.list_profile([]).lines
-    self.assertRegexpMatches("".join(prof_output), r"Mul/456.*Add/123")
+    self.assertRegex("".join(prof_output), r"Mul/456.*Add/123")
     # Default sort in reverse.
     prof_output = prof_analyzer.list_profile(["-r"]).lines
-    self.assertRegexpMatches("".join(prof_output), r"Add/123.*Mul/456")
+    self.assertRegex("".join(prof_output), r"Add/123.*Mul/456")
     # Sort by name.
     prof_output = prof_analyzer.list_profile(["-s", "node"]).lines
-    self.assertRegexpMatches("".join(prof_output), r"Add/123.*Mul/456")
+    self.assertRegex("".join(prof_output), r"Add/123.*Mul/456")
     # Sort by op time (i.e. op_end_rel_micros - op_start_rel_micros).
     prof_output = prof_analyzer.list_profile(["-s", "op_time"]).lines
-    self.assertRegexpMatches("".join(prof_output), r"Mul/456.*Add/123")
+    self.assertRegex("".join(prof_output), r"Mul/456.*Add/123")
     # Sort by exec time (i.e. all_end_rel_micros).
     prof_output = prof_analyzer.list_profile(["-s", "exec_time"]).lines
-    self.assertRegexpMatches("".join(prof_output), r"Add/123.*Mul/456")
+    self.assertRegex("".join(prof_output), r"Add/123.*Mul/456")
     # Sort by line number.
     prof_output = prof_analyzer.list_profile(["-s", "line"]).lines
-    self.assertRegexpMatches("".join(prof_output), r"Mul/456.*Add/123")
+    self.assertRegex("".join(prof_output), r"Mul/456.*Add/123")
 
   def testFiltering(self):
     node1 = step_stats_pb2.NodeExecStats(
@@ -273,11 +269,11 @@ class ProfileAnalyzerListProfileTest(test_util.TensorFlowTestCase):
     prof_output = prof_analyzer.list_profile(["-f", ".*file2"]).lines
     _assert_at_least_one_line_matches(r"Add/123", prof_output)
     _assert_no_lines_match(r"Mul/456", prof_output)
-    # Fitler by execution time.
+    # Filter by execution time.
     prof_output = prof_analyzer.list_profile(["-e", "[5, 10]"]).lines
     _assert_at_least_one_line_matches(r"Mul/456", prof_output)
     _assert_no_lines_match(r"Add/123", prof_output)
-    # Fitler by op time.
+    # Filter by op time.
     prof_output = prof_analyzer.list_profile(["-o", ">=2"]).lines
     _assert_at_least_one_line_matches(r"Add/123", prof_output)
     _assert_no_lines_match(r"Mul/456", prof_output)
@@ -322,7 +318,7 @@ class ProfileAnalyzerListProfileTest(test_util.TensorFlowTestCase):
     _assert_at_least_one_line_matches(r"Device Total.*0\.009ms", prof_output)
 
 
-@test_util.run_v1_only("b/120545219")
+@test_util.run_v1_only("Requires tf.Session")
 class ProfileAnalyzerPrintSourceTest(test_util.TensorFlowTestCase):
 
   def setUp(self):
@@ -338,7 +334,7 @@ class ProfileAnalyzerPrintSourceTest(test_util.TensorFlowTestCase):
       self.loop_body_lineno = _line_number_above()
       x = constant_op.constant(0, name="x")
       self.x_lineno = _line_number_above()
-      loop = control_flow_ops.while_loop(loop_cond, loop_body, [x])
+      loop = while_loop.while_loop(loop_cond, loop_body, [x])
       self.loop_lineno = _line_number_above()
       self.assertEqual(
           10, sess.run(loop, options=options, run_metadata=run_metadata))

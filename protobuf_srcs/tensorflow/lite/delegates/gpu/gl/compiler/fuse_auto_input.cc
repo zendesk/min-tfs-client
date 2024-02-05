@@ -15,9 +15,11 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/compiler/fuse_auto_input.h"
 
+#include <any>
 #include <string>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "absl/types/any.h"
@@ -44,7 +46,7 @@ std::pair<std::string, std::string> MakeDataReplacement(int n, int k) {
 
 TransformResult FuseAutoInput::ApplyToNode(Node* node, GraphFloat32* graph) {
   auto& node_attr =
-      absl::any_cast<CompiledNodeAttributes&>(node->operation.attributes);
+      std::any_cast<CompiledNodeAttributes&>(node->operation.attributes);
   auto& node_code = node_attr.code;
 
   if (node_code.input != IOStructure::AUTO) {
@@ -73,7 +75,7 @@ TransformResult FuseAutoInput::ApplyToNode(Node* node, GraphFloat32* graph) {
     if (graph->FindOutputs(input_producer->id).size() != 1) {
       continue;  // input node has more than one output
     }
-    auto& input_producer_attr = absl::any_cast<const CompiledNodeAttributes&>(
+    auto& input_producer_attr = std::any_cast<const CompiledNodeAttributes&>(
         input_producer->operation.attributes);
     if (input_producer_attr.code.output != IOStructure::AUTO) {
       continue;
@@ -99,6 +101,25 @@ TransformResult FuseAutoInput::ApplyToNode(Node* node, GraphFloat32* graph) {
     return {TransformStatus::SKIPPED, ""};
   }
 
+  // Skip fusions which will result in duplicate inputs, e.g. diamond shapes.
+  {
+    absl::flat_hash_set<ValueId> all_inputs;
+    for (const auto& node_to_fuse : nodes_to_fuse) {
+      for (const auto& input : graph->FindInputs(node_to_fuse.first->id)) {
+        if (all_inputs.find(input->id) != all_inputs.end()) {
+          return {TransformStatus::SKIPPED, ""};
+        }
+        all_inputs.insert(input->id);
+      }
+    }
+    for (const auto& input : graph->FindInputs(node->id)) {
+      if (all_inputs.find(input->id) != all_inputs.end()) {
+        return {TransformStatus::SKIPPED, ""};
+      }
+      all_inputs.insert(input->id);
+    }
+  }
+
   // Break connections between current node and its inputs.
   for (auto value : graph->FindInputs(node->id)) {
     if (!graph->RemoveConsumer(node->id, value->id).ok()) {
@@ -122,7 +143,7 @@ TransformResult FuseAutoInput::ApplyToNode(Node* node, GraphFloat32* graph) {
   for (auto input_and_num : nodes_to_fuse) {
     auto& input = input_and_num.first;
     auto& attr =
-        absl::any_cast<CompiledNodeAttributes&>(input->operation.attributes);
+        std::any_cast<CompiledNodeAttributes&>(input->operation.attributes);
     auto super_inputs = graph->FindInputs(input->id);
 
     // Replace all internal references in the input source code. For example:

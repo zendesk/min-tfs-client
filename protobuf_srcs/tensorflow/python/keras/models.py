@@ -13,35 +13,33 @@
 # limitations under the License.
 # ==============================================================================
 # pylint: disable=protected-access
-"""Code for model cloning, plus model-related API entries.
-"""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+"""Code for model cloning, plus model-related API entries."""
 
-from tensorflow.python.keras import backend as K
+from tensorflow.python.framework import ops
+from tensorflow.python.keras import backend
 from tensorflow.python.keras import metrics as metrics_module
-from tensorflow.python.keras import optimizers
-from tensorflow.python.keras.engine import network
+from tensorflow.python.keras import optimizer_v1
+from tensorflow.python.keras.engine import functional
 from tensorflow.python.keras.engine import sequential
 from tensorflow.python.keras.engine import training
+from tensorflow.python.keras.engine import training_v1
 from tensorflow.python.keras.engine.base_layer import AddMetric
 from tensorflow.python.keras.engine.base_layer import Layer
 from tensorflow.python.keras.engine.input_layer import Input
 from tensorflow.python.keras.engine.input_layer import InputLayer
-from tensorflow.python.keras.engine.network import Network
 from tensorflow.python.keras.saving import model_config
 from tensorflow.python.keras.saving import save
 from tensorflow.python.keras.utils import generic_utils
+from tensorflow.python.keras.utils import version_utils
 from tensorflow.python.keras.utils.generic_utils import CustomObjectScope
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util import nest
-from tensorflow.python.util.tf_export import keras_export
 
 
 # API entries importable from `keras.models`:
 Model = training.Model  # pylint: disable=invalid-name
 Sequential = sequential.Sequential  # pylint: disable=invalid-name
+Functional = functional.Functional  # pylint: disable=invalid-name
 save_model = save.save_model
 load_model = save.load_model
 model_from_config = model_config.model_from_config
@@ -109,11 +107,12 @@ def _make_new_nodes(nodes_by_depth, layer_fn, layer_map, tensor_map):
       # then call node.inbound_layer on them.
       if all(
           tensor in tensor_map for tensor in nest.flatten(node.input_tensors)):
-        computed_tensors = nest.map_structure(lambda t: tensor_map[t],
-                                              node.input_tensors)
         # Call layer.
-        kwargs = node.arguments or {}
-        output_tensors = layer(computed_tensors, **kwargs)
+        args = nest.map_structure(lambda t: tensor_map.get(t, t),
+                                  node.call_args)
+        kwargs = nest.map_structure(lambda t: tensor_map.get(t, t),
+                                    node.call_kwargs)
+        output_tensors = layer(*args, **kwargs)
 
         # Thread-safe way to keep track of what node was created.
         first_output_tensor = nest.flatten(output_tensors)[0]
@@ -135,7 +134,7 @@ def _clone_functional_model(model, input_tensors=None, layer_fn=_clone_layer):
 
   Input layers are always cloned.
 
-  Arguments:
+  Args:
       model: Instance of `Model`.
       input_tensors: optional list of input tensors
           to build the model upon. If not provided,
@@ -177,7 +176,7 @@ def _clone_functional_model(model, input_tensors=None, layer_fn=_clone_layer):
 
       # Cache input layer. Create a new layer if the tensor is originally not
       # from a Keras layer.
-      if not K.is_keras_tensor(input_tensor):
+      if not backend.is_keras_tensor(input_tensor):
         name = original_input_layer.name
         input_tensor = Input(tensor=input_tensor,
                              name='input_wrapper_for_' + name)
@@ -189,12 +188,12 @@ def _clone_functional_model(model, input_tensors=None, layer_fn=_clone_layer):
   if not callable(layer_fn):
     raise ValueError('Expected `layer_fn` argument to be a callable.')
 
-  model_config, created_layers = _clone_layers_and_model_config(
+  model_configs, created_layers = _clone_layers_and_model_config(
       model, new_input_layers, layer_fn)
   # Reconstruct model from the config, using the cloned layers.
   input_tensors, output_tensors, created_layers = (
-      network.reconstruct_from_config(model_config,
-                                      created_layers=created_layers))
+      functional.reconstruct_from_config(model_configs,
+                                         created_layers=created_layers))
   metrics_names = model.metrics_names
   model = Model(input_tensors, output_tensors, name=model.name)
   # Layers not directly tied to outputs of the Model, such as loss layers
@@ -202,11 +201,13 @@ def _clone_functional_model(model, input_tensors=None, layer_fn=_clone_layer):
   ancillary_layers = [
       layer for layer in created_layers.values() if layer not in model.layers
   ]
+  # TODO(b/162887610): This may need to adjust the inbound node index if the
+  # created layers had already been used to define other models.
   if ancillary_layers:
     new_nodes = nest.flatten([
         layer.inbound_nodes[1:]
-        if network._should_skip_first_node(layer) else layer.inbound_nodes
-        for layer in created_layers.values()
+        if functional._should_skip_first_node(layer)
+        else layer.inbound_nodes for layer in created_layers.values()
     ])
     _insert_ancillary_layers(model, ancillary_layers, metrics_names, new_nodes)
   return model
@@ -240,7 +241,8 @@ def _clone_layers_and_model_config(model, input_layers, layer_fn):
       created_layers[layer.name] = layer_fn(layer)
     return {}
 
-  config = network.get_network_config(model, serialize_layer_fn=_copy_layer)
+  config = functional.get_network_config(
+      model, serialize_layer_fn=_copy_layer)
   return config, created_layers
 
 
@@ -280,7 +282,7 @@ def _clone_sequential_model(model, input_tensors=None, layer_fn=_clone_layer):
   except that it creates new layers (and thus new weights) instead
   of sharing the weights of the existing layers.
 
-  Arguments:
+  Args:
       model: Instance of `Sequential`.
       input_tensors: optional list of input tensors
           to build the model upon. If not provided,
@@ -311,10 +313,10 @@ def _clone_sequential_model(model, input_tensors=None, layer_fn=_clone_layer):
 
   layers = []  # Layers needed to compute the model's outputs.
   layer_map = {}
-  # Use model._layers to ensure that all layers are cloned. The model's layers
+  # Ensure that all layers are cloned. The model's layers
   # property will exclude the initial InputLayer (if it exists) in the model,
   # resulting in a different Sequential model structure.
-  for layer in model._layers:
+  for layer in model._flatten_layers(include_self=False, recursive=False):
     if isinstance(layer, InputLayer) and input_tensors is not None:
       # If input tensors are provided, the original model's InputLayer is
       # overwritten with a different InputLayer.
@@ -337,7 +339,7 @@ def _clone_sequential_model(model, input_tensors=None, layer_fn=_clone_layer):
     if isinstance(input_tensors, tuple):
       input_tensors = list(input_tensors)
     x = generic_utils.to_list(input_tensors)[0]
-    if K.is_keras_tensor(x):
+    if backend.is_keras_tensor(x):
       origin_layer = x._keras_history.layer
       if isinstance(origin_layer, InputLayer):
         cloned_model = Sequential(
@@ -378,20 +380,24 @@ def _clone_sequential_model(model, input_tensors=None, layer_fn=_clone_layer):
   return cloned_model
 
 
-@keras_export('keras.models.clone_model')
 def clone_model(model, input_tensors=None, clone_function=None):
-  """Clone any `Model` instance.
+  """Clone a Functional or Sequential `Model` instance.
 
   Model cloning is similar to calling a model on new inputs,
   except that it creates new layers (and thus new weights) instead
   of sharing the weights of the existing layers.
 
-  Arguments:
+  Note that
+  `clone_model` will not preserve the uniqueness of shared objects within the
+  model (e.g. a single variable attached to two distinct layers will be
+  restored as two separate variables).
+
+  Args:
       model: Instance of `Model`
-          (could be a functional model or a Sequential model).
+          (could be a Functional model or a Sequential model).
       input_tensors: optional list of input tensors or InputLayer objects
           to build the model upon. If not provided,
-          placeholders will be created.
+          new `Input` objects will be created.
       clone_function: Callable to be used to clone each layer in the target
           model (except `InputLayer` instances). It takes as argument the layer
           instance to be cloned, and returns the corresponding layer instance to
@@ -404,24 +410,45 @@ def clone_model(model, input_tensors=None, clone_function=None):
           `Bidirectional(LSTM(...))` instances, for example).
 
   Returns:
-      An instance of `Model` reproducing the behavior
-      of the original model, on top of new inputs tensors,
-      using newly instantiated weights. The cloned model might behave
-      differently from the original model if a custom clone_function
-      modifies the layer.
+    An instance of `Model` reproducing the behavior
+    of the original model, on top of new inputs tensors,
+    using newly instantiated weights. The cloned model may behave
+    differently from the original model if a custom `clone_function`
+    modifies the layer.
 
-  Raises:
-      ValueError: in case of invalid `model` argument value.
+  Example:
+
+  ```python
+  # Create a test Sequential model.
+  model = keras.Sequential([
+      keras.Input(shape=(728,)),
+      keras.layers.Dense(32, activation='relu'),
+      keras.layers.Dense(1, activation='sigmoid'),
+  ])
+  # Create a copy of the test model (with freshly initialized weights).
+  new_model = clone_model(model)
+  ```
+
+  Note that subclassed models cannot be cloned, since their internal
+  layer structure is not known. To achieve equivalent functionality
+  as `clone_model` in the case of a subclassed model, simply make sure
+  that the model class implements `get_config()`
+  (and optionally `from_config()`), and call:
+
+  ```python
+  new_model = model.__class__.from_config(model.get_config())
+  ```
   """
-  if clone_function is None:
-    clone_function = _clone_layer
+  with generic_utils.DisableSharedObjectScope():
+    if clone_function is None:
+      clone_function = _clone_layer
 
-  if isinstance(model, Sequential):
-    return _clone_sequential_model(
-        model, input_tensors=input_tensors, layer_fn=clone_function)
-  else:
-    return _clone_functional_model(
-        model, input_tensors=input_tensors, layer_fn=clone_function)
+    if isinstance(model, Sequential):
+      return _clone_sequential_model(
+          model, input_tensors=input_tensors, layer_fn=clone_function)
+    else:
+      return _clone_functional_model(
+          model, input_tensors=input_tensors, layer_fn=clone_function)
 
 
 # "Clone" a subclassed model by reseting all of the attributes.
@@ -447,12 +474,14 @@ def _in_place_subclassed_model_reset(model):
     ValueError: In case the model uses a subclassed model as inner layer.
   """
   assert not model._is_graph_network  # Only makes sense for subclassed networks
+  # Select correct base class for new Model.
+  version_utils.swap_class(model.__class__, training.Model, training_v1.Model,
+                           ops.executing_eagerly_outside_functions())
   # Retrieve all layers tracked by the model as well as their attribute names
   attributes_cache = {}
   for name in dir(model):
-    # Skip the check of methods in tf.Module since they basically
-    # recursively query all the other attributes within same module.
-    if name == 'submodules':
+    # Skip attrs that track other trackables.
+    if name == 'submodules' or name == '_self_tracked_trackables':
       continue
 
     try:
@@ -479,28 +508,24 @@ def _in_place_subclassed_model_reset(model):
 
   # Replace layers on the model with fresh layers
   layers_to_names = {value: key for key, value in attributes_cache.items()}
-  original_layers = model._layers[:]
+  original_layers = list(
+      model._flatten_layers(include_self=False, recursive=False))
   setattr_tracking = model._setattr_tracking
   model._setattr_tracking = False
-  model._layers = []
+  model._self_tracked_trackables = []
   for layer in original_layers:  # We preserve layer order.
     config = layer.get_config()
     # This will not work for nested subclassed models used as layers.
     # This would be theoretically possible to support, but would add complexity.
     # Only do it if users complain.
-    if isinstance(layer, Network) and not layer._is_graph_network:
+    if isinstance(layer, training.Model) and not layer._is_graph_network:
       raise ValueError('We do not support the use of nested subclassed models '
                        'in `model_to_estimator` at this time. Found nested '
                        'model: %s' % layer)
     fresh_layer = layer.__class__.from_config(config)
     name = layers_to_names[layer]
     setattr(model, name, fresh_layer)
-    model._layers.append(fresh_layer)
-
-    # The base Layer __setattr__ will invalidate its attribute cache when
-    # `._layers` is assigned, but it has no way to know when the underlying list
-    # is mutated so we must explicitly signal the append.
-    model._attribute_sentinel.invalidate_all()
+    model._self_tracked_trackables.append(fresh_layer)
 
   # Cache original model build attributes (in addition to layers)
   if (not hasattr(model, '_original_attributes_cache') or
@@ -546,6 +571,8 @@ def _reset_build_compile_trackers(model):
   model.outputs = None
   # Reset compile state
   model._is_compiled = False  # pylint:disable=protected-access
+  if not ops.executing_eagerly_outside_functions():
+    model._v1_compile_was_called = False
   model.optimizer = None
 
 
@@ -569,11 +596,11 @@ def in_place_subclassed_model_state_restoration(model):
     # when they're constructed.
     setattr_tracking = model._setattr_tracking
     model._setattr_tracking = False
-    model._layers = []
+    model._self_tracked_trackables = []
     for name, value in model._original_attributes_cache.items():
       setattr(model, name, value)
       if isinstance(value, Layer):
-        model._layers.append(value)
+        model._self_tracked_trackables.append(value)
     model._original_attributes_cache = None
     model._setattr_tracking = setattr_tracking
   else:
@@ -587,7 +614,7 @@ def clone_and_build_model(
     optimizer_config=None):
   """Clone a `Model` and build/compile it with the same settings used before.
 
-  This function can be be run in the same graph or in a separate graph from the
+  This function can be run in the same graph or in a separate graph from the
   model. When using a separate graph, `in_place_reset` must be `False`.
 
   Note that, currently, the clone produced from this function may not work with
@@ -633,23 +660,26 @@ def clone_and_build_model(
         'Error when cloning model: compile_clone was set to True, but the '
         'original model has not been compiled.')
 
-  with CustomObjectScope(custom_objects or {}):
-    if model._is_graph_network or isinstance(model, Sequential):
-      clone = clone_model(model, input_tensors=input_tensors)
+  if compile_clone:
+    compile_args = model._get_compile_args()  # pylint: disable=protected-access
+    # Allows this method to be robust to switching graph and eager classes.
+    model._get_compile_args = lambda: compile_args
 
-      if all([
-          isinstance(clone, Sequential), not clone._is_graph_network,
-          getattr(model, '_build_input_shape', None) is not None
-      ]):
-        # Set model inputs to build the model and add input/output properties.
-        # TODO(kathywu): Add multiple placeholders to handle edge case where
-        # sequential model has multiple inputs.
-        clone._set_inputs(
-            K.placeholder(
-                model._build_input_shape, dtype=model.inputs[0].dtype))
+  with CustomObjectScope(custom_objects or {}):
+    if model._is_graph_network:
+      clone = clone_model(model, input_tensors=input_tensors)
+    elif isinstance(model, Sequential):
+      clone = clone_model(model, input_tensors=input_tensors)
+      if (not clone._is_graph_network and model._build_input_shape is not None):
+        if ops.executing_eagerly_outside_functions():
+          clone.build(model._build_input_shape)
+        else:
+          clone._set_inputs(
+              backend.placeholder(
+                  model._build_input_shape, dtype=model.inputs[0].dtype))
     else:
       try:
-        # Prefer clonining the model if serial/deserial logic is implemented for
+        # Prefer cloning the model if serial/deserial logic is implemented for
         # subclassed model.
         clone = model.__class__.from_config(model.get_config())
       except NotImplementedError:
@@ -672,10 +702,10 @@ def clone_and_build_model(
         clone._set_inputs(input_tensors)
 
   if compile_clone:
-    if isinstance(orig_optimizer, optimizers.TFOptimizer):
-      optimizer = optimizers.TFOptimizer(
+    if isinstance(orig_optimizer, optimizer_v1.TFOptimizer):
+      optimizer = optimizer_v1.TFOptimizer(
           orig_optimizer.optimizer, optimizer_iterations)
-      K.track_tf_optimizer(optimizer)
+      backend.track_tf_optimizer(optimizer)
     else:
       if not isinstance(orig_optimizer, (tuple, list)):
         orig_optimizer = [orig_optimizer]
@@ -698,14 +728,15 @@ def clone_and_build_model(
 
       if len(optimizer) == 1:
         optimizer = optimizer[0]
-    clone.compile(
-        optimizer,
-        model.loss,
-        metrics=metrics_module.clone_metrics(model._compile_metrics),
-        loss_weights=model.loss_weights,
-        sample_weight_mode=model.sample_weight_mode,
-        weighted_metrics=metrics_module.clone_metrics(
-            model._compile_weighted_metrics),
-        target_tensors=target_tensors)
+
+    compile_args['optimizer'] = optimizer
+    if target_tensors is not None:
+      compile_args['target_tensors'] = target_tensors
+    # Ensure Metric objects in new model are separate from existing model.
+    compile_args['metrics'] = metrics_module.clone_metrics(
+        compile_args['metrics'])
+    compile_args['weighted_metrics'] = metrics_module.clone_metrics(
+        compile_args['weighted_metrics'])
+    clone.compile(**compile_args)
 
   return clone

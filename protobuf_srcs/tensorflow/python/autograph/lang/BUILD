@@ -1,42 +1,42 @@
-load("//tensorflow:tensorflow.bzl", "py_test")
+load("//tensorflow:strict.default.bzl", "py_strict_library", "py_strict_test")
 
 package(
-    licenses = ["notice"],  # Apache 2.0
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
 )
 
-exports_files(["LICENSE"])
-
-filegroup(
-    name = "all_files",
-    srcs = glob(
-        ["**/*"],
-        exclude = [
-            "**/METADATA",
-            "**/OWNERS",
-        ],
-    ),
-    visibility = ["//tensorflow:__subpackages__"],
-)
-
-py_library(
-    name = "lang",
-    srcs = [
-        "directives.py",
-        "special_functions.py",
-    ],
-    srcs_version = "PY2AND3",
+py_strict_library(
+    name = "directives",
+    srcs = ["directives.py"],
     visibility = ["//tensorflow:__subpackages__"],
     deps = [
-        "//tensorflow/python/autograph/operators",
+        "//tensorflow/python/util:tf_export",
     ],
 )
 
-py_test(
+py_strict_library(
+    name = "special_functions",
+    srcs = ["special_functions.py"],
+    visibility = ["//tensorflow:__subpackages__"],
+    deps = [
+        "//tensorflow/python/autograph/operators:data_structures",
+        "//tensorflow/python/framework:constant_op",
+        "//tensorflow/python/framework:tensor_util",
+    ],
+)
+
+py_strict_test(
     name = "special_functions_test",
     srcs = ["special_functions_test.py"],
-    srcs_version = "PY2AND3",
+    python_version = "PY3",
+    srcs_version = "PY3",
     deps = [
-        ":lang",
-        "//tensorflow/python:client_testlib",
+        "//tensorflow/python/autograph/lang:special_functions",
+        "//tensorflow/python/framework:constant_op",
+        "//tensorflow/python/framework:dtypes",
+        "//tensorflow/python/framework:tensor_util",
+        "//tensorflow/python/ops:list_ops",
+        "//tensorflow/python/platform:client_testlib",
+        "//third_party/py/numpy",
     ],
 )

@@ -25,6 +25,19 @@ REGISTER_OP("BatchFunction")
     .Output("out_tensors: Tout")
     .Attr("f: func")
     .Attr("num_batch_threads: int")
+    // 'max_batch_size' denotes the maximum batch size acceptable, i.e., inputs
+    // with larger batch size are simply invalidated.
+    // By default, 'max_batch_size' must be equal to max value of
+    // 'allowed_batch_sizes'.
+    // By setting 'enable_large_batch_splitting' (attribute below) to true,
+    // 'max_batch_size' can be greater than or equal to max value of
+    // 'allowed_batch_sizes', in other words,
+    // 1) input with size > 'max_batch_size' is still invalidated.
+    // 2) input with
+    //    a) size <= 'max_batch_size'
+    //    b) size > max value of 'allowed_batch_sizes'
+    //    will automatically be split into multiple batches (with batch size in
+    //    'allowed_batch_sizes'), executed, and re-composed (as final output).
     .Attr("max_batch_size: int")
     .Attr("batch_timeout_micros: int")
     .Attr("max_enqueued_batches: int = 10")
@@ -32,12 +45,25 @@ REGISTER_OP("BatchFunction")
     .Attr("container: string = ''")
     .Attr("shared_name: string = ''")
     .Attr("batching_queue: string = ''")
+    // A separate set of batch options for the low priority requests, which is
+    // used for priority queue batching.
+    .Attr("low_priority_max_batch_size: int = 0")
+    .Attr("low_priority_batch_timeout_micros: int = 0")
+    .Attr("low_priority_allowed_batch_sizes: list(int) = []")
+    .Attr("low_priority_max_enqueued_batches: int = 0")
     .Attr("Tin: list(type)")
     .Attr("Tcaptured: list(type) >= 0")
     .Attr("Tout: list(type)")
+    // If 'enable_large_batch_splitting' is true, for input batches exceeding
+    // the largest value in "allowed_batch_sizes", allow the batch to be split
+    // into multiple batches with batch size within "allowed_batch_sizes".
+    // NOTE: Support for `enable_large_batch_splitting == true` is still
+    // developed in progress.
+    .Attr("enable_large_batch_splitting: bool = false")
     // TODO(apassos): Fix this shape inference function. It requires shape
     // inference of function calls.
-    .SetShapeFn(shape_inference::UnknownShape);
+    .SetShapeFn(shape_inference::UnknownShape)
+    .SetIsDistributedCommunication();
 
 REGISTER_OP("Batch")
     .Input("in_tensors: T")
@@ -68,8 +94,9 @@ REGISTER_OP("Batch")
           "batch_index",
           {c->MakeShape({shape_inference::DimensionOrConstant(c->UnknownDim()),
                          shape_inference::DimensionOrConstant(3)})}));
-      return Status::OK();
-    });
+      return OkStatus();
+    })
+    .SetIsDistributedCommunication();
 
 REGISTER_OP("Unbatch")
     .Input("batched_tensor: T")
@@ -85,7 +112,7 @@ REGISTER_OP("Unbatch")
       TF_RETURN_IF_ERROR(
           c->ReplaceDim(c->input(0), 0, c->UnknownDim(), &out_shape));
       c->set_output(0, out_shape);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("UnbatchGrad")
@@ -99,7 +126,7 @@ REGISTER_OP("UnbatchGrad")
     .Attr("T: type")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->UnknownShapeOfRank(c->Rank(c->input(2))));
-      return Status::OK();
+      return OkStatus();
     });
 
 }  // namespace tensorflow

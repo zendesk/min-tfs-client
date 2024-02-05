@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/gl_shader.h"
 
+#include <string>
+#include <utility>
+
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/gl/gl_call.h"
 #include "tensorflow/lite/delegates/gpu/gl/gl_errors.h"
@@ -42,9 +45,9 @@ GlShader& GlShader::operator=(GlShader&& shader) {
 
 GlShader::~GlShader() { Invalidate(); }
 
-Status GlShader::CompileShader(GLenum shader_type,
-                               const std::string& shader_source,
-                               GlShader* gl_shader) {
+absl::Status GlShader::CompileShader(GLenum shader_type,
+                                     const std::string& shader_source,
+                                     GlShader* gl_shader) {
   // NOTE: code compilation can fail due to gl errors happened before
   GLuint shader_id;
   RETURN_IF_ERROR(TFLITE_GPU_CALL_GL(glCreateShader, &shader_id, shader_type));
@@ -55,6 +58,10 @@ Status GlShader::CompileShader(GLenum shader_type,
       TFLITE_GPU_CALL_GL(glShaderSource, shader.id(), 1, &src, nullptr));
 
   glCompileShader(shader.id());
+
+#ifndef __EMSCRIPTEN__
+  // This check is not recommended on WebGL, since it will force a wait on the
+  // GPU process.
   // Didn't check for opengl errors here because we want to get better logs
   // if it didn't compile.
   GLint compiled = GL_FALSE;
@@ -64,12 +71,13 @@ Status GlShader::CompileShader(GLenum shader_type,
     glGetShaderiv(shader.id(), GL_INFO_LOG_LENGTH, &info_log_len);
     std::string errors(info_log_len, 0);
     glGetShaderInfoLog(shader.id(), info_log_len, nullptr, &errors[0]);
-    return InternalError("Shader compilation failed: " + errors +
-                         "\nProblem shader is:\n" + shader_source);
+    return absl::InternalError("Shader compilation failed: " + errors +
+                               "\nProblem shader is:\n" + shader_source);
   }
+#endif  // !__EMSCRIPTEN__
 
   *gl_shader = std::move(shader);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace gl

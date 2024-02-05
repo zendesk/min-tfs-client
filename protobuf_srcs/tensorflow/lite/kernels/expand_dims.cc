@@ -1,4 +1,3 @@
-
 /* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,22 +12,22 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <stdint.h>
 #include <string.h>
 
-#include <vector>
-
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
-#include "tensorflow/lite/kernels/op_macros.h"
+
 namespace tflite {
 namespace ops {
 namespace builtin {
 namespace expand_dims {
-constexpr int kInput = 0;
-constexpr int kAxis = 1;
+
+// Input indices
+enum { kInput = 0, kAxis };
 
 namespace {
 TfLiteStatus ExpandTensorDim(TfLiteContext* context, const TfLiteTensor& input,
@@ -38,6 +37,7 @@ TfLiteStatus ExpandTensorDim(TfLiteContext* context, const TfLiteTensor& input,
     axis = input_dims.size + 1 + axis;
   }
   TF_LITE_ENSURE(context, axis <= input_dims.size);
+  TF_LITE_ENSURE(context, axis >= 0);
 
   TfLiteIntArray* output_dims = TfLiteIntArrayCreate(input_dims.size + 1);
   for (int i = 0; i < output_dims->size; ++i) {
@@ -73,25 +73,41 @@ TfLiteStatus GetAxisValueFromTensor(TfLiteContext* context,
 TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
-  const TfLiteTensor* input = GetInput(context, node, kInput);
-  const TfLiteTensor* axis = GetInput(context, node, kAxis);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kInput, &input));
+  const TfLiteTensor* axis;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kAxis, &axis));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
+
   output->type = input->type;
-  if (IsConstantTensor(axis)) {
+  TF_LITE_ENSURE_EQ(context, input->params.scale, output->params.scale);
+  TF_LITE_ENSURE_EQ(context, input->params.zero_point,
+                    output->params.zero_point);
+  if (input->type == kTfLiteInt16) {
+    TF_LITE_ENSURE_EQ(context, input->params.zero_point, 0);
+  }
+
+  if (IsConstantOrPersistentTensor(axis)) {
     int axis_value;
     TF_LITE_ENSURE_OK(context,
                       GetAxisValueFromTensor(context, *axis, &axis_value));
     return ExpandTensorDim(context, *input, axis_value, output);
   }
   SetTensorToDynamic(output);
+
   return kTfLiteOk;
 }
 
 TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   // Just copy input to output.
-  const TfLiteTensor* input = GetInput(context, node, kInput);
-  TfLiteTensor* output = GetOutput(context, node, 0);
-  const TfLiteTensor* axis = GetInput(context, node, kAxis);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kInput, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
+  const TfLiteTensor* axis;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kAxis, &axis));
   if (IsDynamicTensor(output)) {
     int axis_value;
     TF_LITE_ENSURE_OK(context,
@@ -99,14 +115,30 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
     TF_LITE_ENSURE_OK(context,
                       ExpandTensorDim(context, *input, axis_value, output));
   }
-  memcpy(output->data.raw, input->data.raw, input->bytes);
+  if (output->type == kTfLiteString) {
+    TfLiteTensorRealloc(input->bytes, output);
+  }
+  // Only copy data if input and output do not share a buffer.
+  if (output->data.data != input->data.data) {
+    memcpy(output->data.data, input->data.data, input->bytes);
+  }
   return kTfLiteOk;
 }
 
 }  // namespace expand_dims
 TfLiteRegistration* Register_EXPAND_DIMS() {
-  static TfLiteRegistration r = {nullptr, nullptr, expand_dims::Prepare,
-                                 expand_dims::Eval};
+  static TfLiteRegistration r = {
+      nullptr,
+      nullptr,
+      expand_dims::Prepare,
+      expand_dims::Eval,
+      /*profiling_string=*/nullptr,
+      /*builtin_code=*/0,
+      /*custom_name=*/nullptr,
+      /*version=*/0,
+      /*registration_external=*/nullptr,
+      /*async_kernel=*/nullptr,
+      kTfLiteInplaceOpInput0Shared | kTfLiteInplaceOpDataUnmodified};
   return &r;
 }
 }  // namespace builtin

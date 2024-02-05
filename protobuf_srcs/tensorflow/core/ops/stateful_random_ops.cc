@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
+#include "tensorflow/core/framework/rng_alg.h"
 #include "tensorflow/core/framework/shape_inference.h"
 
 namespace tensorflow {
@@ -28,7 +29,7 @@ Status StatefulRandomShape(shape_inference::InferenceContext* c) {
   ShapeHandle out;
   TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(2, &out));
   c->set_output(0, out);
-  return Status::OK();
+  return OkStatus();
 }
 
 #define REGISTER_STATEFUL_OP(name, default_dtype) \
@@ -60,13 +61,23 @@ REGISTER_OP("StatefulUniformInt")
       // Check inputs
       ShapeHandle unused;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
+      Status s = c->WithRank(c->input(3), 0, &unused);
+      if (!s.ok()) {
+        return errors::InvalidArgument(
+            "minval must be a scalar; got a tensor of shape ",
+            c->DebugString(c->input(3)));
+      }
+      s = c->WithRank(c->input(4), 0, &unused);
+      if (!s.ok()) {
+        return errors::InvalidArgument(
+            "maxval must be a scalar; got a tensor of shape ",
+            c->DebugString(c->input(4)));
+      }
       // Set output
       ShapeHandle out;
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(2, &out));
       c->set_output(0, out);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("RngSkip")
@@ -77,7 +88,20 @@ REGISTER_OP("RngSkip")
       shape_inference::ShapeHandle unused;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
-      return Status::OK();
+      return OkStatus();
+    });
+
+REGISTER_OP("RngReadAndSkip")
+    .Input("resource: resource")
+    .Input("alg: int32")
+    .Input("delta: uint64")
+    .Output("value: int64")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle unused;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      c->set_output(0, c->MakeShape({RNG_MAX_COUNTER_SIZE + RNG_KEY_SIZE}));
+      return OkStatus();
     });
 
 REGISTER_OP("NonDeterministicInts")
@@ -91,7 +115,7 @@ REGISTER_OP("NonDeterministicInts")
       ShapeHandle out;
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0, &out));
       c->set_output(0, out);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("StatefulRandomBinomial")
@@ -107,17 +131,13 @@ REGISTER_OP("StatefulRandomBinomial")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       using shape_inference::ShapeHandle;
 
-      ShapeHandle unused;
-      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(3), 1, &unused));
-      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(4), 1, &unused));
-
       ShapeHandle out;
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(2, &out));
       c->set_output(0, out);
-      return Status::OK();
+      return OkStatus();
     });
 
-// Register the depracated 'StatefulStandardNormal' op. This op is a short-lived
+// Register the deprecated 'StatefulStandardNormal' op. This op is a short-lived
 // version where the 'resource' variable also contains the algorithm tag.
 // It is deprecated in favor of 'StatefulStandardNormalV2'.
 REGISTER_OP("StatefulStandardNormal")
@@ -133,7 +153,7 @@ REGISTER_OP("StatefulStandardNormal")
       ShapeHandle out;
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(1, &out));
       c->set_output(0, out);
-      return Status::OK();
+      return OkStatus();
     });
 
 }  // namespace tensorflow

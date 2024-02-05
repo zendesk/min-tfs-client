@@ -14,10 +14,6 @@
 # ==============================================================================
 """The step function abstraction represents a single training step."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.eager import backprop
 from tensorflow.python.training import optimizer as optimizer_lib
 
@@ -55,7 +51,7 @@ class StandardInputStep(Step):
     self._iterator = distribution.make_input_fn_iterator(lambda _: dataset_fn())
 
   def initialize(self):
-    return self._iterator.initialize()
+    return self._iterator.initializer
 
 
 class StandardSingleLossStep(StandardInputStep):

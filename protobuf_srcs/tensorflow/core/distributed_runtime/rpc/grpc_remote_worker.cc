@@ -19,8 +19,8 @@ limitations under the License.
 
 #include "grpcpp/generic/generic_stub.h"
 #include "grpcpp/grpcpp.h"
-
 #include "tensorflow/core/common_runtime/process_util.h"
+#include "tensorflow/core/distributed_runtime/call_options.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_client_cq_tag.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_state.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
@@ -36,17 +36,16 @@ limitations under the License.
 #include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/protobuf/transport_options.pb.h"
 #include "tensorflow/core/protobuf/worker.pb.h"
+#include "tensorflow/core/util/env_var.h"
 
 namespace tensorflow {
-
-const int kMaxWorkerRpcRetries = 10;
 
 class GrpcRemoteWorker : public WorkerInterface {
  public:
   explicit GrpcRemoteWorker(SharedGrpcChannelPtr channel,
                             ::grpc::CompletionQueue* completion_queue,
                             thread::ThreadPool* callback_threadpool,
-                            WorkerCacheLogger* logger)
+                            WorkerCacheLogger* logger, const string& target)
       : channel_(std::move(channel)),
         stub_(channel_),
         cq_(completion_queue),
@@ -67,14 +66,15 @@ class GrpcRemoteWorker : public WorkerInterface {
         instancesource_(Method(GrpcWorkerMethod::kCompleteInstance)),
         getstepsequence_(Method(GrpcWorkerMethod::kGetStepSequence)),
         markrecvfinished_(Method(GrpcWorkerMethod::kMarkRecvFinished)),
-        logger_(logger) {}
+        logger_(logger),
+        target_(target) {}
 
   ~GrpcRemoteWorker() override {}
 
-  void GetStatusAsync(const GetStatusRequest* request,
+  void GetStatusAsync(CallOptions* call_opts, const GetStatusRequest* request,
                       GetStatusResponse* response, bool fail_fast,
                       StatusCallback done) override {
-    IssueRequest(request, response, getstatus_, std::move(done), nullptr,
+    IssueRequest(request, response, getstatus_, std::move(done), call_opts,
                  fail_fast);
   }
 
@@ -118,18 +118,20 @@ class GrpcRemoteWorker : public WorkerInterface {
   void CleanupGraphAsync(const CleanupGraphRequest* request,
                          CleanupGraphResponse* response,
                          StatusCallback done) override {
-    IssueRequest(request, response, cleanupgraph_, std::move(done));
+    IssueRequest(request, response, cleanupgraph_, std::move(done),
+                 /*call_opts=*/nullptr, /*fail_fast=*/false);
   }
 
   void CleanupAllAsync(const CleanupAllRequest* request,
                        CleanupAllResponse* response,
                        StatusCallback done) override {
-    IssueRequest(request, response, cleanupall_, std::move(done));
+    IssueRequest(request, response, cleanupall_, std::move(done),
+                 /*call_opts=*/nullptr, /*fail_fast=*/false);
   }
 
   void RecvBufAsync(CallOptions* call_opts, const RecvBufRequest* request,
                     RecvBufResponse* response, StatusCallback done) override {
-    int64 start_usec = Env::Default()->NowMicros();
+    int64_t start_usec = Env::Default()->NowMicros();
     // Type-specialized logging for this method.
     bool logging_active = logger_->LoggingActive() || VLOG_IS_ON(2);
 
@@ -137,19 +139,20 @@ class GrpcRemoteWorker : public WorkerInterface {
                      logging_active](Status s) {
       if (logging_active) {
         if (logger_->LoggingActive()) {
-          int64 end_usec = Env::Default()->NowMicros();
-          int64 step_id = request->step_id();
+          int64_t end_usec = Env::Default()->NowMicros();
+          int64_t step_id = request->step_id();
           RecvBufRespExtra extra;
           response->transport_options().UnpackTo(&extra);
-          int64 num_bytes = 0;
+          int64_t num_bytes = 0;
           for (const auto& chunk : extra.tensor_content()) {
             num_bytes += chunk.size();
           }
-          int64 send_start_usec = start_usec;
+          int64_t send_start_usec = start_usec;
           // Prefer start time reported by the sender, if available.
           if (response->send_start_micros()) {
-            send_start_usec = std::max(
-                start_usec, static_cast<int64>(response->send_start_micros()));
+            send_start_usec =
+                std::max(start_usec,
+                         static_cast<int64_t>(response->send_start_micros()));
             send_start_usec = std::min(send_start_usec, end_usec - 1);
           }
           const string& key = request->buf_rendezvous_key();
@@ -176,7 +179,8 @@ class GrpcRemoteWorker : public WorkerInterface {
                           const CompleteGroupRequest* request,
                           CompleteGroupResponse* response,
                           StatusCallback done) override {
-    IssueRequest(request, response, completegroup_, std::move(done), call_opts);
+    IssueRequest(request, response, completegroup_, std::move(done), call_opts,
+                 /*fail_fast=*/false);
   }
 
   void CompleteInstanceAsync(CallOptions* call_opts,
@@ -196,7 +200,7 @@ class GrpcRemoteWorker : public WorkerInterface {
   void RecvTensorAsync(CallOptions* call_opts, const RecvTensorRequest* request,
                        TensorResponse* response, StatusCallback done) override {
     VLOG(1) << "RecvTensorAsync req: " << request->DebugString();
-    int64 start_usec = Env::Default()->NowMicros();
+    int64_t start_usec = Env::Default()->NowMicros();
     // Type-specialized logging for this method.
     bool logging_active = logger_->LoggingActive() || VLOG_IS_ON(2);
 
@@ -204,10 +208,10 @@ class GrpcRemoteWorker : public WorkerInterface {
                      logging_active](Status s) {
       if (logging_active) {
         if (logger_->LoggingActive()) {
-          int64 end_usec = Env::Default()->NowMicros();
-          int64 step_id = request->step_id();
-          int64 bytes = response->tensor().TotalBytes();
-          int64 send_start_usec = start_usec;
+          int64_t end_usec = Env::Default()->NowMicros();
+          int64_t step_id = request->step_id();
+          int64_t bytes = response->tensor().TotalBytes();
+          int64_t send_start_usec = start_usec;
           // If a send start time was reported by the other side, use
           // that instead.  Maybe we should mark the display if we're using
           // our local time instead of the remote start time?
@@ -224,7 +228,7 @@ class GrpcRemoteWorker : public WorkerInterface {
             // it was received.
             send_start_usec = std::max(
                 start_usec,
-                static_cast<int64>(response->metadata().send_start_micros()));
+                static_cast<int64_t>(response->metadata().send_start_micros()));
             send_start_usec = std::min(send_start_usec, end_usec - 1);
           }
           const string& key = request->rendezvous_key();
@@ -273,18 +277,21 @@ class GrpcRemoteWorker : public WorkerInterface {
                     bool fail_fast = true) {
     new RPCState<protobuf::Message>(
         &stub_, cq_, method, *request, response, std::move(done), call_opts,
-        callback_threadpool_, /*max_retries=*/0, fail_fast);
+        callback_threadpool_, MaxRetries(), fail_fast, &target_);
   }
 
   void IssueRequest(const protobuf::Message* request, TensorResponse* response,
                     const ::grpc::string& method, StatusCallback done,
                     CallOptions* call_opts = nullptr) {
-    new RPCState<TensorResponse>(&stub_, cq_, method, *request, response,
-                                 std::move(done), call_opts,
-                                 callback_threadpool_);
+    new RPCState<TensorResponse>(
+        &stub_, cq_, method, *request, response, std::move(done), call_opts,
+        callback_threadpool_, MaxRetries(),
+        /*fail_fast=*/true, &target_,
+        // Use optimized proto parse function that avoids a copy.
+        GrpcMaybeParseTensorResponse);
   }
 
-  void IssueMarkRecvFinishedRequest(int64 request_id) {
+  void IssueMarkRecvFinishedRequest(int64_t request_id) {
     VLOG(2) << "Send MarkRecvFinishedRequest for request " << request_id;
     MarkRecvFinishedRequest request;
     request.set_request_id(request_id);
@@ -296,6 +303,14 @@ class GrpcRemoteWorker : public WorkerInterface {
 
   // Helper function for initializing the RpcMethod objects below.
   const char* Method(GrpcWorkerMethod id) { return GrpcWorkerMethodName(id); }
+
+  // Helper function for configuring max GRPC retries. Defaults to 0 (no
+  // retries).
+  const int64_t MaxRetries() {
+    int64_t max_retries = -1;
+    TF_CHECK_OK(ReadInt64FromEnvVar("GRPC_MAX_RETRIES", 0, &max_retries));
+    return max_retries;
+  }
 
   SharedGrpcChannelPtr channel_;
   ::grpc::GenericStub stub_;
@@ -321,16 +336,19 @@ class GrpcRemoteWorker : public WorkerInterface {
 
   // Support for logging.
   WorkerCacheLogger* logger_;
+  const string target_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(GrpcRemoteWorker);
+  GrpcRemoteWorker(const GrpcRemoteWorker&) = delete;
+  void operator=(const GrpcRemoteWorker&) = delete;
 };
 
 WorkerInterface* NewGrpcRemoteWorker(SharedGrpcChannelPtr channel,
                                      ::grpc::CompletionQueue* completion_queue,
                                      thread::ThreadPool* callback_threadpool,
-                                     WorkerCacheLogger* logger) {
+                                     WorkerCacheLogger* logger,
+                                     const string& target) {
   return new GrpcRemoteWorker(std::move(channel), completion_queue,
-                              callback_threadpool, logger);
+                              callback_threadpool, logger, target);
 }
 
 }  // namespace tensorflow

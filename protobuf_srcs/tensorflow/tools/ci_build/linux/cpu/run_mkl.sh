@@ -15,16 +15,26 @@
 #
 # ==============================================================================
 
+# This script accepts only one parameter: either the word "eigen", or an
+# integer value greater than 0 that is passed to the bazel test command
+# via the OMP_NUM_THREADS action environment variable. If an integer is
+# passed, the script assumes it is running in DNNL mode; the
+# OMP_NUM_THREADS variable is irrelevant in eigen mode.
+
 set -e
 set -x
-MODE=${MODE:-"mkl"}
-OMP_NUM_THREADS=${OMP_NUM_THREADS:-""}
 
-echo ""
-echo "MODE:${MODE}"
-echo "OMP_NUM_THREADS:${OMP_NUM_THREADS}"
-echo ""
+#using default targets from tensorflow project
+source "./tensorflow/tools/ci_build/build_scripts/DEFAULT_TEST_TARGETS.sh"
+if [[ -z "$DEFAULT_BAZEL_TARGETS" ]]; then
+   DEFAULT_BAZEL_TARGETS="//tensorflow/...  -//tensorflow/compiler/...  -//tensorflow/lite/..."
+else
+   DEFAULT_BAZEL_TARGETS="${DEFAULT_BAZEL_TARGETS} -//tensorflow/lite/..."
+fi
+echo "DEFAULT_BAZEL_TARGETS: $DEFAULT_BAZEL_TARGETS "
 
+DEFAULT_OMP_NUM_THREADS="10"
+DEFAULT_CONFIG="--config=mkl"
 
 N_JOBS=$(grep -c ^processor /proc/cpuinfo)
 
@@ -36,28 +46,60 @@ echo ""
 export TF_NEED_CUDA=0
 export PYTHON_BIN_PATH=`which python3`
 yes "" | $PYTHON_BIN_PATH configure.py
-if [[ "$MODE" == "eigen" ]]; then
-    CONFIG=""
-    OMPTHREADS=""
-else
-    CONFIG="--config=mkl"
+
+# Get parameters from command-line rather than from env.
 # Setting OMP_THREADS for low performing benchmarks.
-#   Default value(=core count) degrades perfrmance of some banchmark cases. 
-#   Optimal thread count is case specific. 
-#   An argument can be passed to script, the value of which is used if given.
-#   Otherwise OMP_NUM_THREADS is set to 10
-    if [[ -z $OMP_NUM_THREADS ]]; then
-        OMPTHREADS="--action_env=OMP_NUM_THREADS=10"
-    else 
-        OMPTHREADS="--action_env=OMP_NUM_THREADS=$OMP_NUM_THREADS"
-    fi
+#   Default value(=core count) degrades performance of some benchmark cases.
+#   Optimal thread count is case specific.
+RE_DIGITS_ONLY="^[0-9]+$"
+MIN_OMP_THREADS=1
+CONFIG=""
+OMPTHREADS=""
+BLOCK_FORMAT=""
+ENABLE_ONEDNN=""
+KMP_BLOCKTIME=""
+if [[ $# -ge 1 ]]; then
+  if [[ "$1" == "eigen" ]]; then
+     echo "uses all default values for eigen"
+  elif [[ "$1" == "threadpool" ]]; then
+    ENABLE_ONEDNN="--action_env=TF_ENABLE_ONEDNN_OPTS=1"
+  elif [[ "$1" =~ ${RE_DIGITS_ONLY} && $1 -ge ${MIN_OMP_THREADS} ]]; then
+    CONFIG="${DEFAULT_CONFIG}"
+    OMPTHREADS="--action_env=OMP_NUM_THREADS=${1}"
+    BLOCK_FORMAT="--action_env=TF_ENABLE_MKL_NATIVE_FORMAT=0"
+    KMP_BLOCKTIME="--test_env=KMP_BLOCKTIME=0"
+  else
+    echo "${1} isn't a valid configuration or"
+    echo "number of OM_NUM_THREADS. Exiting..."
+    exit 1
+  fi
+else  # No parameters were passed in so set default values.
+  CONFIG="${DEFAULT_CONFIG}"
+  OMPTHREADS="--action_env=OMP_NUM_THREADS=${DEFAULT_OMP_NUM_THREADS}"
+  BLOCK_FORMAT="--action_env=TF_ENABLE_MKL_NATIVE_FORMAT=0"
+  KMP_BLOCKTIME="--test_env=KMP_BLOCKTIME=0"
 fi
 
+echo ""
+echo "Bazel will test with CONFIG=${CONFIG}, BLOCK_FORMAT=${BLOCK_FORMAT}, ENABLE_ONEDNN=${ENABLE_ONEDNN}, KMP_BLOCKTIME=${KMP_BLOCKTIME}  and OMPTHREADS=${OMPTHREADS}"
+echo ""
+
 # Run bazel test command. Double test timeouts to avoid flakes.
-# Setting KMP_BLOCKTIME to 0 lets OpenMP threads to sleep right after parallel execution
-# in an MKL primitive. This reduces the effects of an oversubscription of OpenMP threads
-# caused by executing multiple tests concurrently.
-bazel test --test_tag_filters=-no_oss,-no_oss_py2,-oss_serial,-gpu,-tpu,-benchmark-test --test_lang_filters=cc,py -k \
-    --jobs=${N_JOBS} --test_timeout 300,450,1200,3600 --build_tests_only \
-    ${CONFIG} --test_env=KMP_BLOCKTIME=0 ${OMPTHREADS} --config=opt --test_output=errors -- \
-    //tensorflow/... -//tensorflow/compiler/... -//tensorflow/contrib/... -//tensorflow/lite/...
+# Setting KMP_BLOCKTIME to 0 lets OpenMP threads to sleep right after parallel
+# execution in an MKL primitive. This reduces the effects of an oversubscription
+# of OpenMP threads caused by executing multiple tests concurrently.
+bazel test \
+    --test_tag_filters=-no_oss,-oss_excluded,-oss_serial,-gpu,-tpu,-benchmark-test,-v1only \
+    --test_lang_filters=cc,py \
+    -k \
+    --jobs=${N_JOBS} \
+    --test_timeout 300,450,1200,3600 \
+    --build_tests_only \
+    ${CONFIG} \
+    ${KMP_BLOCKTIME} \
+    ${OMPTHREADS} \
+    ${ENABLE_ONEDNN} \
+    ${BLOCK_FORMAT} \
+    --config=opt \
+    --test_output=errors \
+    -- ${DEFAULT_BAZEL_TARGETS}

@@ -16,12 +16,24 @@ limitations under the License.
 
 #include <cstring>
 #include <fstream>
+#include <memory>
+#include <string>
+#include <utility>
 
+#include "absl/base/attributes.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/profiling/time.h"
 #include "tensorflow/lite/tools/evaluation/proto/evaluation_stages.pb.h"
 #include "tensorflow/lite/tools/evaluation/utils.h"
+
+void RegisterSelectedOps(::tflite::MutableOpResolver* resolver);
+
+// Version with Weak linker attribute doing nothing: if someone links this
+// library with another definition of this function (presumably to actually
+// register custom ops), that version will be used instead.
+void ABSL_ATTRIBUTE_WEAK
+RegisterSelectedOps(::tflite::MutableOpResolver* resolver) {}
 
 namespace tflite {
 namespace evaluation {
@@ -51,6 +63,27 @@ void TfliteInferenceStage::UpdateModelInfo() {
   }
 }
 
+TfLiteStatus TfliteInferenceStage::ResizeInputs(
+    const std::vector<std::vector<int>>& shapes) {
+  const std::vector<int>& interpreter_inputs = interpreter_->inputs();
+  if (interpreter_inputs.size() != shapes.size()) {
+    LOG(ERROR) << "New shape is not compatible";
+    return kTfLiteError;
+  }
+
+  for (int j = 0; j < shapes.size(); ++j) {
+    int i = interpreter_inputs[j];
+    TfLiteTensor* t = interpreter_->tensor(i);
+    if (t->type != kTfLiteString) {
+      TF_LITE_ENSURE_STATUS(interpreter_->ResizeInputTensor(i, shapes[j]));
+    }
+  }
+
+  TF_LITE_ENSURE_STATUS(interpreter_->AllocateTensors());
+  UpdateModelInfo();
+  return kTfLiteOk;
+}
+
 TfLiteStatus TfliteInferenceStage::ApplyCustomDelegate(
     Interpreter::TfLiteDelegatePtr delegate) {
   if (!interpreter_) {
@@ -70,7 +103,8 @@ TfLiteStatus TfliteInferenceStage::ApplyCustomDelegate(
   return kTfLiteOk;
 }
 
-TfLiteStatus TfliteInferenceStage::Init() {
+TfLiteStatus TfliteInferenceStage::Init(
+    const DelegateProviders* delegate_providers) {
   if (!config_.specification().has_tflite_inference_params()) {
     LOG(ERROR) << "TfliteInferenceParams not provided";
     return kTfLiteError;
@@ -87,7 +121,26 @@ TfLiteStatus TfliteInferenceStage::Init() {
   }
 
   model_ = FlatBufferModel::BuildFromFile(params.model_file_path().c_str());
-  resolver_.reset(new ops::builtin::BuiltinOpResolver);
+
+  bool apply_default_delegates = true;
+  if (delegate_providers != nullptr) {
+    const auto& provider_params = delegate_providers->GetAllParams();
+    // When --use_xnnpack is explicitly set to false, to honor this, skip
+    // applying the XNNPACK delegate by default in TfLite runtime.
+    if (provider_params.HasParam("use_xnnpack") &&
+        provider_params.HasValueSet<bool>("use_xnnpack") &&
+        !provider_params.Get<bool>("use_xnnpack")) {
+      apply_default_delegates = false;
+    }
+  }
+
+  if (apply_default_delegates) {
+    resolver_ = std::make_unique<ops::builtin::BuiltinOpResolver>();
+  } else {
+    resolver_ = std::make_unique<
+        ops::builtin::BuiltinOpResolverWithoutDefaultDelegates>();
+  }
+  RegisterSelectedOps(resolver_.get());
   InterpreterBuilder(*model_, *resolver_)(&interpreter_);
   if (!interpreter_) {
     LOG(ERROR) << "Could not build interpreter";
@@ -95,27 +148,25 @@ TfLiteStatus TfliteInferenceStage::Init() {
   }
   interpreter_->SetNumThreads(params.num_threads());
 
-  // TODO(b/122482115): Add support for multiple delegates in
-  // TfLiteInferenceParams.
-  if (params.delegate() == TfliteInferenceParams::NNAPI) {
-    Interpreter::TfLiteDelegatePtr delegate = CreateNNAPIDelegate();
+  if (!delegate_providers) {
+    std::string error_message;
+    auto delegate = CreateTfLiteDelegate(params, &error_message);
     if (delegate) {
       delegates_.push_back(std::move(delegate));
+      LOG(INFO) << "Successfully created "
+                << params.Delegate_Name(params.delegate()) << " delegate.";
     } else {
-      LOG(WARNING) << "NNAPI not supported";
+      LOG(WARNING) << error_message;
     }
-  } else if (params.delegate() == TfliteInferenceParams::GPU) {
-    Interpreter::TfLiteDelegatePtr delegate = CreateGPUDelegate(model_.get());
-    if (delegate) {
-      delegates_.push_back(std::move(delegate));
-    } else {
-      LOG(WARNING) << "GPU not supported";
-    }
+  } else {
+    auto delegates = delegate_providers->CreateAllDelegates(params);
+    for (auto& one : delegates) delegates_.push_back(std::move(one.delegate));
   }
+
   for (int i = 0; i < delegates_.size(); ++i) {
     if (interpreter_->ModifyGraphWithDelegate(delegates_[i].get()) !=
         kTfLiteOk) {
-      LOG(FATAL) << "Failed to apply delegate %d" << i;
+      LOG(FATAL) << "Failed to apply delegate " << i;
     }
   }
   interpreter_->AllocateTensors();
@@ -160,6 +211,7 @@ EvaluationStageMetrics TfliteInferenceStage::LatestMetrics() {
   latency_metrics->set_min_us(latency_stats_.min());
   latency_metrics->set_sum_us(latency_stats_.sum());
   latency_metrics->set_avg_us(latency_stats_.avg());
+  latency_metrics->set_std_deviation_us(latency_stats_.std_deviation());
   metrics.set_num_runs(
       static_cast<int>(latency_stats_.count() / params.invocations_per_run()));
   auto* inference_metrics =

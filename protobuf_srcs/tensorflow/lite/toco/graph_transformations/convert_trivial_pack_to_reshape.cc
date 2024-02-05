@@ -31,24 +31,24 @@ namespace toco {
   *modified = false;
   auto pack_it = model->operators.begin() + op_index;
   if (pack_it->get()->type != OperatorType::kPack) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   auto* pack_op = static_cast<PackOperator*>(pack_it->get());
   if (pack_op->inputs.size() > 1) {
     // Not trivial.
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   CHECK_EQ(pack_op->outputs.size(), 1);
 
   const auto& input_array = model->GetArray(pack_op->inputs[0]);
   if (!input_array.has_shape()) {
     // Yield until input dims have been resolved.
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
   if (input_array.shape().dimensions_count() == 0) {
     // Input array cannot be 0-D.
     // (Unsure if this is TF behavior, but was required to get a test to pass.)
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   AddMessageF("Converting trivial %s to a reshape", LogName(*pack_op));
@@ -59,7 +59,7 @@ namespace toco {
   reshape_op->outputs = pack_op->outputs;
 
   // Create shape param.
-  string shape_array_name =
+  std::string shape_array_name =
       AvailableArrayName(*model, pack_op->outputs[0] + "_shape");
   Array& shape_array = model->GetOrCreateArray(shape_array_name);
   const int shape_array_dims = 1 + input_array.shape().dimensions_count();
@@ -81,7 +81,7 @@ namespace toco {
   DeleteOpAndArrays(model, pack_op);
 
   *modified = true;
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

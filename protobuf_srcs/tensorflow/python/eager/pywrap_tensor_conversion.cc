@@ -17,7 +17,7 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/hash/hash.h"
-#include "tensorflow/c/eager/c_api_internal.h"
+#include "tensorflow/c/eager/tfe_tensorhandle_internal.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
 #include "tensorflow/core/platform/logging.h"
 
@@ -38,27 +38,28 @@ TFE_TensorHandleCache* TFE_TensorHandleCache::Get() {
 }
 
 TFE_TensorHandle* TFE_TensorHandleCache::Lookup(
-    PyObject* value, tensorflow::DataType dtype,
+    PyObject* value, tensorflow::DataType dtype, TFE_Context* ctx,
     absl::string_view device_name) const {
   CHECK_NOTNULL(value);
-  const auto& it = cache.find(Key{PyObjectPtr{value}, dtype, device_name});
+  const auto it = cache.find(Key{PyObjectPtr{value}, dtype, ctx, device_name});
   if (it == cache.end()) {
     scalar_cache_misses->GetCell()->IncrementBy(1);
     return nullptr;
   }
 
   scalar_cache_hits->GetCell()->IncrementBy(1);
-  auto* handle = it->second;
-  handle->Ref();
-  return new TFE_TensorHandle(handle);
+  auto* h = it->second;
+  tensorflow::unwrap(h)->Ref();
+  return h;
 }
 
 void TFE_TensorHandleCache::Insert(PyObject* value, tensorflow::DataType dtype,
+                                   TFE_Context* ctx,
                                    absl::string_view device_name,
-                                   TFE_TensorHandle* handle) {
+                                   TFE_TensorHandle* h) {
   Py_INCREF(value);
-  handle->handle->Ref();
-  cache.emplace(Key{PyObjectPtr{value}, dtype, device_name}, handle->handle);
+  tensorflow::unwrap(h)->Ref();
+  cache.emplace(Key{PyObjectPtr{value}, dtype, ctx, device_name}, h);
 }
 
 void TFE_TensorHandleCache::Clear() {

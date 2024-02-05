@@ -33,7 +33,7 @@ namespace toco {
   const auto* tf_concat_op = concat_it->get();
   if (tf_concat_op->type != OperatorType::kConcat &&
       tf_concat_op->type != OperatorType::kConcatV2) {
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   CHECK_GE(tf_concat_op->inputs.size(), 2);
@@ -44,8 +44,8 @@ namespace toco {
   if (tf_concat_op->type == OperatorType::kConcatV2) {
     axis_pos = tf_concat_op->inputs.size() - 1;
   }
-  const string axis_name = tf_concat_op->inputs[axis_pos];
-  std::vector<string> concat_input_names;
+  const std::string axis_name = tf_concat_op->inputs[axis_pos];
+  std::vector<std::string> concat_input_names;
   for (std::size_t i = 0; i < tf_concat_op->inputs.size(); i++) {
     if (i != axis_pos) {
       concat_input_names.push_back(tf_concat_op->inputs[i]);
@@ -57,7 +57,7 @@ namespace toco {
   if (!axis_array.buffer) {
     AddMessageF("Waiting for the axis of %s to be resolved to a constant",
                 LogName(*tf_concat_op));
-    return ::tensorflow::Status::OK();
+    return ::tensorflow::OkStatus();
   }
 
   CHECK(axis_array.data_type == ArrayDataType::kInt32);
@@ -75,7 +75,7 @@ namespace toco {
 
   DeleteOpAndArrays(model, tf_concat_op);
   *modified = true;
-  return ::tensorflow::Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace toco

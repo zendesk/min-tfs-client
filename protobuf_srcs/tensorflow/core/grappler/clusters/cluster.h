@@ -21,6 +21,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "tensorflow/core/common_runtime/device_set.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/grappler/grappler_item.h"
@@ -57,7 +58,7 @@ class Cluster {
   // Returns OK iff there are no pending calls to the Run() method and all the
   // resources used by the cluster could be released. Returns an error
   // otherwise.
-  virtual Status Shutdown() { return Status::OK(); }
+  virtual Status Shutdown() { return OkStatus(); }
 
   // Whether soft placement is allowed. If allow_soft_placement is true,
   // an op will be placed on CPU if there's no GPU implementation for the OP
@@ -103,10 +104,10 @@ class Cluster {
   // superset of the devices listed in GetDevices/GetDeviceNames().
   virtual const DeviceSet* GetDeviceSet() const { return nullptr; }
 
-  // Enables collecting the allocator stats. Call with enable=true must be made
-  // before Provision().
-  virtual Status EnablePeakMemoryStats(bool enable) {
-    return errors::Unimplemented(strings ::StrCat(
+  // Enables collecting the allocator stats. If called, must be called before
+  // Provision().
+  virtual Status EnablePeakMemoryStats() {
+    return absl::UnimplementedError(strings ::StrCat(
         "Peak Memory Stats are not supported on ", type(), " clusters"));
   }
 
@@ -114,7 +115,7 @@ class Cluster {
   // runs.
   virtual Status GetPeakMemoryUsage(
       std::unordered_map<string, uint64>* device_peak_memory) const {
-    return errors::Unimplemented(
+    return absl::UnimplementedError(
         "GetPeakMemoryUsage is not implemented for this type of cluster.");
   }
 

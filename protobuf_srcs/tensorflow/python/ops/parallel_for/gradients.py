@@ -13,14 +13,11 @@
 # limitations under the License.
 # ==============================================================================
 """Jacobian ops."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import check_ops
-from tensorflow.python.ops import gradients as gradient_ops
+from tensorflow.python.ops import gradients_impl as gradient_ops
 from tensorflow.python.ops.parallel_for import control_flow_ops
 from tensorflow.python.util import nest
 
@@ -37,7 +34,7 @@ def jacobian(output, inputs, use_pfor=True, parallel_iterations=None):
       parallel. This knob can be used to control the total memory usage.
 
   Returns:
-    A tensor or a nested strucutre of tensors with the same structure as
+    A tensor or a nested structure of tensors with the same structure as
     `inputs`. Each entry is the jacobian of `output` w.r.t. to the corresponding
     value in `inputs`. If output has shape [y_1, ..., y_n] and inputs_i has
     shape [x_1, ..., x_m], the corresponding jacobian has shape
@@ -70,7 +67,7 @@ def jacobian(output, inputs, use_pfor=True, parallel_iterations=None):
         parallel_iterations=parallel_iterations)
 
   for i, out in enumerate(pfor_outputs):
-    if isinstance(out, ops.Tensor):
+    if isinstance(out, tensor.Tensor):
       new_shape = array_ops.concat(
           [output_shape, array_ops.shape(out)[1:]], axis=0)
       out = array_ops.reshape(out, new_shape)
@@ -95,8 +92,11 @@ def batch_jacobian(output, inp, use_pfor=True, parallel_iterations=None):
     inp: A tensor with shape [b, x1, ..., x_m]
     use_pfor: If true, uses pfor for computing the Jacobian. Else uses a
       tf.while_loop.
-    parallel_iterations: A knob to control how many iterations and dispatched in
-      parallel. This knob can be used to control the total memory usage.
+    parallel_iterations: A knob to control how many iterations are vectorized
+      and dispatched in parallel. The default value of None, when use_pfor is
+      true, corresponds to vectorizing all the iterations. When use_pfor is
+      false, the default value of None corresponds to parallel_iterations=10.
+      This knob can be used to control the total memory usage.
 
   Returns:
     A tensor `t` with shape [b, y_1, ..., y_n, x1, ..., x_m] where `t[i, ...]`
@@ -108,8 +108,8 @@ def batch_jacobian(output, inp, use_pfor=True, parallel_iterations=None):
   """
   output_shape = output.shape
   if not output_shape[0].is_compatible_with(inp.shape[0]):
-    raise ValueError("Need first dimension of output shape (%s) and inp shape "
-                     "(%s) to match." % (output.shape, inp.shape))
+    raise ValueError(f"Need first dimension of `output` shape ({output.shape}) "
+                     f"and `inp` shape ({inp.shape}) to match.")
   if output_shape.is_fully_defined():
     batch_size = int(output_shape[0])
     output_row_size = output_shape.num_elements() // batch_size

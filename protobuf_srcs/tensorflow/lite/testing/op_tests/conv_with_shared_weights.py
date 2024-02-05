@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for conv_with_shared_weights."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
@@ -36,6 +32,7 @@ def make_conv_with_shared_weights_tests(options):
       "padding": ["SAME"],
       "data_format": ["NHWC"],
       "channel_multiplier": [1],
+      "dynamic_range_quantize": [False, True],
   }]
 
   def get_tensor_shapes(parameters):
@@ -64,15 +61,15 @@ def make_conv_with_shared_weights_tests(options):
     # Construct 2 Conv2D operations which use exactly the same input and
     # weights.
     result1 = tf.nn.conv2d(
-        conv_input,
-        filter_tensor,
+        input=conv_input,
+        filters=filter_tensor,
         strides=parameters["strides"],
         dilations=parameters["dilations"],
         padding=parameters["padding"],
         data_format=parameters["data_format"])
     result2 = tf.nn.conv2d(
-        conv_input,
-        filter_tensor,
+        input=conv_input,
+        filters=filter_tensor,
         strides=parameters["strides"],
         dilations=parameters["dilations"],
         padding=parameters["padding"],

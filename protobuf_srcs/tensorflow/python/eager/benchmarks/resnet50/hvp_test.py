@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests and benchmarks for Hessian-vector products with ResNet50."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import gc
 import time
 
@@ -34,7 +30,7 @@ def _forward_over_back_hvp(model, images, labels, vector):
       model.trainable_variables, vector) as acc:
     with tf.GradientTape() as grad_tape:
       logits = model(images, training=True)
-      loss = tf.losses.softmax_cross_entropy(
+      loss = tf.compat.v1.losses.softmax_cross_entropy(
           logits=logits, onehot_labels=labels)
     grads = grad_tape.gradient(loss, model.trainable_variables)
   return acc.jvp(grads)
@@ -46,7 +42,7 @@ def _back_over_forward_hvp(model, images, labels, vector):
     with forwardprop.ForwardAccumulator(
         model.trainable_variables, vector) as acc:
       logits = model(images, training=True)
-      loss = tf.losses.softmax_cross_entropy(
+      loss = tf.compat.v1.losses.softmax_cross_entropy(
           logits=logits, onehot_labels=labels)
   return grad_tape.gradient(acc.jvp(loss), model.trainable_variables)
 
@@ -54,7 +50,7 @@ def _back_over_forward_hvp(model, images, labels, vector):
 def _tf_gradients_forward_over_back_hvp(model, images, labels, vector):
   with tf.GradientTape() as grad_tape:
     logits = model(images, training=True)
-    loss = tf.losses.softmax_cross_entropy(
+    loss = tf.compat.v1.losses.softmax_cross_entropy(
         logits=logits, onehot_labels=labels)
   variables = model.trainable_variables
   grads = grad_tape.gradient(loss, variables)
@@ -67,7 +63,7 @@ def _back_over_back_hvp(model, images, labels, vector):
   with tf.GradientTape() as outer_tape:
     with tf.GradientTape() as inner_tape:
       logits = model(images, training=True)
-      loss = tf.losses.softmax_cross_entropy(
+      loss = tf.compat.v1.losses.softmax_cross_entropy(
           logits=logits, onehot_labels=labels)
     grads = inner_tape.gradient(loss, model.trainable_variables)
   return outer_tape.gradient(
@@ -125,14 +121,14 @@ class HVPBenchmarks(tf.test.Benchmark):
         labels = tf.constant(labels)
         model.build(images.shape)
         vector = [tf.ones_like(v) for v in model.trainable_variables]
-        for _ in xrange(num_burn):
+        for _ in range(num_burn):
           results = hvp_fn(model, images, labels, vector)
           for result in results:
             result.cpu()
         self._force_device_sync()
         gc.collect()
         start = time.time()
-        for _ in xrange(num_iters):
+        for _ in range(num_iters):
           results = hvp_fn(model, images, labels, vector)
           for result in results:
             result.cpu()

@@ -17,18 +17,11 @@ limitations under the License.
 
 #define EIGEN_USE_GPU
 
-#include "tensorflow/core/kernels/l2loss_op.h"
-
 #include "tensorflow/core/framework/register_types.h"
-
+#include "tensorflow/core/kernels/gpu_prim.h"
+#include "tensorflow/core/kernels/l2loss_op.h"
 #include "tensorflow/core/kernels/reduction_gpu_kernels.cu.h"
 #include "tensorflow/core/kernels/reduction_ops_common.h"
-
-#if GOOGLE_CUDA
-namespace gpuprim = ::cub;
-#elif TENSORFLOW_USE_ROCM
-namespace gpuprim = ::hipcub;
-#endif
 
 namespace tensorflow {
 
@@ -75,6 +68,7 @@ class L2LossOp<GPUDevice, T> : public OpKernel {
 REGISTER_GPU_KERNEL(float);
 REGISTER_GPU_KERNEL(double);
 REGISTER_GPU_KERNEL(Eigen::half);
+REGISTER_GPU_KERNEL(Eigen::bfloat16);
 #undef REGISTER_GPU_KERNEL
 
 }  // namespace tensorflow

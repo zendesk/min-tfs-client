@@ -12,13 +12,15 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include <functional>
-#include <type_traits>
-#include "tensorflow/lite/c/c_api_internal.h"
+#include <stddef.h>
+#include <stdint.h>
+
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/kernels/internal/reference/binary_function.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
-#include "tensorflow/lite/kernels/op_macros.h"
 
 // TODO(b/117523611): We should factor out a binary_op and put binary ops there.
 namespace tflite {
@@ -56,16 +58,23 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   // Reinterprete the opaque data provided by user.
   OpData* data = reinterpret_cast<OpData*>(node->user_data);
 
-  const TfLiteTensor* input1 = GetInput(context, node, kInputTensor1);
-  const TfLiteTensor* input2 = GetInput(context, node, kInputTensor2);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  const TfLiteTensor* input1;
+  TF_LITE_ENSURE_OK(context,
+                    GetInputSafe(context, node, kInputTensor1, &input1));
+  const TfLiteTensor* input2;
+  TF_LITE_ENSURE_OK(context,
+                    GetInputSafe(context, node, kInputTensor2, &input2));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
 
   TF_LITE_ENSURE_TYPES_EQ(context, input1->type, input2->type);
 
   const TfLiteType type = input1->type;
-  if (type != kTfLiteInt32 && type != kTfLiteFloat32 && type != kTfLiteInt64) {
-    context->ReportError(context, "Type '%s' is not supported by floor_mod.",
-                         TfLiteTypeGetName(type));
+  if (type != kTfLiteInt8 && type != kTfLiteInt16 && type != kTfLiteInt32 &&
+      type != kTfLiteFloat32 && type != kTfLiteInt64) {
+    TF_LITE_KERNEL_LOG(context, "Type '%s' is not supported by floor_mod.",
+                       TfLiteTypeGetName(type));
     return kTfLiteError;
   }
   output->type = type;
@@ -89,12 +98,13 @@ TfLiteStatus EvalImpl(TfLiteContext* context, bool requires_broadcast,
                       TfLiteTensor* output) {
   const T* denominator_data = GetTensorData<T>(input2);
 
-  if (input2->type == kTfLiteInt32 || input2->type == kTfLiteInt64) {
+  if (input2->type == kTfLiteInt8 || input2->type == kTfLiteInt16 ||
+      input2->type == kTfLiteInt32 || input2->type == kTfLiteInt64) {
     // Validate the denominator only for integer.
     const int num_elements = NumElements(input2);
     for (int i = 0; i < num_elements; ++i) {
       if (denominator_data[i] == 0) {
-        context->ReportError(context, "Division by 0");
+        TF_LITE_KERNEL_LOG(context, "Division by 0");
         return kTfLiteError;
       }
     }
@@ -118,11 +128,25 @@ TfLiteStatus EvalImpl(TfLiteContext* context, bool requires_broadcast,
 TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   OpData* data = reinterpret_cast<OpData*>(node->user_data);
 
-  const TfLiteTensor* input1 = GetInput(context, node, kInputTensor1);
-  const TfLiteTensor* input2 = GetInput(context, node, kInputTensor2);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  const TfLiteTensor* input1;
+  TF_LITE_ENSURE_OK(context,
+                    GetInputSafe(context, node, kInputTensor1, &input1));
+  const TfLiteTensor* input2;
+  TF_LITE_ENSURE_OK(context,
+                    GetInputSafe(context, node, kInputTensor2, &input2));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
 
   switch (input1->type) {
+    case kTfLiteInt8: {
+      return EvalImpl<int8_t>(context, data->requires_broadcast, input1, input2,
+                              output);
+    }
+    case kTfLiteInt16: {
+      return EvalImpl<int16_t>(context, data->requires_broadcast, input1,
+                               input2, output);
+    }
     case kTfLiteInt32: {
       return EvalImpl<int32_t>(context, data->requires_broadcast, input1,
                                input2, output);
@@ -136,8 +160,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
                              output);
     }
     default: {
-      context->ReportError(context, "Type '%s' is not supported by floor_mod.",
-                           TfLiteTypeGetName(input1->type));
+      TF_LITE_KERNEL_LOG(context, "Type '%s' is not supported by floor_mod.",
+                         TfLiteTypeGetName(input1->type));
       return kTfLiteError;
     }
   }

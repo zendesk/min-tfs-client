@@ -15,9 +15,11 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/process_state.h"
 
+#include <atomic>
 #include <cstring>
 #include <vector>
 
+#include "absl/base/call_once.h"
 #include "tensorflow/core/common_runtime/bfc_allocator.h"
 #include "tensorflow/core/common_runtime/pool_allocator.h"
 #include "tensorflow/core/framework/allocator.h"
@@ -33,15 +35,16 @@ namespace tensorflow {
 
 /*static*/ ProcessState* ProcessState::singleton() {
   static ProcessState* instance = new ProcessState;
-  static std::once_flag f;
-  std::call_once(f, []() {
-    AllocatorFactoryRegistry::singleton()->process_state_ = instance;
+  static absl::once_flag f;
+  absl::call_once(f, []() {
+    AllocatorFactoryRegistry::singleton()->SetProcessState(instance);
   });
 
   return instance;
 }
 
-ProcessState::ProcessState() : numa_enabled_(false) {}
+ProcessState::ProcessState()
+    : numa_enabled_(false), cpu_allocators_cached_(0) {}
 
 string ProcessState::MemDesc::DebugString() {
   return strings::StrCat((loc == CPU ? "CPU " : "GPU "), dev_index,
@@ -60,6 +63,12 @@ ProcessState::MemDesc ProcessState::PtrType(const void* ptr) {
 
 Allocator* ProcessState::GetCPUAllocator(int numa_node) {
   if (!numa_enabled_ || numa_node == port::kNUMANoAffinity) numa_node = 0;
+
+  // Check if allocator for the numa node is in lock-free cache.
+  if (numa_node < cpu_allocators_cached_.load(std::memory_order_acquire)) {
+    return cpu_allocators_cache_[numa_node];
+  }
+
   mutex_lock lock(mu_);
   while (cpu_allocators_.size() <= static_cast<size_t>(numa_node)) {
     // If visitors have been defined we need an Allocator built from
@@ -71,7 +80,7 @@ Allocator* ProcessState::GetCPUAllocator(int numa_node) {
     Status status = ReadBoolFromEnvVar(
         "TF_CPU_ALLOCATOR_USE_BFC", alloc_visitors_defined, &use_bfc_allocator);
     if (!status.ok()) {
-      LOG(ERROR) << "GetCPUAllocator: " << status.error_message();
+      LOG(ERROR) << "GetCPUAllocator: " << status.message();
     }
     Allocator* allocator = nullptr;
     SubAllocator* sub_allocator =
@@ -82,24 +91,28 @@ Allocator* ProcessState::GetCPUAllocator(int numa_node) {
             : nullptr;
     if (use_bfc_allocator) {
       // TODO(reedwm): evaluate whether 64GB by default is the best choice.
-      int64 cpu_mem_limit_in_mb = -1;
+      int64_t cpu_mem_limit_in_mb = -1;
       Status status = ReadInt64FromEnvVar("TF_CPU_BFC_MEM_LIMIT_IN_MB",
                                           1LL << 16 /*64GB max by default*/,
                                           &cpu_mem_limit_in_mb);
       if (!status.ok()) {
-        LOG(ERROR) << "GetCPUAllocator: " << status.error_message();
+        LOG(ERROR) << "GetCPUAllocator: " << status.message();
       }
-      int64 cpu_mem_limit = cpu_mem_limit_in_mb * (1LL << 20);
+      int64_t cpu_mem_limit = cpu_mem_limit_in_mb * (1LL << 20);
       DCHECK(sub_allocator);
-      allocator =
-          new BFCAllocator(sub_allocator, cpu_mem_limit, true /*allow_growth*/,
-                           "bfc_cpu_allocator_for_gpu" /*name*/);
+
+      BFCAllocator::Options allocator_opts;
+      allocator_opts.allow_growth = true;
+      allocator = new BFCAllocator(
+          absl::WrapUnique(sub_allocator), cpu_mem_limit,
+          /*name=*/"bfc_cpu_allocator_for_gpu", allocator_opts);
+
       VLOG(2) << "Using BFCAllocator with memory limit of "
               << cpu_mem_limit_in_mb << " MB for ProcessState CPU allocator";
     } else if (sub_allocator) {
       DCHECK(sub_allocator);
       allocator =
-          new PoolAllocator(100 /*pool_size_limit*/, true /*auto_resize*/,
+          new PoolAllocator(/*pool_size_limit=*/100, /*auto_resize=*/true,
                             sub_allocator, new NoopRounder, "cpu_pool");
       VLOG(2) << "Using PoolAllocator for ProcessState CPU allocator "
               << "numa_enabled_=" << numa_enabled_
@@ -114,6 +127,10 @@ Allocator* ProcessState::GetCPUAllocator(int numa_node) {
       allocator = new TrackingAllocator(allocator, true);
     }
     cpu_allocators_.push_back(allocator);
+    if (cpu_allocators_.size() < cpu_allocators_cache_.max_size()) {
+      cpu_allocators_cache_[cpu_allocators_.size() - 1] = allocator;
+      cpu_allocators_cached_.fetch_add(1, std::memory_order_release);
+    }
     if (!sub_allocator) {
       DCHECK(cpu_alloc_visitors_.empty() && cpu_free_visitors_.empty());
     }

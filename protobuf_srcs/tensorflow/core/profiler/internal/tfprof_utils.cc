@@ -16,52 +16,55 @@ limitations under the License.
 #include "tensorflow/core/profiler/internal/tfprof_utils.h"
 
 #include <stdio.h>
+
 #include <algorithm>
 #include <memory>
 #include <set>
+#include <vector>
 
-#include "tensorflow/core/lib/strings/numbers.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/strcat.h"
-#include "tensorflow/core/lib/strings/stringprintf.h"
+#include "absl/strings/match.h"
+#include "absl/strings/numbers.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/str_split.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/regexp.h"
 
 namespace tensorflow {
 namespace tfprof {
-string FormatNumber(int64 n) {
+string FormatNumber(int64_t n) {
   if (n < 1000) {
-    return strings::Printf("%lld", n);
+    return absl::StrFormat("%d", n);
   } else if (n < 1000000) {
-    return strings::Printf("%.2fk", n / 1000.0);
+    return absl::StrFormat("%.2fk", n / 1000.0);
   } else if (n < 1000000000) {
-    return strings::Printf("%.2fm", n / 1000000.0);
+    return absl::StrFormat("%.2fm", n / 1000000.0);
   } else {
-    return strings::Printf("%.2fb", n / 1000000000.0);
+    return absl::StrFormat("%.2fb", n / 1000000000.0);
   }
 }
 
-string FormatTime(int64 micros) {
+string FormatTime(int64_t micros) {
   if (micros < 1000) {
-    return strings::Printf("%lldus", micros);
+    return absl::StrFormat("%dus", micros);
   } else if (micros < 1000000) {
-    return strings::Printf("%.2fms", micros / 1000.0);
+    return absl::StrFormat("%.2fms", micros / 1000.0);
   } else {
-    return strings::Printf("%.2fsec", micros / 1000000.0);
+    return absl::StrFormat("%.2fsec", micros / 1000000.0);
   }
 }
 
-string FormatMemory(int64 bytes) {
+string FormatMemory(int64_t bytes) {
   if (bytes < 1000) {
-    return strings::Printf("%lldB", bytes);
+    return absl::StrFormat("%dB", bytes);
   } else if (bytes < 1000000) {
-    return strings::Printf("%.2fKB", bytes / 1000.0);
+    return absl::StrFormat("%.2fKB", bytes / 1000.0);
   } else {
-    return strings::Printf("%.2fMB", bytes / 1000000.0);
+    return absl::StrFormat("%.2fMB", bytes / 1000000.0);
   }
 }
 
-string FormatShapes(const std::vector<int64>& shape) {
+string FormatShapes(const std::vector<int64_t>& shape) {
   return absl::StrJoin(shape, "x");
 }
 
@@ -87,8 +90,8 @@ tensorflow::Status ReturnError(const std::vector<string>& pieces, int idx) {
     val = pieces[idx + 1];
   }
   return tensorflow::Status(
-      tensorflow::error::INVALID_ARGUMENT,
-      strings::StrCat("Invalid option '", pieces[idx], "' value: '", val, "'"));
+      absl::StatusCode::kInvalidArgument,
+      absl::StrCat("Invalid option '", pieces[idx], "' value: '", val, "'"));
 }
 
 bool CaseEqual(StringPiece s1, StringPiece s2) {
@@ -114,13 +117,12 @@ bool StringToBool(StringPiece str, bool* value) {
 
 tensorflow::Status ParseCmdLine(const string& line, string* cmd,
                                 tensorflow::tfprof::Options* opts) {
-  std::vector<string> pieces =
-      str_util::Split(line, ' ', str_util::SkipEmpty());
+  std::vector<string> pieces = absl::StrSplit(line, ' ', absl::SkipEmpty());
 
   std::vector<string> cmds_str(kCmds, kCmds + sizeof(kCmds) / sizeof(*kCmds));
   if (std::find(cmds_str.begin(), cmds_str.end(), pieces[0]) ==
       cmds_str.end()) {
-    return tensorflow::Status(tensorflow::error::INVALID_ARGUMENT,
+    return tensorflow::Status(absl::StatusCode::kInvalidArgument,
                               "First string must be a valid command.");
   }
   *cmd = pieces[0];
@@ -128,74 +130,73 @@ tensorflow::Status ParseCmdLine(const string& line, string* cmd,
   for (int i = 1; i < pieces.size(); ++i) {
     if (pieces[i] == string(tensorflow::tfprof::kOptions[0])) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto32(pieces[i + 1], &opts->max_depth)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->max_depth)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[1]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->min_bytes)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_bytes)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[2]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->min_peak_bytes)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_peak_bytes)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[3]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->min_residual_bytes)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_residual_bytes)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[4]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->min_output_bytes)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_output_bytes)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[5]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->min_micros)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_micros)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[6]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1],
-                                 &opts->min_accelerator_micros)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_accelerator_micros)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[7]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->min_cpu_micros)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_cpu_micros)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[8]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->min_params)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_params)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[9]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->min_float_ops)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_float_ops)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[10]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->min_occurrence)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->min_occurrence)) {
         return ReturnError(pieces, i);
       }
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[11]) {
       if (pieces.size() <= i + 1 ||
-          !strings::safe_strto64(pieces[i + 1], &opts->step)) {
+          !absl::SimpleAtoi(pieces[i + 1], &opts->step)) {
         return ReturnError(pieces, i);
       }
       ++i;
@@ -215,39 +216,39 @@ tensorflow::Status ParseCmdLine(const string& line, string* cmd,
       if (pieces.size() <= i + 1) {
         return ReturnError(pieces, i);
       }
-      opts->account_type_regexes = str_util::Split(StripQuote(pieces[i + 1]),
-                                                   ',', str_util::SkipEmpty());
+      opts->account_type_regexes =
+          absl::StrSplit(StripQuote(pieces[i + 1]), ',', absl::SkipEmpty());
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[14]) {
       if (pieces.size() <= i + 1) {
         return ReturnError(pieces, i);
       }
-      opts->start_name_regexes = str_util::Split(StripQuote(pieces[i + 1]), ',',
-                                                 str_util::SkipEmpty());
+      opts->start_name_regexes =
+          absl::StrSplit(StripQuote(pieces[i + 1]), ',', absl::SkipEmpty());
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[15]) {
       if (pieces.size() <= i + 1) {
         return ReturnError(pieces, i);
       }
-      opts->trim_name_regexes = str_util::Split(StripQuote(pieces[i + 1]), ',',
-                                                str_util::SkipEmpty());
+      opts->trim_name_regexes =
+          absl::StrSplit(StripQuote(pieces[i + 1]), ',', absl::SkipEmpty());
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[16]) {
       if (pieces.size() <= i + 1) {
         return ReturnError(pieces, i);
       }
-      opts->show_name_regexes = str_util::Split(StripQuote(pieces[i + 1]), ',',
-                                                str_util::SkipEmpty());
+      opts->show_name_regexes =
+          absl::StrSplit(StripQuote(pieces[i + 1]), ',', absl::SkipEmpty());
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[17]) {
       if (pieces.size() <= i + 1) {
         return ReturnError(pieces, i);
       }
-      opts->hide_name_regexes = str_util::Split(StripQuote(pieces[i + 1]), ',',
-                                                str_util::SkipEmpty());
+      opts->hide_name_regexes =
+          absl::StrSplit(StripQuote(pieces[i + 1]), ',', absl::SkipEmpty());
       ++i;
     } else if (pieces[i] == tensorflow::tfprof::kOptions[18]) {
-      if ((pieces.size() > i + 1 && pieces[i + 1].find("-") == 0) ||
+      if ((pieces.size() > i + 1 && absl::StartsWith(pieces[i + 1], "-")) ||
           pieces.size() == i + 1) {
         opts->account_displayed_op_only = true;
       } else if (!StringToBool(pieces[i + 1],
@@ -262,8 +263,8 @@ tensorflow::Status ParseCmdLine(const string& line, string* cmd,
       }
       std::set<string> shown_set(kShown,
                                  kShown + sizeof(kShown) / sizeof(*kShown));
-      std::vector<string> requested_vector = str_util::Split(
-          StripQuote(pieces[i + 1]), ',', str_util::SkipEmpty());
+      std::vector<string> requested_vector =
+          absl::StrSplit(StripQuote(pieces[i + 1]), ',', absl::SkipEmpty());
       std::set<string> requested_set(requested_vector.begin(),
                                      requested_vector.end());
       for (const string& requested : requested_set) {
@@ -286,17 +287,17 @@ tensorflow::Status ParseCmdLine(const string& line, string* cmd,
       return ReturnError(pieces, i);
     }
   }
-  return tensorflow::Status::OK();
+  return OkStatus();
 }
 
 void PrintHelp() {
-  printf(
+  absl::PrintF(
       "See https://github.com/tensorflow/tensorflow/tree/master/tensorflow/core/profiler/"
       "README.md for profiler tutorial.\n");
-  printf(
+  absl::PrintF(
       "See https://github.com/tensorflow/tensorflow/tree/master/tensorflow/core/profiler/"
       "g3doc/command_line.md for command line tool tutorial.\n");
-  printf(
+  absl::PrintF(
       "profiler --profile_path=<ProfileProto binary file> # required\n"
       "\nOr:\n\n"
       "profiler --graph_path=<GraphDef proto file>  "
@@ -305,7 +306,7 @@ void PrintHelp() {
       "# Contains runtime info. Optional.\n"
       "         --run_log_path=<OpLogProto proto file>  "
       "# Contains extra source code, flops, custom type info. Optional\n\n");
-  printf(
+  absl::PrintF(
       "\nTo skip interactive mode, append one of the following commands:\n"
       "  scope: Organize profiles based on name scopes.\n"
       "  graph: Organize profiles based on graph node input/output.\n"
@@ -336,7 +337,7 @@ static const char* const kResidualBytes =
     "residual bytes: The memory not de-allocated after the operation finishes.";
 static const char* const kOutputBytes =
     "output bytes: The memory that is output from the operation (not "
-    "necessarilty allocated by the operation)";
+    "necessarily allocated by the operation)";
 static const char* const kOccurrence =
     "occurrence: The number of times it occurs";
 static const char* const kInputShapes =
@@ -392,8 +393,8 @@ string QueryDoc(const string& cmd, const Options& opts) {
     if (s == kShown[0]) {
       helps.push_back(kBytes);
     } else if (s == kShown[1]) {
-      helps.push_back(strings::StrCat(kTotalMicrosHelp, "\n", kCPUHelp, "\n",
-                                      kAccMicrosHelp));
+      helps.push_back(
+          absl::StrCat(kTotalMicrosHelp, "\n", kCPUHelp, "\n", kAccMicrosHelp));
     } else if (s == kShown[2]) {
       helps.push_back(kParams);
     } else if (s == kShown[3]) {
@@ -422,8 +423,8 @@ string QueryDoc(const string& cmd, const Options& opts) {
       helps.push_back("Unknown select: " + s);
     }
   }
-  return strings::StrCat("\nDoc:\n", cmd_help, "\n", absl::StrJoin(helps, "\n"),
-                         "\n\n");
+  return absl::StrCat("\nDoc:\n", cmd_help, "\n", absl::StrJoin(helps, "\n"),
+                      "\n\n");
 }
 
 }  // namespace tfprof

@@ -14,11 +14,6 @@
 # ==============================================================================
 """Module with basic entity definitions for testing."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import with_statement  # An extra future import for testing.
-
 
 def simple_function(x):
   """Docstring."""
@@ -56,3 +51,15 @@ def function_with_multiline_call(x):
       x,
       x + 1,
   )
+
+
+def basic_decorator(f):
+  return f
+
+
+@basic_decorator
+@basic_decorator
+def decorated_function(x):
+  if x > 0:
+    return 1
+  return 2

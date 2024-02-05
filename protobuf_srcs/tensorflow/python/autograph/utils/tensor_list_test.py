@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for Autograph lists."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.autograph.utils import tensor_list as tl
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
@@ -34,7 +30,6 @@ class TensorListTest(test.TestCase):
   def _shape(self, shape_tuple):
     return constant(shape_tuple, dtypes.int32)
 
-  @test_util.run_v1_only("b/117943489")
   def test_dynamic_list_append(self):
     l = []
     l = tl.dynamic_list_append(l, 1)

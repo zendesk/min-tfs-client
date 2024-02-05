@@ -29,9 +29,6 @@ namespace tensorflow {
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
-#ifdef TENSORFLOW_USE_SYCL
-typedef Eigen::SyclDevice SYCLDevice;
-#endif  // TENSORFLOW_USE_SYCL
 
 namespace functor {
 template <typename Device, typename T>
@@ -44,12 +41,9 @@ class SelectOp : public OpKernel {
   explicit SelectOp(OpKernelConstruction* context) : OpKernel(context) {}
 
   void Compute(OpKernelContext* ctx) override {
-    const Tensor* cond;
-    const Tensor* then;
-    const Tensor* else_;
-    OP_REQUIRES_OK(ctx, ctx->input("condition", &cond));
-    OP_REQUIRES_OK(ctx, ctx->input("t", &then));
-    OP_REQUIRES_OK(ctx, ctx->input("e", &else_));
+    const Tensor* cond = &ctx->input(0);
+    const Tensor* then = &ctx->input(1);
+    const Tensor* else_ = &ctx->input(2);
 
     if (TensorShapeUtils::IsScalar(cond->shape())) {
       ComputeScalar(ctx, cond, then, else_);
@@ -141,7 +135,8 @@ class SelectOp : public OpKernel {
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(SelectOp);
+  SelectOp(const SelectOp&) = delete;
+  void operator=(const SelectOp&) = delete;
 };
 template <typename Device, typename T>
 class SelectV2Op : public OpKernel {
@@ -149,30 +144,15 @@ class SelectV2Op : public OpKernel {
   explicit SelectV2Op(OpKernelConstruction* context) : OpKernel(context) {}
 
   void Compute(OpKernelContext* ctx) override {
-    const Tensor* cond;
-    const Tensor* then;
-    const Tensor* else_;
-    OP_REQUIRES_OK(ctx, ctx->input("condition", &cond));
-    OP_REQUIRES_OK(ctx, ctx->input("t", &then));
-    OP_REQUIRES_OK(ctx, ctx->input("e", &else_));
+    const Tensor* cond = &ctx->input(0);
+    const Tensor* then = &ctx->input(1);
+    const Tensor* else_ = &ctx->input(2);
 
     // The `cond`, `then`, and `else` are broadcastable (bcast.IsValid()),
     // This matches the behavior of numpy.
-    // TODO (yongtang): Consolidate into n-ary broadcast, instead of multiple
-    // 2-ary broadcast.
-
-    // Combine `then` and `else`.
-    BCast then_else_bcast(BCast::FromShape(then->shape()),
-                          BCast::FromShape(else_->shape()), false);
-    OP_REQUIRES(ctx, then_else_bcast.IsValid(),
-                errors::InvalidArgument(
-                    "then ", then->shape().DebugString(), " and else ",
-                    else_->shape().DebugString(), " must be broadcastable"));
-    // Combine `cond` with `then` and `else`.
-    BCast bcast(
-        BCast::FromShape(cond->shape()),
-        BCast::FromShape(BCast::ToShape(then_else_bcast.output_shape())),
-        false);
+    BCastList<3> bcast({cond->shape().dim_sizes(), then->shape().dim_sizes(),
+                        else_->shape().dim_sizes()},
+                       false);
     OP_REQUIRES(ctx, bcast.IsValid(),
                 errors::InvalidArgument(
                     "condition ", cond->shape().DebugString(), ", then ",
@@ -181,12 +161,9 @@ class SelectV2Op : public OpKernel {
 
     // Broadcast `cond`, `then` and `else` to combined shape,
     // in order to obtain the reshape.
-    BCast cond_bcast(BCast::FromShape(BCast::ToShape(bcast.output_shape())),
-                     BCast::FromShape(cond->shape()), false);
-    BCast then_bcast(BCast::FromShape(BCast::ToShape(bcast.output_shape())),
-                     BCast::FromShape(then->shape()), false);
-    BCast else_bcast(BCast::FromShape(BCast::ToShape(bcast.output_shape())),
-                     BCast::FromShape(else_->shape()), false);
+    BCast cond_bcast(bcast.output_shape(), cond->shape().dim_sizes(), false);
+    BCast then_bcast(bcast.output_shape(), then->shape().dim_sizes(), false);
+    BCast else_bcast(bcast.output_shape(), else_->shape().dim_sizes(), false);
     OP_REQUIRES(
         ctx,
         cond_bcast.IsValid() && then_bcast.IsValid() && else_bcast.IsValid(),
@@ -260,11 +237,11 @@ class SelectV2Op : public OpKernel {
             ctx->input(1).shape().DebugString(), " is not supported yet."));
         break;
     }
-    return;
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(SelectV2Op);
+  SelectV2Op(const SelectV2Op&) = delete;
+  void operator=(const SelectV2Op&) = delete;
 };
 
 #define REGISTER_SELECT(type)                                        \
@@ -278,6 +255,8 @@ class SelectV2Op : public OpKernel {
 TF_CALL_ALL_TYPES(REGISTER_SELECT);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 
 // Registration of the GPU implementations.
 #define REGISTER_SELECT_GPU(type)                                    \
@@ -299,24 +278,34 @@ REGISTER_SELECT_GPU(complex128);
 
 #undef REGISTER_SELECT_GPU
 
+#else
+
+#define REGISTER_SELECT_GPU(type)                                  \
+  REGISTER_KERNEL_BUILDER(                                         \
+      Name("Select").Device(DEVICE_GPU).TypeConstraint<type>("T"), \
+      SelectOp<GPUDevice, type>);
+
+REGISTER_SELECT_GPU(bool);
+REGISTER_SELECT_GPU(Eigen::half);
+REGISTER_SELECT_GPU(float);
+REGISTER_SELECT_GPU(double);
+REGISTER_SELECT_GPU(int32);
+REGISTER_SELECT_GPU(int64_t);
+REGISTER_SELECT_GPU(complex64);
+REGISTER_SELECT_GPU(complex128);
+
+#undef REGISTER_SELECT_GPU
+#endif
+
+REGISTER_KERNEL_BUILDER(
+    Name("Select").Device(DEVICE_GPU).TypeConstraint<bfloat16>("T"),
+    SelectOp<GPUDevice, bfloat16>);
+REGISTER_KERNEL_BUILDER(
+    Name("SelectV2").Device(DEVICE_GPU).TypeConstraint<bfloat16>("T"),
+    SelectV2Op<GPUDevice, bfloat16>);
+
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#ifdef TENSORFLOW_USE_SYCL
-// Registration of the SYCL implementations.
-#define REGISTER_SELECT_SYCL(type)                                    \
-  REGISTER_KERNEL_BUILDER(                                            \
-      Name("Select").Device(DEVICE_SYCL).TypeConstraint<type>("T"),   \
-      SelectOp<SYCLDevice, type>);                                    \
-  REGISTER_KERNEL_BUILDER(                                            \
-      Name("SelectV2").Device(DEVICE_SYCL).TypeConstraint<type>("T"), \
-      SelectOp<SYCLDevice, type>);
-
-REGISTER_SELECT_SYCL(float);
-REGISTER_SELECT_SYCL(double);
-REGISTER_SELECT_SYCL(int32);
-REGISTER_SELECT_SYCL(int64);
-#undef REGISTER_SELECT_SYCL
-#endif  // TENSORFLOW_USE_SYCL
 
 namespace functor {
 
@@ -333,10 +322,6 @@ struct SelectFunctorBase {
 
 template <typename T>
 struct SelectFunctor<CPUDevice, T> : SelectFunctorBase<CPUDevice, T> {};
-#ifdef TENSORFLOW_USE_SYCL
-template <typename T>
-struct SelectFunctor<SYCLDevice, T> : SelectFunctorBase<SYCLDevice, T> {};
-#endif  // TENSORFLOW_USE_SYCL
 
 template <typename Device, typename T>
 struct SelectScalarHandler {
@@ -355,8 +340,8 @@ struct SelectScalarHandler {
   }
 };
 
-// Specilization for CPU device. Forward input to output depending on the `cond`
-// value.
+// Specialization for CPU device. Forward input to output depending on the
+// `cond` value.
 // TODO(sjhwang): Consider specializing for GPUDevice as well by using
 // GPUDevice::memcpyDeviceToHost() to fetch bool value.
 template <typename T>
@@ -371,21 +356,6 @@ struct SelectScalarHandler<CPUDevice, T> {
   }
 };
 
-#ifdef TENSORFLOW_USE_SYCL
-template <typename Device, typename T>
-struct SelectScalarFunctorBase {
-  void operator()(const Device& d, typename TTypes<T>::Flat out,
-                  TTypes<bool>::ConstScalar cond,
-                  typename TTypes<T>::ConstFlat then_flat,
-                  typename TTypes<T>::ConstFlat else_flat) {
-    out.device(d) = cond() ? then_flat : else_flat;
-  }
-};
-
-template <typename T>
-struct SelectScalarFunctor<SYCLDevice, T>
-    : SelectScalarFunctorBase<SYCLDevice, T> {};
-#endif  // TENSORFLOW_USE_SYCL
 
 template <typename Device, typename T>
 struct BatchSelectFunctorBase {
@@ -397,15 +367,10 @@ struct BatchSelectFunctorBase {
     const Eigen::DenseIndex batch = cond_vec.size();
     const Eigen::DenseIndex all_but_batch = then_flat_outer_dims.dimension(1);
 
-#if !defined(EIGEN_HAS_INDEX_LIST)
-    Eigen::array<Eigen::DenseIndex, 2> broadcast_dims{{1, all_but_batch}};
-    Eigen::Tensor<Eigen::DenseIndex, 2>::Dimensions reshape_dims{{batch, 1}};
-#else
     Eigen::IndexList<Eigen::type2index<1>, Eigen::DenseIndex> broadcast_dims;
     broadcast_dims.set(1, all_but_batch);
     Eigen::IndexList<Eigen::DenseIndex, Eigen::type2index<1> > reshape_dims;
     reshape_dims.set(0, batch);
-#endif
 
     Assign(d, output_flat_outer_dims,
            cond_vec.reshape(reshape_dims)
@@ -429,7 +394,7 @@ struct BatchSelectFunctor<CPUDevice, T> {
     const T* t = then_flat_outer_dims.data();
     const T* e = else_flat_outer_dims.data();
 
-    auto work = [batch_size, output, c, t, e](int64 start, int64 end) {
+    auto work = [batch_size, output, c, t, e](int64_t start, int64_t end) {
       for (size_t i = start; i < end; ++i) {
         size_t offset = i * batch_size;
         port::prefetch<port::PREFETCH_HINT_NTA>(
@@ -476,16 +441,6 @@ template <typename T, int NDIMS>
 struct BCastSelectFunctor<CPUDevice, T, NDIMS>
     : BCastSelectFunctorBase<CPUDevice, T, NDIMS> {};
 
-#ifdef TENSORFLOW_USE_SYCL
-template <typename T>
-struct BatchSelectFunctor<SYCLDevice, T>
-    : BatchSelectFunctorBase<SYCLDevice, T> {};
-
-template <typename T, int NDIMS>
-struct BCastSelectFunctor<SYCLDevice, T, NDIMS>
-    : BCastSelectFunctorBase<SYCLDevice, T, NDIMS> {};
-
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace functor
 

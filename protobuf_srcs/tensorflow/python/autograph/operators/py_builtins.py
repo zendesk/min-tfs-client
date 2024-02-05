@@ -17,23 +17,17 @@
 List of built-in functions: https://docs.python.org/3/library/functions.html
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import inspect
 
-import six
-
-from tensorflow.python.autograph.utils import py_func
 from tensorflow.python.autograph.utils import tensors
-from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.autograph.utils import type_registry
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import cond
+from tensorflow.python.ops import control_flow_assert
 from tensorflow.python.ops import gen_parsing_ops
 from tensorflow.python.ops import gen_string_ops
 from tensorflow.python.ops import list_ops
@@ -42,10 +36,30 @@ from tensorflow.python.ops import math_ops
 
 UNSPECIFIED = object()
 
+abs_registry = type_registry.TypeRegistry()
+len_registry = type_registry.TypeRegistry()
+print_registry = type_registry.TypeRegistry()
+enumerate_registry = type_registry.TypeRegistry()
+zip_registry = type_registry.TypeRegistry()
+map_registry = type_registry.TypeRegistry()
+filter_registry = type_registry.TypeRegistry()
+any_registry = type_registry.TypeRegistry()
+all_registry = type_registry.TypeRegistry()
+sorted_registry = type_registry.TypeRegistry()
+next_registry = type_registry.TypeRegistry()
+
+
+def registry_lookup(reg, obj):
+  try:
+    return reg.lookup(obj)
+  except LookupError:
+    pass
+  return None
+
 
 def overload_of(f):
   if f in SUPPORTED_BUILTINS:
-    return BUILTIN_FUINCTIONS_MAP[f.__name__]
+    return BUILTIN_FUNCTIONS_MAP[f.__name__]
   return f
 
 
@@ -68,6 +82,16 @@ def _find_originating_frame(caller_fn_scope, innermost=True):
       ' found somewhere on the call stack')
 
   return result
+
+
+def locals_in_original_context(caller_fn_scope):
+  """Executes the locals function in the context of a specified function."""
+  return _find_originating_frame(caller_fn_scope, innermost=True).f_locals
+
+
+def globals_in_original_context(caller_fn_scope):
+  """Executes the locals function in the context of a specified function."""
+  return _find_originating_frame(caller_fn_scope, innermost=True).f_globals
 
 
 def eval_in_original_context(f, args, caller_fn_scope):
@@ -101,10 +125,6 @@ def super_in_original_context(f, args, caller_fn_scope):
     The result of calling `f` as if it was called in the frame indicated by
       `caller_fn_scope`.
   """
-
-  # Python 2 doesn't support implicit argument super variants.
-  if six.PY2:
-    return f(*args)
 
   # Only the no-arg call is desugared.
   if args:
@@ -148,7 +168,10 @@ def super_in_original_context(f, args, caller_fn_scope):
 
 
 def abs_(x):
-  if tensor_util.is_tensor(x):
+  abs_override = registry_lookup(abs_registry, x)
+  if abs_override is not None:
+    return abs_override(x)
+  if tensor_util.is_tf_type(x):
     return _tf_abs(x)
   return _py_abs(x)
 
@@ -162,7 +185,7 @@ def _py_abs(x):
 
 
 def float_(x=0):
-  if tensor_util.is_tensor(x):
+  if tensor_util.is_tf_type(x):
     return _tf_float(x)
   return _py_float(x)
 
@@ -179,7 +202,7 @@ def _py_float(x):
 
 
 def int_(x=0, base=UNSPECIFIED):
-  if tensor_util.is_tensor(x):
+  if tensor_util.is_tf_type(x):
     return _tf_int(x, base)
   return _py_int(x, base)
 
@@ -201,11 +224,14 @@ def _py_int(x, base):
 
 
 def len_(s):
+  len_override = registry_lookup(len_registry, s)
+  if len_override is not None:
+    return len_override(s)
   if tensors.is_tensor_array(s):
     return _tf_tensor_array_len(s)
   elif tensors.is_tensor_list(s):
     return _tf_tensor_list_len(s)
-  elif tensor_util.is_tensor(s):
+  elif tensor_util.is_tf_type(s):
     return _tf_tensor_len(s)
   return _py_len(s)
 
@@ -244,11 +270,11 @@ def _tf_tensor_len(s):
     msg = gen_string_ops.string_join(
         ['len requires non-zero rank, got ',
          gen_string_ops.as_string(rank)])
-    with ops.control_dependencies([control_flow_ops.Assert(False, [msg])]):
+    with ops.control_dependencies([control_flow_assert.Assert(False, [msg])]):
       return constant_op.constant(0, dtype=dtypes.int32)
 
-  return control_flow_ops.cond(rank > 0, lambda: array_ops.shape(s)[0],
-                               raise_zero_rank_error)
+  return cond.cond(rank > 0, lambda: array_ops.shape(s)[0],
+                   raise_zero_rank_error)
 
 
 def _py_len(s):
@@ -263,42 +289,90 @@ def print_(*objects, **kwargs):
   if unknown_kwargs:
     raise ValueError('invalid keyword arguments: {}'.format(unknown_kwargs))
 
-  # TODO(mdan): Use next.flatten(objects) instead?
-  if any(tensor_util.is_tensor(o) for o in objects):
-    # TODO(mdan): use tf.print instead.
-    return _tf_py_func_print(objects, kwargs)
-  else:
-    _py_print(*objects, **kwargs)
+  print_fn = _py_print
+  for x in objects:
+    print_override = registry_lookup(print_registry, x)
+    if print_override is not None:  # pylint: disable=comparison-with-callable
+      print_fn = print_override
+      break
+
+  if print_fn is _py_print:
+    # If this fails, ops/autograph_ops.py hasn't been imported.
+    assert not any(tensor_util.is_tf_type(s) for s in objects)
+
+  return print_fn(*objects, **kwargs)
 
 
 def _py_print(*objects, **kwargs):
   print(*objects, **kwargs)
 
 
-def _tf_py_func_print(objects, kwargs):
-  """Overload of print_ as a py_func implementation."""
-  override_kwargs = {k: v for k, v in kwargs.items() if v is not UNSPECIFIED}
-  if 'flush' not in override_kwargs:
-    # Defaulting to flushing the console in graph mode, which helps reduce
-    # garbled output in IPython.
-    override_kwargs['flush'] = True
+def min_(*args, **kwargs):
+  if any(tensor_util.is_tf_type(s) for s in args):
+    return _tf_min(*args, **kwargs)
+  return _py_min(*args, **kwargs)
 
-  def print_wrapper(*vals):
-    vals = tuple(v.numpy() if tensor_util.is_tensor(v) else v for v in vals)
-    if six.PY3:
-      # TensorFlow doesn't seem to generate Unicode when passing strings to
-      # py_func. This causes the print to add a "b'" wrapper to the output,
-      # which is probably never what you want.
-      vals = tuple(
-          v.decode('utf-8') if isinstance(v, bytes) else v for v in vals)
-    six.print_(*vals, **override_kwargs)
 
-  return py_func.wrap_py_func(
-      print_wrapper, None, objects, use_dummy_return=True)
+def _tf_min(*args, **kwargs):
+  if len(kwargs):
+    kwargs_tuple = tuple(set(kwargs.keys()))
+    raise ValueError('These keyword arguments are '
+                     'currently not supported: {}'.format(kwargs_tuple))
+  if len(args) == 1:
+    rank = args[0].shape.rank
+    if rank == 0:
+      return args[0]
+    if rank == 1:
+      return math_ops.reduce_min(*args, axis=0)
+    raise ValueError('min(arg) currently support only tensor with rank 1, '
+                     'but got a tensor with rank {}'.format(rank))
+  for arg in args:
+    rank = arg.shape.rank
+    if rank != 0:
+      raise ValueError('min(arg1, arg2, *args) currently support '
+                       'only scalar tensor, but got a tensor '
+                       'with shape {}'.format(rank))
+  return math_ops.reduce_min(args, axis=0)
+
+
+def _py_min(*args, **kwargs):
+  return min(*args, **kwargs)
+
+
+def max_(*args, **kwargs):
+  if any(tensor_util.is_tf_type(s) for s in args):
+    return _tf_max(*args, **kwargs)
+  return _py_max(*args, **kwargs)
+
+
+def _tf_max(*args, **kwargs):
+  if len(kwargs):
+    kwargs_tuple = tuple(set(kwargs.keys()))
+    raise ValueError('These keyword arguments are '
+                     'currently not supported: {}'.format(kwargs_tuple))
+  if len(args) == 1:
+    rank = args[0].shape.rank
+    if rank == 0:
+      return args[0]
+    if rank == 1:
+      return math_ops.reduce_max(*args, axis=0)
+    raise ValueError('max(arg) currently support only tensor with rank 1, '
+                     'but got a tensor with rank {}'.format(rank))
+  for arg in args:
+    rank = arg.shape.rank
+    if rank != 0:
+      raise ValueError('max(arg1, arg2, *args) currently support '
+                       'only scalar tensor, but got a tensor '
+                       'with shape {}'.format(rank))
+  return math_ops.reduce_max(args, axis=0)
+
+
+def _py_max(*args, **kwargs):
+  return max(*args, **kwargs)
 
 
 def range_(start_or_stop, stop=UNSPECIFIED, step=UNSPECIFIED):
-  if any(tensor_util.is_tensor(s) for s in (start_or_stop, stop, step)):
+  if any(tensor_util.is_tf_type(s) for s in (start_or_stop, stop, step)):
     return _tf_range(start_or_stop, stop, step)
   return _py_range(start_or_stop, stop, step)
 
@@ -329,78 +403,131 @@ def _py_range(start_or_stop, stop, step):
 
 
 def enumerate_(s, start=0):
-  if isinstance(s, dataset_ops.DatasetV2):
-    return _tf_dataset_enumerate(s, start)
+  enumerate_override = registry_lookup(enumerate_registry, s)
+  if enumerate_override is not None:
+    return enumerate_override(s, start)
   return _py_enumerate(s, start)
-
-
-def _tf_dataset_enumerate(s, start=0):
-  return s.enumerate(start)
 
 
 def _py_enumerate(s, start=0):
   return enumerate(s, start)
 
 
-def zip_(*iterables):
-  if all(isinstance(x, dataset_ops.DatasetV2) for x in iterables):
-    return _tf_dataset_zip(*iterables)
-  return _py_zip(*iterables)
+def zip_(*iterables, strict=False):
+  zip_fn = _py_zip
+  # If the overridden function is not the same across all iterables, use _py_zip
+  for x in iterables:
+    zip_override = registry_lookup(zip_registry, x)
+    if zip_override is None or (zip_fn != _py_zip and zip_override != zip_fn):  # pylint: disable=comparison-with-callable
+      zip_fn = _py_zip
+      break
+    zip_fn = zip_override
+  return zip_fn(*iterables, strict=strict)
 
 
-def _tf_dataset_zip(*iterables):
-  return dataset_ops.DatasetV2.zip(iterables)
-
-
-def _py_zip(*iterables):
-  return zip(*iterables)
+def _py_zip(*iterables, strict=False):
+  if strict:
+    return zip(*iterables, strict=True)
+  else:
+    # Python < 3.10 doesn't have `strict` kwarg.
+    return zip(*iterables)
 
 
 def map_(fn, *iterables):
-  if all(isinstance(x, dataset_ops.DatasetV2) for x in iterables):
-    return _tf_dataset_map(fn, *iterables)
-  return _py_map(fn, *iterables)
-
-
-def _tf_dataset_map(fn, *iterables):
-  return dataset_ops.DatasetV2.zip(iterables).map(fn)
+  map_fn = _py_map
+  # If the overridden function is not the same across all iterables, use _py_map
+  for x in iterables:
+    map_override = registry_lookup(map_registry, x)
+    if map_override is None or (map_fn != _py_map and map_override != map_fn):  # pylint: disable=comparison-with-callable
+      map_fn = _py_map
+      break
+    map_fn = map_override
+  return map_fn(fn, *iterables)
 
 
 def _py_map(fn, *iterables):
   return map(fn, *iterables)
 
 
+def next_(iterator, default=UNSPECIFIED):
+  next_override = registry_lookup(next_registry, iterator)
+  if next_override is not None:
+    return next_override(iterator, default)
+  return next_py(iterator, default)
+
+
+def next_py(iterator, default=UNSPECIFIED):
+  if default is UNSPECIFIED:
+    return next(iterator)
+  return next(iterator, default)
+
+
 def filter_(function, iterable):
-  if isinstance(iterable, dataset_ops.DatasetV2):
-    return _tf_dataset_filter(function, iterable)
+  filter_override = registry_lookup(filter_registry, iterable)
+  if filter_override is not None:
+    return filter_override(function, iterable)
   return _py_filter(function, iterable)
-
-
-def _tf_dataset_filter(function, iterable):
-  return iterable.filter(function)
 
 
 def _py_filter(function, iterable):
   return filter(function, iterable)
 
 
+def any_(iterable):
+  any_override = registry_lookup(any_registry, iterable)
+  if any_override is not None:
+    return any_override(iterable)
+  return _py_any(iterable)
+
+
+def _py_any(iterable):
+  return any(iterable)
+
+
+def all_(iterable):
+  all_override = registry_lookup(all_registry, iterable)
+  if all_override is not None:
+    return all_override(iterable)
+  return _py_all(iterable)
+
+
+def _py_all(iterable):
+  return all(iterable)
+
+
+def sorted_(iterable, key=UNSPECIFIED, reverse=UNSPECIFIED):
+  sorted_override = registry_lookup(sorted_registry, iterable)
+  if sorted_override is not None:
+    return sorted_override(iterable, key, reverse)
+  return _py_sorted(iterable, key, reverse)
+
+
+def _py_sorted(iterable, key, reverse):
+  if key is not UNSPECIFIED and reverse is UNSPECIFIED:
+    return sorted(iterable, key=key)
+  if key is UNSPECIFIED and reverse is not UNSPECIFIED:
+    return sorted(iterable, reverse=reverse)
+  if key is not UNSPECIFIED and reverse is not UNSPECIFIED:
+    return sorted(iterable, key=key, reverse=reverse)
+  return sorted(iterable)
+
+
 SUPPORTED_BUILTINS = (abs, float, int, len, print, range, enumerate, zip, map,
-                      filter)
+                      filter, any, all, sorted)
 
-if six.PY2:
-  SUPPORTED_BUILTINS += (xrange,)
-
-BUILTIN_FUINCTIONS_MAP = {
+BUILTIN_FUNCTIONS_MAP = {
     'abs': abs_,
+    'any': any_,
+    'all': all_,
+    'enumerate': enumerate_,
+    'filter': filter_,
     'float': float_,
     'int': int_,
     'len': len_,
+    'map': map_,
+    'next': next_,
     'print': print_,
     'range': range_,
-    # TODO(mdan): This might make more sense as tf.data.range.
-    'xrange': range_,
-    'enumerate': enumerate_,
+    'sorted': sorted_,
     'zip': zip_,
-    'map': map_,
-    'filter': filter_,
 }

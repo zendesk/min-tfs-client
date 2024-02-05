@@ -1,5 +1,9 @@
 path: "tensorflow.math"
 tf_module {
+  member {
+    name: "special"
+    mtype: "<type \'module\'>"
+  }
   member_method {
     name: "abs"
     argspec: "args=[\'x\', \'name\'], varargs=None, keywords=None, defaults=[\'None\'], "
@@ -27,6 +31,14 @@ tf_module {
   member_method {
     name: "angle"
     argspec: "args=[\'input\', \'name\'], varargs=None, keywords=None, defaults=[\'None\'], "
+  }
+  member_method {
+    name: "approx_max_k"
+    argspec: "args=[\'operand\', \'k\', \'reduction_dimension\', \'recall_target\', \'reduction_input_size_override\', \'aggregate_to_topk\', \'name\'], varargs=None, keywords=None, defaults=[\'-1\', \'0.95\', \'-1\', \'True\', \'None\'], "
+  }
+  member_method {
+    name: "approx_min_k"
+    argspec: "args=[\'operand\', \'k\', \'reduction_dimension\', \'recall_target\', \'reduction_input_size_override\', \'aggregate_to_topk\', \'name\'], varargs=None, keywords=None, defaults=[\'-1\', \'0.95\', \'-1\', \'True\', \'None\'], "
   }
   member_method {
     name: "argmax"
@@ -78,7 +90,7 @@ tf_module {
   }
   member_method {
     name: "bincount"
-    argspec: "args=[\'arr\', \'weights\', \'minlength\', \'maxlength\', \'dtype\', \'name\'], varargs=None, keywords=None, defaults=[\'None\', \'None\', \'None\', \"<dtype: \'int32\'>\", \'None\'], "
+    argspec: "args=[\'arr\', \'weights\', \'minlength\', \'maxlength\', \'dtype\', \'name\', \'axis\', \'binary_output\'], varargs=None, keywords=None, defaults=[\'None\', \'None\', \'None\', \"<dtype: \'int32\'>\", \'None\', \'None\', \'False\'], "
   }
   member_method {
     name: "ceil"
@@ -138,6 +150,10 @@ tf_module {
   }
   member_method {
     name: "erfc"
+    argspec: "args=[\'x\', \'name\'], varargs=None, keywords=None, defaults=[\'None\'], "
+  }
+  member_method {
+    name: "erfcinv"
     argspec: "args=[\'x\', \'name\'], varargs=None, keywords=None, defaults=[\'None\'], "
   }
   member_method {
@@ -214,7 +230,7 @@ tf_module {
   }
   member_method {
     name: "l2_normalize"
-    argspec: "args=[\'x\', \'axis\', \'epsilon\', \'name\'], varargs=None, keywords=None, defaults=[\'None\', \'1e-12\', \'None\'], "
+    argspec: "args=[\'x\', \'axis\', \'epsilon\', \'name\', \'dim\'], varargs=None, keywords=None, defaults=[\'None\', \'1e-12\', \'None\', \'None\'], "
   }
   member_method {
     name: "lbeta"
@@ -421,6 +437,10 @@ tf_module {
     argspec: "args=[\'x\', \'name\'], varargs=None, keywords=None, defaults=[\'None\'], "
   }
   member_method {
+    name: "sobol_sample"
+    argspec: "args=[\'dim\', \'num_results\', \'skip\', \'dtype\', \'name\'], varargs=None, keywords=None, defaults=[\'0\', \"<dtype: \'float32\'>\", \'None\'], "
+  }
+  member_method {
     name: "softmax"
     argspec: "args=[\'logits\', \'axis\', \'name\'], varargs=None, keywords=None, defaults=[\'None\', \'None\'], "
   }
@@ -458,7 +478,7 @@ tf_module {
   }
   member_method {
     name: "top_k"
-    argspec: "args=[\'input\', \'k\', \'sorted\', \'name\'], varargs=None, keywords=None, defaults=[\'1\', \'True\', \'None\'], "
+    argspec: "args=[\'input\', \'k\', \'sorted\', \'index_type\', \'name\'], varargs=None, keywords=None, defaults=[\'1\', \'True\', \"<dtype: \'int32\'>\", \'None\'], "
   }
   member_method {
     name: "truediv"
@@ -490,6 +510,10 @@ tf_module {
   }
   member_method {
     name: "xdivy"
+    argspec: "args=[\'x\', \'y\', \'name\'], varargs=None, keywords=None, defaults=[\'None\'], "
+  }
+  member_method {
+    name: "xlog1py"
     argspec: "args=[\'x\', \'y\', \'name\'], varargs=None, keywords=None, defaults=[\'None\'], "
   }
   member_method {

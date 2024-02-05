@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.client import session
@@ -111,7 +107,7 @@ class ProfilerTest(test.TestCase):
     opts = builder.time_and_memory(min_bytes=0)
 
     with session.Session() as sess:
-      r1, r2, r3 = lib.BuildSplitableModel()
+      r1, r2, r3 = lib.BuildSplittableModel()
       sess.run(variables.global_variables_initializer())
 
       profiler = model_analyzer.Profiler(sess.graph)

@@ -14,9 +14,14 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/string_util.h"
 
+#include <stdint.h>
+
+#include <string>
+
 #include <gtest/gtest.h>
-#include "tensorflow/lite/c/c_api_internal.h"
-#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/core/c/c_api_types.h"
+#include "tensorflow/lite/core/interpreter.h"
+#include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/testing/util.h"
 
 namespace tflite {
@@ -33,15 +38,24 @@ TEST(StringUtil, TestStringUtil) {
   t1->type = kTfLiteString;
   t1->allocation_type = kTfLiteDynamic;
 
-  char data[] = {1, 0, 0, 0, 12, 0, 0, 0, 15, 0, 0, 0, 'X', 'Y', 'Z'};
+  // String tensor with one string of length 3
+  union {
+    char raw_bytes[15];
+    struct {
+      int32_t num_strs;
+      int32_t offsets[2];
+      char str_data[3];
+    } tensor_data;
+  } data;
+  data.tensor_data = {1, {12, 15}, {'X', 'Y', 'Z'}};
 
   TfLiteQuantization quant;
   quant.type = kTfLiteNoQuantization;
   quant.params = nullptr;
-  interpreter.SetTensorParametersReadOnly(2, kTfLiteString, "", {1}, quant,
-                                          data, 15);
+  interpreter.SetTensorParametersReadOnly(
+      2, kTfLiteString, "", {1}, quant, data.raw_bytes, sizeof(data.raw_bytes));
   TfLiteTensor* t2 = interpreter.tensor(2);
-  interpreter.AllocateTensors();
+  ASSERT_EQ(interpreter.AllocateTensors(), kTfLiteOk);
 
   char s0[] = "ABC";
   string s1 = "DEFG";
@@ -49,10 +63,10 @@ TEST(StringUtil, TestStringUtil) {
 
   // Write strings to tensors
   DynamicBuffer buf0;
-  buf0.AddString(s0, 3);
+  ASSERT_EQ(buf0.AddString(s0, 3), kTfLiteOk);
   DynamicBuffer buf1;
-  buf1.AddString(s1.data(), s1.length());
-  buf0.AddString(s2, 0);
+  ASSERT_EQ(buf1.AddString(s1.data(), s1.length()), kTfLiteOk);
+  ASSERT_EQ(buf0.AddString(s2, 0), kTfLiteOk);
 
   auto new_shape = TfLiteIntArrayCreate(2);
   new_shape->data[0] = 2;
@@ -88,27 +102,89 @@ TEST(StringUtil, TestStringUtil) {
   ASSERT_EQ(t2->bytes, 15);
 }
 
-TEST(StringUtil, TestAddJoinedString) {
+TEST(StringUtil, AddStringOverflow32Length) {
+  // Set max size to a small number so we can efficiently test for
+  // overflows.
+  const size_t max_size = 100;
+  DynamicBuffer buf{max_size};
+  std::string big_string(max_size + 1, 'A');
+  ASSERT_EQ(buf.AddString({big_string.data(), big_string.length()}),
+            kTfLiteError);
+}
+
+TEST(StringUtil, AddStringToFullBufferOverflow32Length) {
+  const size_t max_size = 100;
+  DynamicBuffer buf{max_size};
+  std::string big_string((max_size / 2) + 1, 'A');
+  ASSERT_EQ(buf.AddString({big_string.data(), big_string.length()}), kTfLiteOk);
+  EXPECT_EQ(buf.AddString({big_string.data(), big_string.length()}),
+            kTfLiteError);
+}
+
+TEST(StringUtil, TruncatesCharDataToLen) {
   Interpreter interpreter;
   interpreter.AddTensors(1);
   TfLiteTensor* t0 = interpreter.tensor(0);
   t0->type = kTfLiteString;
   t0->allocation_type = kTfLiteDynamic;
 
-  char s0[] = "ABC";
-  char s1[] = "DEFG";
-  char s2[] = "";
-  char s3[] = "XYZ";
+  DynamicBuffer buf;
+  char fake_big[] = "ABCADASDA";
+  ASSERT_EQ(buf.AddString({fake_big, 3}), kTfLiteOk);
+  buf.WriteToTensorAsVector(t0);
+
+  StringRef added_string = GetString(t0, 0);
+  EXPECT_EQ(added_string.len, 3);
+  EXPECT_EQ(string(added_string.str, 3), "ABC");
+}
+
+TEST(StringUtil, TestAddJoinedStringCharSeparator) {
+  Interpreter interpreter;
+  interpreter.AddTensors(1);
+  TfLiteTensor* t0 = interpreter.tensor(0);
+  t0->type = kTfLiteString;
+  t0->allocation_type = kTfLiteDynamic;
+
+  char s0[] = "";
+  char s1[] = "ABC";
+  char s2[] = "DEFG";
+  char s3[] = "";
+  char s4[] = "XYZ";
 
   DynamicBuffer buf;
-  buf.AddJoinedString({{s0, 3}, {s1, 4}, {s2, 0}, {s3, 3}}, ' ');
+  buf.AddJoinedString({{s0, 0}, {s1, 3}, {s2, 4}, {s3, 0}, {s4, 3}}, ' ');
   buf.WriteToTensorAsVector(t0);
 
   ASSERT_EQ(GetStringCount(t0), 1);
   StringRef str_ref;
   str_ref = GetString(t0, 0);
-  ASSERT_EQ(string(str_ref.str, str_ref.len), "ABC DEFG  XYZ");
-  ASSERT_EQ(t0->bytes, 25);
+  ASSERT_EQ(string(str_ref.str, str_ref.len), " ABC DEFG  XYZ");
+  ASSERT_EQ(t0->bytes, 26);
+}
+
+TEST(StringUtil, TestAddJoinedStringStringRefSeparator) {
+  Interpreter interpreter;
+  interpreter.AddTensors(1);
+  TfLiteTensor* t0 = interpreter.tensor(0);
+  t0->type = kTfLiteString;
+  t0->allocation_type = kTfLiteDynamic;
+
+  char s[] = " - ";
+  char s0[] = "";
+  char s1[] = "ABC";
+  char s2[] = "DEFG";
+  char s3[] = "";
+  char s4[] = "XYZ";
+
+  DynamicBuffer buf;
+  buf.AddJoinedString({{s0, 0}, {s1, 3}, {s2, 4}, {s3, 0}, {s4, 3}}, {s, 3});
+  buf.WriteToTensorAsVector(t0);
+
+  ASSERT_EQ(GetStringCount(t0), 1);
+  StringRef str_ref;
+  str_ref = GetString(t0, 0);
+  ASSERT_EQ(string(str_ref.str, str_ref.len), " - ABC - DEFG -  - XYZ");
+  ASSERT_EQ(t0->bytes, 34);
 }
 
 TEST(StringUtil, TestEmptyList) {
@@ -156,9 +232,3 @@ TEST(StringUtil, TestShapes) {
 }
 
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::tflite::LogToStderr();
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

@@ -13,17 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for Building Blocks of the TensorFlow Debugger CLI."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import stat
 import tempfile
 
 import numpy as np
 
-from tensorflow.python import pywrap_tensorflow_internal
+from tensorflow.python.client import pywrap_tf_session
 from tensorflow.python.debug.cli import debugger_cli_common
 from tensorflow.python.framework import test_util
 from tensorflow.python.platform import gfile
@@ -64,7 +60,7 @@ class RichTextLinesTest(test_util.TensorFlowTestCase):
     self.assertEqual(2, screen_output.num_lines())
 
   def testRichTextLinesConstructorWithInvalidType(self):
-    with self.assertRaisesRegexp(ValueError, "Unexpected type in lines"):
+    with self.assertRaisesRegex(ValueError, "Unexpected type in lines"):
       debugger_cli_common.RichTextLines(123)
 
   def testRichTextLinesConstructorWithString(self):
@@ -253,7 +249,9 @@ class RichTextLinesTest(test_util.TensorFlowTestCase):
         font_attr_segs={0: [(0, 5, "red")],
                         1: [(0, 7, "blue")]})
 
-    file_path = tempfile.mktemp()
+    fd, file_path = tempfile.mkstemp()
+    os.close(fd)  # file opened exclusively, so we need to close this
+    # a better fix would be to make the API take a fd
     screen_output.write_to_file(file_path)
 
     with gfile.Open(file_path, "r") as f:
@@ -320,7 +318,7 @@ class CommandHandlerRegistryTest(test_util.TensorFlowTestCase):
 
     # Attempt to register an empty-string as a command prefix should trigger
     # an exception.
-    with self.assertRaisesRegexp(ValueError, "Empty command prefix"):
+    with self.assertRaisesRegex(ValueError, "Empty command prefix"):
       registry.register_command_handler("", self._noop_handler, "")
 
   def testRegisterAndInvokeHandler(self):
@@ -335,11 +333,11 @@ class CommandHandlerRegistryTest(test_util.TensorFlowTestCase):
 
     # Attempt to invoke an unregistered command prefix should trigger an
     # exception.
-    with self.assertRaisesRegexp(ValueError, "No handler is registered"):
+    with self.assertRaisesRegex(ValueError, "No handler is registered"):
       registry.dispatch_command("beep", [])
 
     # Empty command prefix should trigger an exception.
-    with self.assertRaisesRegexp(ValueError, "Prefix is empty"):
+    with self.assertRaisesRegex(ValueError, "Prefix is empty"):
       registry.dispatch_command("", [])
 
   def testExitingHandler(self):
@@ -391,7 +389,7 @@ class CommandHandlerRegistryTest(test_util.TensorFlowTestCase):
 
     # If the command handler fails to return a RichTextLines instance, an error
     # should be triggered.
-    with self.assertRaisesRegexp(
+    with self.assertRaisesRegex(
         ValueError,
         "Return value from command handler.*is not None or a RichTextLines "
         "instance"):
@@ -403,7 +401,7 @@ class CommandHandlerRegistryTest(test_util.TensorFlowTestCase):
 
     # Registering the same command prefix more than once should trigger an
     # exception.
-    with self.assertRaisesRegexp(
+    with self.assertRaisesRegex(
         ValueError, "A handler is already registered for command prefix"):
       registry.register_command_handler("noop", self._noop_handler, "")
 
@@ -416,8 +414,8 @@ class CommandHandlerRegistryTest(test_util.TensorFlowTestCase):
         "noop", self._noop_handler, "", prefix_aliases=["n"])
 
     # Clash with existing alias.
-    with self.assertRaisesRegexp(ValueError,
-                                 "clashes with existing prefixes or aliases"):
+    with self.assertRaisesRegex(ValueError,
+                                "clashes with existing prefixes or aliases"):
       registry.register_command_handler(
           "cols", self._echo_screen_cols, "", prefix_aliases=["n"])
 
@@ -425,8 +423,8 @@ class CommandHandlerRegistryTest(test_util.TensorFlowTestCase):
     self.assertFalse(registry.is_registered("cols"))
 
     # Aliases can also clash with command prefixes.
-    with self.assertRaisesRegexp(ValueError,
-                                 "clashes with existing prefixes or aliases"):
+    with self.assertRaisesRegex(ValueError,
+                                "clashes with existing prefixes or aliases"):
       registry.register_command_handler(
           "cols", self._echo_screen_cols, "", prefix_aliases=["noop"])
 
@@ -451,13 +449,13 @@ class CommandHandlerRegistryTest(test_util.TensorFlowTestCase):
     registry = debugger_cli_common.CommandHandlerRegistry()
 
     # Attempt to register a non-callable handler should fail.
-    with self.assertRaisesRegexp(ValueError, "handler is not callable"):
+    with self.assertRaisesRegex(ValueError, "handler is not callable"):
       registry.register_command_handler("non_callable", 1, "")
 
   def testRegisterHandlerWithInvalidHelpInfoType(self):
     registry = debugger_cli_common.CommandHandlerRegistry()
 
-    with self.assertRaisesRegexp(ValueError, "help_info is not a str"):
+    with self.assertRaisesRegex(ValueError, "help_info is not a str"):
       registry.register_command_handler("noop", self._noop_handler, ["foo"])
 
   def testGetHelpFull(self):
@@ -476,7 +474,7 @@ class CommandHandlerRegistryTest(test_util.TensorFlowTestCase):
     help_lines = registry.get_help().lines
 
     # The help info should list commands in alphabetically sorted order,
-    # regardless of order in which the commands are reigstered.
+    # regardless of order in which the commands are registered.
     self.assertEqual("cols", help_lines[0])
     self.assertTrue(help_lines[1].endswith("Aliases: c"))
     self.assertFalse(help_lines[2])
@@ -629,7 +627,7 @@ class RegexFindTest(test_util.TensorFlowTestCase):
         debugger_cli_common.REGEX_MATCH_LINES_KEY])
 
   def testInvalidRegex(self):
-    with self.assertRaisesRegexp(ValueError, "Invalid regular expression"):
+    with self.assertRaisesRegex(ValueError, "Invalid regular expression"):
       debugger_cli_common.regex_find(self._orig_screen_output, "[", "yellow")
 
   def testRegexFindOnPrependedLinesWorks(self):
@@ -702,7 +700,7 @@ class WrapScreenOutputTest(test_util.TensorFlowTestCase):
     self.assertEqual("shorter wavelength", out.annotations[3])
     self.assertFalse(4 in out.annotations)
 
-    # Chec that the non-row-index field is present in output.
+    # Check that the non-row-index field is present in output.
     self.assertEqual("foo", out.annotations["metadata"])
 
     self.assertEqual(new_line_indices, [0, 1, 3])
@@ -755,11 +753,11 @@ class WrapScreenOutputTest(test_util.TensorFlowTestCase):
     self.assertEqual(new_line_indices, [0, 2, 5])
 
   def testWrappingInvalidArguments(self):
-    with self.assertRaisesRegexp(ValueError,
-                                 "Invalid type of input screen_output"):
+    with self.assertRaisesRegex(ValueError,
+                                "Invalid type of input screen_output"):
       debugger_cli_common.wrap_rich_text_lines("foo", 12)
 
-    with self.assertRaisesRegexp(ValueError, "Invalid type of input cols"):
+    with self.assertRaisesRegex(ValueError, "Invalid type of input cols"):
       debugger_cli_common.wrap_rich_text_lines(
           debugger_cli_common.RichTextLines(["foo", "bar"]), "12")
 
@@ -790,7 +788,7 @@ class SliceRichTextLinesTest(test_util.TensorFlowTestCase):
     self.assertEqual(["Roses are red"], sliced.lines)
     self.assertEqual({0: [(0, 5, "red")]}, sliced.font_attr_segs)
 
-    # Non-line-number metadata should be preseved.
+    # Non-line-number metadata should be preserved.
     self.assertEqual({
         0: "longer wavelength",
         "foo_metadata": "bar"
@@ -813,7 +811,7 @@ class SliceRichTextLinesTest(test_util.TensorFlowTestCase):
     self.assertEqual(1, sliced.num_lines())
 
   def testAttemptSliceWithNegativeIndex(self):
-    with self.assertRaisesRegexp(ValueError, "Encountered negative index"):
+    with self.assertRaisesRegex(ValueError, "Encountered negative index"):
       self._original.slice(0, -1)
 
 
@@ -872,8 +870,8 @@ class TabCompletionRegistryTest(test_util.TensorFlowTestCase):
                      self._tc_reg.get_completions("node_info", "node_"))
 
   def testExtendCompletionItemsNonexistentContext(self):
-    with self.assertRaisesRegexp(
-        KeyError, "Context word \"foo\" has not been registered"):
+    with self.assertRaisesRegex(KeyError,
+                                "Context word \"foo\" has not been registered"):
       self._tc_reg.extend_comp_items("foo", ["node_A:1", "node_A:2"])
 
   def testRemoveCompletionItems(self):
@@ -891,8 +889,8 @@ class TabCompletionRegistryTest(test_util.TensorFlowTestCase):
                      self._tc_reg.get_completions("node_info", "node_"))
 
   def testRemoveCompletionItemsNonexistentContext(self):
-    with self.assertRaisesRegexp(
-        KeyError, "Context word \"foo\" has not been registered"):
+    with self.assertRaisesRegex(KeyError,
+                                "Context word \"foo\" has not been registered"):
       self._tc_reg.remove_comp_items("foo", ["node_a:1", "node_a:2"])
 
   def testDeregisterContext(self):
@@ -921,7 +919,7 @@ class TabCompletionRegistryTest(test_util.TensorFlowTestCase):
 
     self._tc_reg.deregister_context(["print_tensor"])
 
-    with self.assertRaisesRegexp(
+    with self.assertRaisesRegex(
         KeyError,
         "Cannot deregister unregistered context word \"print_tensor\""):
       self._tc_reg.deregister_context(["print_tensor"])
@@ -930,12 +928,13 @@ class TabCompletionRegistryTest(test_util.TensorFlowTestCase):
 class CommandHistoryTest(test_util.TensorFlowTestCase):
 
   def setUp(self):
-    self._history_file_path = tempfile.mktemp()
+    self._fd, self._history_file_path = tempfile.mkstemp()
     self._cmd_hist = debugger_cli_common.CommandHistory(
         limit=3, history_file_path=self._history_file_path)
 
   def tearDown(self):
     if os.path.isfile(self._history_file_path):
+      os.close(self._fd)
       os.remove(self._history_file_path)
 
   def _restoreFileReadWritePermissions(self, file_path):
@@ -992,7 +991,7 @@ class CommandHistoryTest(test_util.TensorFlowTestCase):
     self.assertEqual([], self._cmd_hist.lookup_prefix("print_tensor", 10))
 
   def testAddNonStrCommand(self):
-    with self.assertRaisesRegexp(
+    with self.assertRaisesRegex(
         TypeError, "Attempt to enter non-str entry to command history"):
       self._cmd_hist.add_command(["print_tensor node_a:0"])
 
@@ -1001,13 +1000,6 @@ class CommandHistoryTest(test_util.TensorFlowTestCase):
     self._cmd_hist.add_command("help")
 
     self.assertEqual(["help"], self._cmd_hist.most_recent_n(2))
-
-  def testCommandHistoryFileIsCreated(self):
-    self.assertFalse(os.path.isfile(self._history_file_path))
-    self._cmd_hist.add_command("help")
-    self.assertTrue(os.path.isfile(self._history_file_path))
-    with open(self._history_file_path, "rt") as f:
-      self.assertEqual(["help\n"], f.readlines())
 
   def testLoadingCommandHistoryFileObeysLimit(self):
     self._cmd_hist.add_command("help 1")
@@ -1024,7 +1016,7 @@ class CommandHistoryTest(test_util.TensorFlowTestCase):
       self.assertEqual(
           ["help 2\n", "help 3\n", "help 4\n"], f.readlines())
 
-  def testCommandHistoryHandlesReadingIOErrorGracoiusly(self):
+  def testCommandHistoryHandlesReadingIOErrorGraciously(self):
     with open(self._history_file_path, "wt") as f:
       f.write("help\n")
 
@@ -1034,30 +1026,6 @@ class CommandHistoryTest(test_util.TensorFlowTestCase):
     # The creation of a CommandHistory object should not error out.
     debugger_cli_common.CommandHistory(
         limit=3, history_file_path=self._history_file_path)
-
-    self._restoreFileReadWritePermissions(self._history_file_path)
-
-  def testCommandHistoryHandlesWritingIOErrorGracoiusly(self):
-    with open(self._history_file_path, "wt") as f:
-      f.write("help\n")
-
-    # Change file to read-only.
-    os.chmod(self._history_file_path,
-             stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-
-    # Reading from the file should still work.
-    cmd_hist_2 = debugger_cli_common.CommandHistory(
-        limit=3, history_file_path=self._history_file_path)
-    self.assertEqual(["help"], cmd_hist_2.most_recent_n(1))
-
-    # Writing should no longer work, but it should fail silently and
-    # the within instance-command history should still work.
-    cmd_hist_2.add_command("foo")
-    self.assertEqual(["help", "foo"], cmd_hist_2.most_recent_n(2))
-
-    cmd_hist_3 = debugger_cli_common.CommandHistory(
-        limit=3, history_file_path=self._history_file_path)
-    self.assertEqual(["help"], cmd_hist_3.most_recent_n(1))
 
     self._restoreFileReadWritePermissions(self._history_file_path)
 
@@ -1160,15 +1128,13 @@ class GetTensorFlowVersionLinesTest(test_util.TensorFlowTestCase):
   def testGetVersionWithoutDependencies(self):
     out = debugger_cli_common.get_tensorflow_version_lines()
     self.assertEqual(2, len(out.lines))
-    self.assertEqual(
-        "TensorFlow version: %s" % pywrap_tensorflow_internal.__version__,
-        out.lines[0])
+    self.assertEqual("TensorFlow version: %s" % pywrap_tf_session.__version__,
+                     out.lines[0])
 
   def testGetVersionWithDependencies(self):
     out = debugger_cli_common.get_tensorflow_version_lines(True)
-    self.assertIn(
-        "TensorFlow version: %s" % pywrap_tensorflow_internal.__version__,
-        out.lines)
+    self.assertIn("TensorFlow version: %s" % pywrap_tf_session.__version__,
+                  out.lines)
     self.assertIn("  numpy: %s" % np.__version__, out.lines)
 
 

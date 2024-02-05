@@ -15,11 +15,11 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define EIGEN_USE_GPU
 #endif
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
@@ -29,9 +29,9 @@ limitations under the License.
 #include "tensorflow/core/kernels/sparse/kernels.h"
 #include "tensorflow/core/kernels/sparse/sparse_matrix.h"
 
-#if GOOGLE_CUDA
-#include "tensorflow/core/kernels/cuda_solvers.h"
-#include "tensorflow/core/kernels/cuda_sparse.h"
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#include "tensorflow/core/util/cuda_sparse.h"
+#include "tensorflow/core/util/gpu_solvers.h"
 #endif
 
 namespace tensorflow {
@@ -57,7 +57,7 @@ class CSRSparseMatrixComponentsOp : public OpKernel {
     OP_REQUIRES(c, index_t.dims() == 0,
                 errors::InvalidArgument("index should be a scalar, but saw: ",
                                         index_t.DebugString()));
-    int32 index = index_t.scalar<int32>()();
+    int32_t index = index_t.scalar<int32>()();
     OP_REQUIRES(c, index >= 0 && index < csr_sparse_matrix->batch_size(),
                 errors::InvalidArgument("index (", index, ") not in [0, ",
                                         csr_sparse_matrix->batch_size(), ")"));
@@ -68,8 +68,8 @@ class CSRSparseMatrixComponentsOp : public OpKernel {
       c->set_output(2, csr_sparse_matrix->values());
     } else {
       auto batch_ptrs = csr_sparse_matrix->batch_pointers().vec<int32>();
-      auto dense_shape = csr_sparse_matrix->dense_shape().vec<int64>();
-      int64 rows = dense_shape(1);
+      auto dense_shape = csr_sparse_matrix->dense_shape().vec<int64_t>();
+      int64_t rows = dense_shape(1);
       int nnz = batch_ptrs(index + 1) - batch_ptrs(index);
       Tensor* row_ptrs_t;
       Tensor* col_inds_t;
@@ -89,8 +89,9 @@ class CSRSparseMatrixComponentsOp : public OpKernel {
       slice_int(d,
                 /*output*/ row_ptrs,
                 /*input*/ csr_sparse_matrix->row_pointers().vec<int32>(),
-                /*slice_indices*/ EVec{index * (rows + 1)},
-                /*slice_sizes*/ EVec{rows + 1});
+                /*slice_indices*/
+                EVec{static_cast<Eigen::DenseIndex>(index * (rows + 1))},
+                /*slice_sizes*/ EVec{static_cast<Eigen::DenseIndex>(rows + 1)});
       slice_int(d,
                 /*output*/ col_inds,
                 /*input*/ csr_sparse_matrix->col_indices().vec<int32>(),
@@ -116,7 +117,7 @@ REGISTER(CPU, double)
 REGISTER(CPU, complex64)
 REGISTER(CPU, complex128)
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 REGISTER(GPU, float)
 REGISTER(GPU, double)
@@ -145,6 +146,6 @@ DECLARE_GPU_SPEC(complex128);
 #undef DECLARE_GPU_SPEC
 }  // namespace functor
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // namespace tensorflow

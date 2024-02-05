@@ -17,29 +17,51 @@ limitations under the License.
 #define TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_AUTO_MIXED_PRECISION_H_
 
 #include "tensorflow/core/grappler/optimizers/graph_optimizer.h"
+#include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/protobuf/rewriter_config.pb.h"
 
 namespace tensorflow {
 namespace grappler {
 
-// Convert data types to float16 where appropriate to improve performance on
-// GPUs.
+// CUDA: convert to float16 on GPU
+// BF16: convert to bfloat16 on CPU
+// CPU: emulate float16 on CPU without changing operator kernel
+enum class AutoMixedPrecisionMode { CUDA, BF16, CPU };
+
+// Convert data types to float16 or bfloat16 where appropriate to improve
+// performance on GPUs or CPUs.
 class AutoMixedPrecision : public GraphOptimizer {
  public:
+  // If 'mode' is CUDA, converts nodes to float16 on Nvidia GPUs. If BF16,
+  // converts nodes to bfloat16 on CPUs in order to take advantage of oneDNN
+  // performance improvements with bfloat16.
   explicit AutoMixedPrecision(
-      RewriterConfig::Toggle opt_level = RewriterConfig::ON) {}
+      AutoMixedPrecisionMode mode = AutoMixedPrecisionMode::CUDA)
+      : mode_(mode) {}
 
   ~AutoMixedPrecision() override {}
 
-  string name() const override { return "auto_mixed_precision"; };
+  string name() const override {
+    switch (mode_) {
+      case AutoMixedPrecisionMode::CUDA:
+        return "auto_mixed_precision";
+      case AutoMixedPrecisionMode::BF16:
+        return "auto_mixed_precision_onednn_bfloat16";
+      case AutoMixedPrecisionMode::CPU:
+        return "auto_mixed_precision_cpu";
+      default:
+        LOG(FATAL) << "Invalid value for AutoMixedPrecisionMode: "  // Crash Ok
+                   << static_cast<int>(mode_);
+    }
+  };
 
   bool UsesFunctionLibrary() const override { return false; }
 
   Status Optimize(Cluster* cluster, const GrapplerItem& item,
                   GraphDef* output) override;
 
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimize_output, double result) override;
+ private:
+  const AutoMixedPrecisionMode mode_;
 };
 
 }  // end namespace grappler

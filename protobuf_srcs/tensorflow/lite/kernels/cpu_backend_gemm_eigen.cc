@@ -19,11 +19,11 @@ limitations under the License.
 
 // See b/131835803: in TFLite code, because eigen_spatial_convolutions.h does
 // #define Eigen EigenForTFLite, it is difficult to have any #include of Eigen
-// headers in a header file, as that results in name clases (compilation
+// headers in a header file, as that results in name classes (compilation
 // errors) depending on the order in which these headers are #included.
 // So we have moved the #include of Eigen here, in a .cc file, where we have
 // control over the header #include sequence.
-#include "third_party/eigen3/Eigen/Core"
+#include "Eigen/Core"  // from @eigen_archive
 #include "tensorflow/lite/kernels/cpu_backend_context.h"
 #include "tensorflow/lite/kernels/cpu_backend_gemm_params.h"
 #include "tensorflow/lite/kernels/internal/common.h"

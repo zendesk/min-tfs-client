@@ -61,7 +61,7 @@ class LatencyStatsDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return absl::make_unique<Iterator>(
+      return std::make_unique<Iterator>(
           Iterator::Params{this, strings::StrCat(prefix, "::LatencyStats")});
     }
 
@@ -76,7 +76,15 @@ class LatencyStatsDatasetOp : public UnaryDatasetOpKernel {
       return "LatencyStatsDatasetOp::Dataset";
     }
 
-    int64 Cardinality() const override { return input_->Cardinality(); }
+    int64_t CardinalityInternal(CardinalityOptions options) const override {
+      return input_->Cardinality(options);
+    }
+
+    Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      inputs->push_back(input_);
+      return OkStatus();
+    }
 
     Status CheckExternalState() const override {
       return input_->CheckExternalState();
@@ -91,7 +99,7 @@ class LatencyStatsDatasetOp : public UnaryDatasetOpKernel {
       Node* tag_node;
       TF_RETURN_IF_ERROR(b->AddScalar(tag_, &tag_node));
       TF_RETURN_IF_ERROR(b->AddDataset(this, {input_node, tag_node}, output));
-      return Status::OK();
+      return OkStatus();
     }
 
    private:
@@ -101,19 +109,20 @@ class LatencyStatsDatasetOp : public UnaryDatasetOpKernel {
           : DatasetIterator<Dataset>(params) {}
 
       Status Initialize(IteratorContext* ctx) override {
-        return dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_);
+        return dataset()->input_->MakeIterator(ctx, this, prefix(),
+                                               &input_impl_);
       }
 
       Status GetNextInternal(IteratorContext* ctx,
                              std::vector<Tensor>* out_tensors,
                              bool* end_of_sequence) override {
         tf_shared_lock l(mu_);
-        uint64 start = ctx->env()->NowMicros();
+        uint64 start = EnvTime::NowMicros();
         Status s = input_impl_->GetNext(ctx, out_tensors, end_of_sequence);
-        uint64 end = ctx->env()->NowMicros();
+        uint64 end = EnvTime::NowMicros();
         auto stats_aggregator = ctx->stats_aggregator();
         if (stats_aggregator && !*end_of_sequence) {
-          int64 steps = num_elements();
+          int64_t steps = num_elements();
           stats_aggregator->AddToHistogram(
               dataset()->tag_, {static_cast<double>(end - start)}, steps);
         }
@@ -127,22 +136,23 @@ class LatencyStatsDatasetOp : public UnaryDatasetOpKernel {
                                          /*ratio=*/1);
       }
 
-      Status SaveInternal(IteratorStateWriter* writer) override {
+      Status SaveInternal(SerializationContext* ctx,
+                          IteratorStateWriter* writer) override {
         mutex_lock l(mu_);
-        TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
-        return Status::OK();
+        TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
+        return OkStatus();
       }
 
       Status RestoreInternal(IteratorContext* ctx,
                              IteratorStateReader* reader) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-        return Status::OK();
+        return OkStatus();
       }
 
      private:
       mutex mu_;
-      std::unique_ptr<IteratorBase> input_impl_ GUARDED_BY(mu_);
+      std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
     };
 
     const DatasetBase* const input_;
@@ -176,7 +186,7 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return absl::make_unique<Iterator>(Iterator::Params{
+      return std::make_unique<Iterator>(Iterator::Params{
           this, strings::StrCat(prefix, "::BytesProducedStats")});
     }
 
@@ -191,7 +201,9 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
       return "BytesProducedStatsDatasetOp::Dataset";
     }
 
-    int64 Cardinality() const override { return input_->Cardinality(); }
+    int64_t CardinalityInternal(CardinalityOptions options) const override {
+      return input_->Cardinality(options);
+    }
 
     Status CheckExternalState() const override {
       return input_->CheckExternalState();
@@ -206,7 +218,7 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
       Node* tag_node;
       TF_RETURN_IF_ERROR(b->AddScalar(tag_, &tag_node));
       TF_RETURN_IF_ERROR(b->AddDataset(this, {input_node, tag_node}, output));
-      return Status::OK();
+      return OkStatus();
     }
 
    private:
@@ -216,7 +228,8 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
           : DatasetIterator<Dataset>(params) {}
 
       Status Initialize(IteratorContext* ctx) override {
-        return dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_);
+        return dataset()->input_->MakeIterator(ctx, this, prefix(),
+                                               &input_impl_);
       }
 
       Status GetNextInternal(IteratorContext* ctx,
@@ -230,7 +243,7 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
           for (const Tensor& t : *out_tensors) {
             total_bytes += t.TotalBytes();
           }
-          int64 steps = num_elements();
+          int64_t steps = num_elements();
           stats_aggregator->AddToHistogram(
               dataset()->tag_, {static_cast<double>(total_bytes)}, steps);
         }
@@ -244,22 +257,23 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
                                          /*ratio=*/1);
       }
 
-      Status SaveInternal(IteratorStateWriter* writer) override {
+      Status SaveInternal(SerializationContext* ctx,
+                          IteratorStateWriter* writer) override {
         mutex_lock l(mu_);
-        TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
-        return Status::OK();
+        TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
+        return OkStatus();
       }
 
       Status RestoreInternal(IteratorContext* ctx,
                              IteratorStateReader* reader) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-        return Status::OK();
+        return OkStatus();
       }
 
      private:
       mutex mu_;
-      std::unique_ptr<IteratorBase> input_impl_ GUARDED_BY(mu_);
+      std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
     };
 
     const DatasetBase* const input_;

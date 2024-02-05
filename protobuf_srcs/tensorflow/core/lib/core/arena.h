@@ -57,7 +57,7 @@ class Arena {
 #ifdef __i386__
   static const int kDefaultAlignment = 4;
 #else
-  static const int kDefaultAlignment = 8;
+  static constexpr int kDefaultAlignment = 8;
 #endif
 
  protected:
@@ -101,7 +101,8 @@ class Arena {
 
   void FreeBlocks();  // Frees all except first block
 
-  TF_DISALLOW_COPY_AND_ASSIGN(Arena);
+  Arena(const Arena&) = delete;
+  void operator=(const Arena&) = delete;
 };
 
 }  // namespace core

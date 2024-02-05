@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for data input for speech commands."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 
 import numpy as np
@@ -33,7 +29,7 @@ from tensorflow.python.platform import test
 class InputDataTest(test.TestCase):
 
   def _getWavData(self):
-    with self.cached_session() as sess:
+    with self.cached_session():
       sample_data = tf.zeros([32000, 2])
       wav_encoder = tf.audio.encode_wav(sample_data, 16000)
       wav_data = self.evaluate(wav_encoder)
@@ -105,11 +101,11 @@ class InputDataTest(test.TestCase):
                                                 ["a", "b"], 10, 10,
                                                 self._model_settings(), tmp_dir)
     self.assertLess(0, audio_processor.set_size("training"))
-    self.assertTrue("training" in audio_processor.data_index)
-    self.assertTrue("validation" in audio_processor.data_index)
-    self.assertTrue("testing" in audio_processor.data_index)
-    self.assertEquals(input_data.UNKNOWN_WORD_INDEX,
-                      audio_processor.word_to_index["c"])
+    self.assertIn("training", audio_processor.data_index)
+    self.assertIn("validation", audio_processor.data_index)
+    self.assertIn("testing", audio_processor.data_index)
+    self.assertEqual(input_data.UNKNOWN_WORD_INDEX,
+                     audio_processor.word_to_index["c"])
 
   def testPrepareDataIndexEmpty(self):
     tmp_dir = self.get_temp_dir()
@@ -117,7 +113,7 @@ class InputDataTest(test.TestCase):
     with self.assertRaises(Exception) as e:
       _ = input_data.AudioProcessor("", tmp_dir, 10, 10, ["a", "b"], 10, 10,
                                     self._model_settings(), tmp_dir)
-    self.assertTrue("No .wavs found" in str(e.exception))
+    self.assertIn("No .wavs found", str(e.exception))
 
   def testPrepareDataIndexMissing(self):
     tmp_dir = self.get_temp_dir()
@@ -125,7 +121,7 @@ class InputDataTest(test.TestCase):
     with self.assertRaises(Exception) as e:
       _ = input_data.AudioProcessor("", tmp_dir, 10, 10, ["a", "b", "d"], 10,
                                     10, self._model_settings(), tmp_dir)
-    self.assertTrue("Expected to find" in str(e.exception))
+    self.assertIn("Expected to find", str(e.exception))
 
   @test_util.run_deprecated_v1
   def testPrepareBackgroundData(self):

@@ -14,10 +14,6 @@
 # ==============================================================================
 """Implementation of ClusterResolvers for GCE instance groups."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.distribute.cluster_resolver.cluster_resolver import ClusterResolver
 from tensorflow.python.training.server_lib import ClusterSpec
 from tensorflow.python.util.tf_export import tf_export
@@ -40,6 +36,29 @@ class GCEClusterResolver(ClusterResolver):
   this will retrieve the IP address of all the instances within the instance
   group and return a ClusterResolver object suitable for use for distributed
   TensorFlow.
+
+  Note: this cluster resolver cannot retrieve `task_type`, `task_id` or
+  `rpc_layer`. To use it with some distribution strategies like
+  `tf.distribute.experimental.MultiWorkerMirroredStrategy`, you will need to
+  specify `task_type` and `task_id` in the constructor.
+
+  Usage example with tf.distribute.Strategy:
+
+    ```Python
+    # On worker 0
+    cluster_resolver = GCEClusterResolver("my-project", "us-west1",
+                                          "my-instance-group",
+                                          task_type="worker", task_id=0)
+    strategy = tf.distribute.experimental.MultiWorkerMirroredStrategy(
+        cluster_resolver=cluster_resolver)
+
+    # On worker 1
+    cluster_resolver = GCEClusterResolver("my-project", "us-west1",
+                                          "my-instance-group",
+                                          task_type="worker", task_id=1)
+    strategy = tf.distribute.experimental.MultiWorkerMirroredStrategy(
+        cluster_resolver=cluster_resolver)
+    ```
   """
 
   def __init__(self,

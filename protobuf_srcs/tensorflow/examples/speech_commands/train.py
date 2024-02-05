@@ -18,7 +18,7 @@ This is a self-contained example script that will train a very basic audio
 recognition model in TensorFlow. It downloads the necessary training data and
 runs with reasonable defaults to train within a few hours even only using a CPU.
 For more information, please see
-https://www.tensorflow.org/tutorials/audio_recognition.
+https://www.tensorflow.org/tutorials/audio/simple_audio.
 
 It is intended as an introduction to using neural networks for audio
 recognition, and is not a full speech recognition system. For more advanced
@@ -66,16 +66,11 @@ bazel run tensorflow/examples/speech_commands:train -- \
 --data_dir=my_wavs --wanted_words=up,down
 
 """
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import argparse
 import os.path
 import sys
 
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
 import input_data
@@ -132,7 +127,7 @@ def main(_):
   else:
     fingerprint_input = input_placeholder
 
-  logits, dropout_prob = models.create_model(
+  logits, dropout_rate = models.create_model(
       fingerprint_input,
       model_settings,
       FLAGS.model_architecture,
@@ -157,7 +152,7 @@ def main(_):
   if FLAGS.quantize:
     try:
       tf.contrib.quantize.create_training_graph(quant_delay=0)
-    except ImportError as e:
+    except AttributeError as e:
       msg = e.args[0]
       msg += ('\n\n The --quantize option still requires contrib, which is not '
               'part of TensorFlow 2.0. Please install a previous version:'
@@ -223,7 +218,7 @@ def main(_):
 
   # Training loop.
   training_steps_max = np.sum(training_steps_list)
-  for training_step in xrange(start_step, training_steps_max + 1):
+  for training_step in range(start_step, training_steps_max + 1):
     # Figure out what the current learning rate is.
     training_steps_sum = 0
     for i in range(len(training_steps_list)):
@@ -248,19 +243,23 @@ def main(_):
             fingerprint_input: train_fingerprints,
             ground_truth_input: train_ground_truth,
             learning_rate_input: learning_rate_value,
-            dropout_prob: 0.5
+            dropout_rate: 0.5
         })
     train_writer.add_summary(train_summary, training_step)
-    tf.compat.v1.logging.info(
+    tf.compat.v1.logging.debug(
         'Step #%d: rate %f, accuracy %.1f%%, cross entropy %f' %
         (training_step, learning_rate_value, train_accuracy * 100,
          cross_entropy_value))
     is_last_step = (training_step == training_steps_max)
     if (training_step % FLAGS.eval_step_interval) == 0 or is_last_step:
+      tf.compat.v1.logging.info(
+          'Step #%d: rate %f, accuracy %.1f%%, cross entropy %f' %
+          (training_step, learning_rate_value, train_accuracy * 100,
+           cross_entropy_value))
       set_size = audio_processor.set_size('validation')
       total_accuracy = 0
       total_conf_matrix = None
-      for i in xrange(0, set_size, FLAGS.batch_size):
+      for i in range(0, set_size, FLAGS.batch_size):
         validation_fingerprints, validation_ground_truth = (
             audio_processor.get_data(FLAGS.batch_size, i, model_settings, 0.0,
                                      0.0, 0, 'validation', sess))
@@ -271,7 +270,7 @@ def main(_):
             feed_dict={
                 fingerprint_input: validation_fingerprints,
                 ground_truth_input: validation_ground_truth,
-                dropout_prob: 1.0
+                dropout_rate: 0.0
             })
         validation_writer.add_summary(validation_summary, training_step)
         batch_size = min(FLAGS.batch_size, set_size - i)
@@ -297,7 +296,7 @@ def main(_):
   tf.compat.v1.logging.info('set_size=%d', set_size)
   total_accuracy = 0
   total_conf_matrix = None
-  for i in xrange(0, set_size, FLAGS.batch_size):
+  for i in range(0, set_size, FLAGS.batch_size):
     test_fingerprints, test_ground_truth = audio_processor.get_data(
         FLAGS.batch_size, i, model_settings, 0.0, 0.0, 0, 'testing', sess)
     test_accuracy, conf_matrix = sess.run(
@@ -305,7 +304,7 @@ def main(_):
         feed_dict={
             fingerprint_input: test_fingerprints,
             ground_truth_input: test_ground_truth,
-            dropout_prob: 1.0
+            dropout_rate: 0.0
         })
     batch_size = min(FLAGS.batch_size, set_size - i)
     total_accuracy += (test_accuracy * batch_size) / set_size
@@ -398,7 +397,8 @@ if __name__ == '__main__':
       '--window_stride_ms',
       type=float,
       default=10.0,
-      help='How far to move in time between spectogram timeslices.',)
+      help='How far to move in time between spectrogram timeslices.',
+  )
   parser.add_argument(
       '--feature_bin_count',
       type=int,
@@ -481,23 +481,23 @@ if __name__ == '__main__':
       ArgumentTypeError: Not an expected value.
     """
     value = value.upper()
-    if value == 'INFO':
-      return tf.compat.v1.logging.INFO
-    elif value == 'DEBUG':
+    if value == 'DEBUG':
       return tf.compat.v1.logging.DEBUG
+    elif value == 'INFO':
+      return tf.compat.v1.logging.INFO
+    elif value == 'WARN':
+      return tf.compat.v1.logging.WARN
     elif value == 'ERROR':
       return tf.compat.v1.logging.ERROR
     elif value == 'FATAL':
       return tf.compat.v1.logging.FATAL
-    elif value == 'WARN':
-      return tf.compat.v1.logging.WARN
     else:
       raise argparse.ArgumentTypeError('Not an expected value')
   parser.add_argument(
       '--verbosity',
       type=verbosity_arg,
       default=tf.compat.v1.logging.INFO,
-      help='Log verbosity. Can be "INFO", "DEBUG", "ERROR", "FATAL", or "WARN"')
+      help='Log verbosity. Can be "DEBUG", "INFO", "WARN", "ERROR", or "FATAL"')
   parser.add_argument(
       '--optimizer',
       type=str,

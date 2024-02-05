@@ -17,11 +17,11 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
 #include "tensorflow/core/lib/random/random.h"
 
 namespace tensorflow {
@@ -34,7 +34,6 @@ class ScanDatasetOp : public UnaryDatasetOpKernel {
   explicit ScanDatasetOp(OpKernelConstruction* ctx)
       : UnaryDatasetOpKernel(ctx) {
     FunctionMetadata::Params params;
-    params.is_multi_device_function = true;
     if (ctx->HasAttr("use_default_device")) {
       OP_REQUIRES_OK(ctx,
                      ctx->GetAttr("use_default_device", &use_default_device_));
@@ -94,7 +93,7 @@ class ScanDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return absl::make_unique<Iterator>(
+      return std::make_unique<Iterator>(
           Iterator::Params{this, strings::StrCat(prefix, "::Scan")});
     }
 
@@ -107,7 +106,19 @@ class ScanDatasetOp : public UnaryDatasetOpKernel {
 
     string DebugString() const override { return "ScanDatasetOp::Dataset"; }
 
-    int64 Cardinality() const override { return input_->Cardinality(); }
+    int64_t CardinalityInternal(CardinalityOptions options) const override {
+      if (preserve_cardinality_) {
+        return input_->Cardinality(options);
+      } else {
+        return kUnknownCardinality;
+      }
+    }
+
+    Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      inputs->push_back(input_);
+      return OkStatus();
+    }
 
     Status CheckExternalState() const override {
       TF_RETURN_IF_ERROR(captured_func_->CheckExternalState());
@@ -150,7 +161,7 @@ class ScanDatasetOp : public UnaryDatasetOpKernel {
                          {"preserve_cardinality", preserve_cardinality_attr},
                          {"use_default_device", use_default_device_attr}},
                         output));
-      return Status::OK();
+      return OkStatus();
     }
 
    private:
@@ -160,9 +171,11 @@ class ScanDatasetOp : public UnaryDatasetOpKernel {
           : DatasetIterator<Dataset>(params),
             state_(params.dataset->initial_state_) {}
 
+      bool SymbolicCheckpointCompatible() const override { return true; }
+
       Status Initialize(IteratorContext* ctx) override {
         TF_RETURN_IF_ERROR(
-            dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_));
+            dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_));
         return dataset()->captured_func_->Instantiate(
             ctx, &instantiated_captured_func_);
       }
@@ -176,7 +189,7 @@ class ScanDatasetOp : public UnaryDatasetOpKernel {
         TF_RETURN_IF_ERROR(
             input_impl_->GetNext(ctx, &next_element, end_of_sequence));
         if (*end_of_sequence) {
-          return Status::OK();
+          return OkStatus();
         }
 
         std::vector<Tensor> args;
@@ -189,8 +202,8 @@ class ScanDatasetOp : public UnaryDatasetOpKernel {
         state_and_output.reserve(dataset()->state_types_.size() +
                                  output_dtypes().size());
 
-        Status s = instantiated_captured_func_->Run(ctx, std::move(args),
-                                                    &state_and_output);
+        Status s = instantiated_captured_func_->Run(
+            ctx, std::move(args), &state_and_output, model_node());
         DCHECK(state_and_output.size() <=
                dataset()->state_types_.size() + output_dtypes().size());
         if (s.ok()) {
@@ -230,13 +243,12 @@ class ScanDatasetOp : public UnaryDatasetOpKernel {
             // the dataset, we convert `OutOfRange` to `InvalidArgument` as the
             // former may be interpreted by a caller as the end of sequence.
             return errors::InvalidArgument(
-                "Function invocation produced OutOfRangeError: ",
-                s.error_message());
+                "Function invocation produced OutOfRangeError: ", s.message());
           } else {
             // `f` may deliberately raise `errors::OutOfRange` to indicate
             // that we should terminate the iteration early.
             *end_of_sequence = true;
-            return Status::OK();
+            return OkStatus();
           }
         }
         return s;
@@ -249,41 +261,40 @@ class ScanDatasetOp : public UnaryDatasetOpKernel {
                                          /*ratio=*/1);
       }
 
-      Status SaveInternal(IteratorStateWriter* writer) override {
+      Status SaveInternal(SerializationContext* ctx,
+                          IteratorStateWriter* writer) override {
+        TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
+            dataset()->captured_func_->CheckExternalState()));
         mutex_lock l(mu_);
-        TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
-        if (!state_.empty()) {
-          TF_RETURN_IF_ERROR(
-              writer->WriteScalar(full_name("state_size"), state_.size()));
-          for (int idx = 0; idx < state_.size(); idx++) {
-            TF_RETURN_IF_ERROR(writer->WriteTensor(
-                full_name(strings::StrCat("state[", idx, "]")), state_[idx]));
-          }
+        TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
+        TF_RETURN_IF_ERROR(
+            writer->WriteScalar(full_name("state_size"), state_.size()));
+        for (int idx = 0; idx < state_.size(); idx++) {
+          TF_RETURN_IF_ERROR(writer->WriteTensor(
+              full_name(strings::StrCat("state[", idx, "]")), state_[idx]));
         }
-        return Status::OK();
+        return OkStatus();
       }
 
       Status RestoreInternal(IteratorContext* ctx,
                              IteratorStateReader* reader) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-        if (reader->Contains(full_name("state_size"))) {
-          int64 size;
-          TF_RETURN_IF_ERROR(
-              reader->ReadScalar(full_name("state_size"), &size));
-          state_.resize(size);
-          for (int idx = 0; idx < size; idx++) {
-            TF_RETURN_IF_ERROR(reader->ReadTensor(
-                full_name(strings::StrCat("state[", idx, "]")), &state_[idx]));
-          }
+        int64_t size;
+        TF_RETURN_IF_ERROR(reader->ReadScalar(full_name("state_size"), &size));
+        state_.resize(size);
+        for (int idx = 0; idx < size; idx++) {
+          TF_RETURN_IF_ERROR(reader->ReadTensor(
+              ctx->flr(), full_name(strings::StrCat("state[", idx, "]")),
+              &state_[idx]));
         }
-        return Status::OK();
+        return OkStatus();
       }
 
      private:
       mutex mu_;
-      std::unique_ptr<IteratorBase> input_impl_ GUARDED_BY(mu_);
-      std::vector<Tensor> state_ GUARDED_BY(mu_);
+      std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
+      std::vector<Tensor> state_ TF_GUARDED_BY(mu_);
       std::unique_ptr<InstantiatedCapturedFunction> instantiated_captured_func_;
     };
 

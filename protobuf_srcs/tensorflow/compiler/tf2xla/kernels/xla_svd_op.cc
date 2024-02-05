@@ -13,11 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <algorithm>
+
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/lib/slicing.h"
-#include "tensorflow/compiler/xla/client/lib/svd.h"
+#include "xla/client/lib/constants.h"
+#include "xla/client/lib/slicing.h"
+#include "xla/client/lib/svd.h"
+#include "tensorflow/core/lib/core/bits.h"
 
 namespace tensorflow {
 namespace {
@@ -32,7 +35,7 @@ class XlaSvdOp : public XlaOpKernel {
                    ctx->GetAttr("precision_config", &precision_config_attr));
     OP_REQUIRES(ctx,
                 precision_config_.ParsePartialFromString(precision_config_attr),
-                errors::InvalidArgument("Error parsing precison config."));
+                errors::InvalidArgument("Error parsing precision config."));
     if (precision_config_.operand_precision_size() == 0) {
       precision_config_.mutable_operand_precision()->Add(
           xla::PrecisionConfig::HIGHEST);
@@ -81,8 +84,10 @@ class SvdOp : public XlaOpKernel {
       ctx->SetOutput(1, result.u);
       ctx->SetOutput(2, result.v);
     } else {
-      ctx->SetOutput(1, xla::ScalarLike(ctx->Input(0), 0.0));
-      ctx->SetOutput(2, xla::ScalarLike(ctx->Input(0), 0.0));
+      auto shape =
+          xla::ShapeUtil::MakeShape(ctx->input_xla_type(0), /*dimensions=*/{0});
+      ctx->SetOutput(1, xla::Zeros(ctx->builder(), shape));
+      ctx->SetOutput(2, xla::Zeros(ctx->builder(), shape));
     }
   }
 

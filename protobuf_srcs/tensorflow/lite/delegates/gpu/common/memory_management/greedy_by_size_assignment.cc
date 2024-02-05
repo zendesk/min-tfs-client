@@ -16,8 +16,14 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/common/memory_management/greedy_by_size_assignment.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <iterator>
+#include <vector>
 
+#include "absl/status/status.h"
 #include "tensorflow/lite/delegates/gpu/common/memory_management/internal.h"
+#include "tensorflow/lite/delegates/gpu/common/memory_management/types.h"
+#include "tensorflow/lite/delegates/gpu/common/util.h"
 
 namespace tflite {
 namespace gpu {
@@ -60,19 +66,20 @@ struct SizeDistPriorityInfo {
 
 }  // namespace
 
-Status GreedyBySizeAssignment(
+absl::Status GreedyBySizeAssignment(
     const std::vector<TensorUsageRecord<size_t>>& usage_records,
-    OffsetsAssignment* assignment) {
+    size_t base_addr_align_bytes, OffsetsAssignment* assignment) {
   const size_t num_tensors = usage_records.size();
   assignment->offsets.resize(num_tensors);
   assignment->total_size = 0;
 
-  // Ordered records are to be sorted by size of corrseponding tensor.
+  // Ordered records are to be sorted by size of corresponding tensor.
   std::vector<TensorUsageWithIndex<size_t>> ordered_records;
   for (size_t i = 0; i < num_tensors; ++i) {
     ordered_records.emplace_back(&usage_records[i], i);
   }
-  std::sort(ordered_records.begin(), ordered_records.end(), CompareBySize);
+  std::stable_sort(ordered_records.begin(), ordered_records.end(),
+                   CompareBySize);
 
   // Vector of ids of already allocated tensors, ordered by offset.
   std::vector<size_t> ordered_allocs;
@@ -101,10 +108,17 @@ Status GreedyBySizeAssignment(
         }
       }
       prev_offset = std::max(
-          prev_offset, cur_offset + usage_records[allocated_id].tensor_size);
+          prev_offset,
+          AlignByN(cur_offset + usage_records[allocated_id].tensor_size,
+                   base_addr_align_bytes));
     }
-    if (assignment->total_size < prev_offset) {
-      return InternalError("Total size is wrong.");
+    // prev_offset should be no more than the total size with additional
+    // alignment boundary introduced in AlignByN. Per object alignment added is
+    // no more than (base_addr_align_bytes - 1).
+    if (assignment->total_size +
+            ordered_allocs.size() * (base_addr_align_bytes - 1) <
+        prev_offset) {
+      return absl::InternalError("Total size is wrong.");
     }
 
     // If no suitable gap found, we should allocate current tensor after the
@@ -125,7 +139,7 @@ Status GreedyBySizeAssignment(
     assignment->total_size =
         std::max(assignment->total_size, best_offset + rec->tensor_size);
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 // Assigns given tensors to shared objects, using the following greedy
@@ -133,7 +147,7 @@ Status GreedyBySizeAssignment(
 // - We have tensor usage records of all intermideate tensors as an input. Each
 // record consists of tensor size, first and last tasks, that use it. Let's call
 // [first_task..last_task] a tensor usage interval;
-// - Distance between two usage intervals is the absoulte difference between
+// - Distance between two usage intervals is the absolute difference between
 // closest tasks in their intervals. If two usage intervals don't intersect,
 // than the distance between them is positive;
 // - Calculate positional maximums vector, e.g. the vector of lower bounds on
@@ -152,7 +166,7 @@ Status GreedyBySizeAssignment(
 // object with size equal to current tensor's size;
 // - Modify SizeDistPriority records of tensors, that haven't been assigned yet,
 // to reflect distance changes after that assignment.
-Status GreedyBySizeDistPriorityAssignment(
+absl::Status GreedyBySizeDistPriorityAssignment(
     const std::vector<TensorUsageRecord<size_t>>& usage_records,
     ObjectsAssignment<size_t>* assignment) {
   std::vector<size_t> positional_max =
@@ -175,7 +189,7 @@ Status GreedyBySizeDistPriorityAssignment(
       ++pos;
     }
     if (pos == 0) {
-      return InternalError("Variable pos must be positive.");
+      return absl::InternalError("Variable pos must be positive.");
     }
     priority_info[rec_id].position = pos - 1;
   }
@@ -198,7 +212,7 @@ Status GreedyBySizeDistPriorityAssignment(
     if (best_info_id == kNotAssigned) {
       // During each iteration we assign exactly one of the tensors, so some not
       // yet assigned tensors must exist.
-      return InternalError("Invalid value for variable best_info_id.");
+      return absl::InternalError("Invalid value for variable best_info_id.");
     }
 
     size_t best_rec_id = priority_info[best_info_id].tensor_usage_id;
@@ -271,7 +285,7 @@ Status GreedyBySizeDistPriorityAssignment(
       }
     }
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace gpu
