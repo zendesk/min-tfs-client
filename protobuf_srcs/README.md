@@ -21,7 +21,7 @@ This is a very similar process for `tensorflow` and `tensorflow_serving` - the m
 ##### tensorflow
 1. Pull the updated upstream refs:
 ```
-git fetch upstream-tf
+git fetch --depth 1 upstream-tf
 ```
 Now `upstream-tf` is up to date.
 
@@ -38,7 +38,7 @@ git checkout refs/rtags/upstream-tf/<version>
 
 3. Create a `upstream-tf-subtree` branch containing the subtree from `upstream-tf`. This command will take a while - `tensorflow/tensorflow` is _big_.
 ```
-git subtree split --prefix tensorflow --onto upstream-tf-subtree
+git subtree split --prefix tensorflow --branch upstream-tf-subtree
 ```
 
 4. Create a new branch in the `min-tfs-client` tree with clean `protobuf_srcs/tensorflow`.
@@ -78,7 +78,7 @@ git push -u origin HEAD
 ##### tensorflow_serving
 1. Pull the updated upstream refs:
 ```
-git fetch upstream-serving
+git fetch --depth 1 upstream-serving
 ```
 Now `upstream-serving` is up to date.
 
@@ -95,7 +95,7 @@ git checkout refs/rtags/upstream-serving/<version>
 
 3. Create a `upstream-serving-subtree` branch containing the subtree from `upstream-serving`.
 ```
-git subtree split --prefix tensorflow_serving --onto upstream-serving-subtree
+git subtree split --prefix tensorflow_serving --branch upstream-serving-subtree
 ```
 
 4. Create a new branch in the `min-tfs-client` tree with clean `protobuf_srcs/tensorflow_serving`.
